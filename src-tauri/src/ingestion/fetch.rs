@@ -10,7 +10,7 @@ use reqwest::{Client, StatusCode};
 use rusqlite::Connection;
 use std::time::Duration;
 
-pub const USER_AGENT: &str = "Lumen/0.1 (+https://github.com/lumen-reader)";
+pub const USER_AGENT: &str = "Papr/0.1 (+https://github.com/papr-reader)";
 
 /// Build the shared HTTP client (connection pooling, gzip/brotli, redirects).
 ///

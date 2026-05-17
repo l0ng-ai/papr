@@ -90,7 +90,7 @@ export default function SettingsDialog({
             </div>
           ))}
           <div className="settings-nav-spacer" />
-          <div className="settings-version">Lumen 0.1.0 · macOS</div>
+          <div className="settings-version">Papr 0.1.0 · macOS</div>
         </div>
 
         <div className="settings-content">
@@ -1711,7 +1711,7 @@ function AboutSection() {
       <div className="mark">
         <Icon name="rss" size={32} color="#fff" />
       </div>
-      <h1 className="app-name">Lumen</h1>
+      <h1 className="app-name">Papr</h1>
       <p className="tagline">{t("settings.about.tagline")}</p>
       <div className="version">Version 0.1.0 · macOS</div>
       <p className="credits">

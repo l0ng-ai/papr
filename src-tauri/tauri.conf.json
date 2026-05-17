@@ -1,11 +1,11 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Lumen",
+  "productName": "Papr",
   "version": "0.1.0",
-  "identifier": "com.thomas.lumen",
+  "identifier": "com.thomas.papr",
   "build": {
     "beforeDevCommand": "pnpm dev",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://localhost:1430",
     "beforeBuildCommand": "pnpm build",
     "frontendDist": "../dist"
   },
@@ -14,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Lumen",
+        "title": "Papr",
         "width": 1280,
         "height": 820,
         "minWidth": 920,

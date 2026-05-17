@@ -69,7 +69,7 @@ pub async fn notify_new_articles(app: &AppHandle, count: usize) {
     let mut builder = app
         .notification()
         .builder()
-        .title("Lumen")
+        .title("Papr")
         .body(new_articles_body(&lang, count));
     if sound {
         builder = builder.sound("default");

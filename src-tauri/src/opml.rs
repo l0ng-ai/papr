@@ -50,7 +50,7 @@ fn collect(outline: &Outline, folder: Option<&str>, out: &mut Vec<ImportedFeed>)
 pub fn build(feeds: &[(String, String, Option<String>)]) -> AppResult<String> {
     let mut doc = OPML {
         head: Some(Head {
-            title: Some("Lumen Subscriptions".to_string()),
+            title: Some("Papr Subscriptions".to_string()),
             ..Head::default()
         }),
         ..OPML::default()

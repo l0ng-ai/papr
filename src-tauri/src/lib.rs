@@ -1,4 +1,4 @@
-//! Lumen — a local-first RSS reader. Tauri application entry point: opens the
+//! Papr — a local-first RSS reader. Tauri application entry point: opens the
 //! database, wires shared state, installs the macOS tray, and starts the
 //! background refresh scheduler.
 
@@ -38,7 +38,7 @@ pub fn run() {
             // ── Database ──────────────────────────────────────────────
             let data_dir = app.path().app_data_dir().expect("resolve app data dir");
             fs::create_dir_all(&data_dir).ok();
-            let db_path = data_dir.join("lumen.db");
+            let db_path = data_dir.join("papr.db");
             let conn = db::open(&db_path).expect("open database");
             // On the very first launch, subscribe to a curated set of feeds.
             let seeded = db::seed_default_feeds(&conn).unwrap_or(false);
@@ -147,5 +147,5 @@ pub fn run() {
             commands::preview_rule,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running Lumen");
+        .expect("error while running Papr");
 }

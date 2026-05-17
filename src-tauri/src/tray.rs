@@ -15,7 +15,7 @@ use tauri::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, Wry};
 
-const TRAY_ID: &str = "lumen-tray";
+const TRAY_ID: &str = "papr-tray";
 const ICON: &[u8] = include_bytes!("../icons/tray.png");
 
 /// Format an elapsed-time string for a stored `datetime('now')` timestamp.
@@ -106,25 +106,25 @@ fn labels(lang: &str, unread: i64, last: Option<&str>) -> Labels {
     };
     let (open, refresh, mark_all, settings, quit) = match lang {
         "zh" => (
-            "打开 Lumen",
+            "打开 Papr",
             "立即刷新全部",
             "全部标为已读",
             "设置…",
-            "退出 Lumen",
+            "退出 Papr",
         ),
         "ja" => (
-            "Lumen を開く",
+            "Papr を開く",
             "今すぐすべて更新",
             "すべて既読にする",
             "設定…",
-            "Lumen を終了",
+            "Papr を終了",
         ),
         _ => (
-            "Open Lumen",
+            "Open Papr",
             "Refresh All Now",
             "Mark All as Read",
             "Settings…",
-            "Quit Lumen",
+            "Quit Papr",
         ),
     };
     Labels {
@@ -217,7 +217,7 @@ pub fn build(
     let tray = TrayIconBuilder::with_id(TRAY_ID)
         .icon(Image::from_bytes(ICON)?)
         .icon_as_template(true)
-        .tooltip("Lumen")
+        .tooltip("Papr")
         .menu(&menu)
         .show_menu_on_left_click(true)
         .on_menu_event(handle_event)

@@ -1,7 +1,7 @@
 [package]
 name = "tauri-app"
 version = "0.1.0"
-description = "Lumen — a modern RSS reader"
+description = "Papr — a modern RSS reader"
 authors = ["you"]
 edition = "2021"
 
