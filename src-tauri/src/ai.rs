@@ -165,6 +165,12 @@ async fn consume_sse(
             let Ok(value) = serde_json::from_str::<Value>(data) else {
                 continue;
             };
+            // Both providers can deliver an error mid-stream after a 200 OK
+            // (rate limit, overload, content filter). Surface it instead of
+            // ending the generation silently with a truncated summary.
+            if let Some(msg) = extract_error(&value, provider) {
+                return Err(AppError::other(format!("AI stream error: {msg}")));
+            }
             if let Some(text) = extract_delta(&value, provider) {
                 full.push_str(&text);
                 // A send failure means the frontend dropped the channel (the
@@ -178,6 +184,21 @@ async fn consume_sse(
         }
     }
     Ok(full)
+}
+
+/// Detect a provider error object carried inside an SSE data frame.
+fn extract_error(v: &Value, provider: Provider) -> Option<String> {
+    let err = match provider {
+        Provider::Anthropic => (v["type"] == "error").then(|| &v["error"]),
+        Provider::OpenAi => v.get("error"),
+    }?;
+    Some(
+        err["message"]
+            .as_str()
+            .filter(|m| !m.is_empty())
+            .unwrap_or("stream error")
+            .to_string(),
+    )
 }
 
 fn extract_delta(v: &Value, provider: Provider) -> Option<String> {
