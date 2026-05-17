@@ -889,9 +889,15 @@ button { font-family: inherit; }
   cursor: pointer;
   color: var(--ink-2);
 }
-.ctx-item:hover { background: var(--selected); color: var(--ink); }
+.ctx-item:hover,
+.ctx-item:focus-visible {
+  background: var(--selected);
+  color: var(--ink);
+  outline: none;
+}
 .ctx-item .ctx-ico { color: var(--muted); display: inline-flex; width: 14px; }
-.ctx-item:hover .ctx-ico { color: var(--accent); }
+.ctx-item:hover .ctx-ico,
+.ctx-item:focus-visible .ctx-ico { color: var(--accent); }
 .ctx-item .ctx-shortcut { margin-left: auto; font-size: 11px; color: var(--muted); font-family: var(--mono); }
 .ctx-sep { height: 1px; background: var(--hair); margin: 4px 6px; }
 

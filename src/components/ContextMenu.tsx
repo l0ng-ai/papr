@@ -50,20 +50,56 @@ export default function ContextMenu({ x, y, items, onClose }: Props) {
     };
   }, [onClose]);
 
+  // Move keyboard focus into the menu on open and restore it to whatever was
+  // focused (the right-clicked row) when the menu closes.
+  useEffect(() => {
+    const trigger = document.activeElement as HTMLElement | null;
+    ref.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+    return () => trigger?.focus?.();
+  }, []);
+
+  /** Arrow / Home / End / Enter navigation over the menu items. */
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    const menuitems = Array.from(
+      ref.current?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? [],
+    );
+    if (menuitems.length === 0) return;
+    const idx = menuitems.indexOf(document.activeElement as HTMLElement);
+    const focusAt = (i: number) => {
+      e.preventDefault();
+      menuitems[(i + menuitems.length) % menuitems.length]?.focus();
+    };
+    switch (e.key) {
+      case "ArrowDown": focusAt(idx + 1); break;
+      case "ArrowUp": focusAt(idx < 0 ? -1 : idx - 1); break;
+      case "Home": focusAt(0); break;
+      case "End": focusAt(menuitems.length - 1); break;
+      case "Enter":
+      case " ":
+        e.preventDefault();
+        (document.activeElement as HTMLElement)?.click();
+        break;
+    }
+  };
+
   return (
     <div
       className="ctx-menu"
       ref={ref}
+      role="menu"
       style={{ left: pos.left, top: pos.top }}
       onClick={(e) => e.stopPropagation()}
+      onKeyDown={onKeyDown}
     >
       {items.map((it, i) =>
         "separator" in it ? (
-          <div key={i} className="ctx-sep" />
+          <div key={i} className="ctx-sep" role="separator" />
         ) : (
           <div
             key={i}
             className="ctx-item"
+            role="menuitem"
+            tabIndex={-1}
             style={it.danger ? { color: "oklch(0.55 0.17 28)" } : undefined}
             onClick={() => {
               it.onClick();
