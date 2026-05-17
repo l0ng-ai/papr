@@ -681,13 +681,20 @@ pub fn get_article(conn: &Connection, id: i64) -> AppResult<ArticleDetail> {
     Ok(detail)
 }
 
-/// Plain article text used to build an AI prompt.
+/// `(title, plain_text)` for building an AI prompt. Prefers the extracted
+/// full text when the user has run extraction, so a summary / answer covers
+/// the whole article rather than the (often truncated) feed body.
 pub fn article_text(conn: &Connection, id: i64) -> AppResult<(String, String)> {
-    Ok(conn.query_row(
-        "SELECT title, body_text FROM articles WHERE id = ?1",
+    let (title, body, extracted): (String, String, Option<String>) = conn.query_row(
+        "SELECT title, body_text, extracted_html FROM articles WHERE id = ?1",
         params![id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?)
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+    )?;
+    let text = match extracted {
+        Some(html) if !html.trim().is_empty() => crate::sanitize::html_to_text(&html),
+        _ => body,
+    };
+    Ok((title, text))
 }
 
 pub fn set_read(conn: &Connection, id: i64, read: bool) -> AppResult<()> {
