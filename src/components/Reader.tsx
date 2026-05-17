@@ -525,6 +525,9 @@ function AIDrawer({
     setFailed(false);
     setRetry((n) => n + 1);
   };
+  // Parse + sanitize the summary only when the text changes, not on every
+  // AIDrawer re-render (e.g. each open/close toggle).
+  const html = useMemo(() => (text ? renderMarkdown(text) : ""), [text]);
 
   return (
     <div
@@ -566,7 +569,7 @@ function AIDrawer({
             <div
               className="ai-prose"
               onClick={interceptLinkClick}
-              dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }}
+              dangerouslySetInnerHTML={{ __html: html }}
             />
             <div
               style={{
