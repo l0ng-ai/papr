@@ -85,7 +85,7 @@ pub fn run() {
             if seeded {
                 let handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    let _ = ingestion::scheduler::refresh_all(&handle, None).await;
+                    let _ = ingestion::scheduler::refresh_all(&handle, None, true).await;
                 });
             }
 

@@ -166,7 +166,7 @@ pub async fn refresh_feeds(
     app: AppHandle,
     on_progress: Channel<RefreshProgress>,
 ) -> AppResult<usize> {
-    scheduler::refresh_all(&app, Some(on_progress)).await
+    scheduler::refresh_all(&app, Some(on_progress), false).await
 }
 
 // ─────────────────────────── articles ───────────────────────────
@@ -329,10 +329,12 @@ pub async fn import_opml(app: AppHandle, content: String) -> AppResult<usize> {
         }
         added
     };
-    // Newly imported feeds have no articles yet — kick off a refresh.
+    // Newly imported feeds have no articles yet — kick off a refresh. Pass
+    // wait_if_busy so it queues behind any in-flight refresh instead of
+    // skipping and leaving the imported feeds empty until the next tick.
     let app2 = app.clone();
     tauri::async_runtime::spawn(async move {
-        let _ = scheduler::refresh_all(&app2, None).await;
+        let _ = scheduler::refresh_all(&app2, None, true).await;
     });
     Ok(count)
 }

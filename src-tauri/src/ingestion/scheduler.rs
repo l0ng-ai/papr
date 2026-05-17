@@ -63,21 +63,27 @@ fn int_setting(conn: &rusqlite::Connection, key: &str, default: i64) -> i64 {
 pub async fn refresh_all(
     app: &AppHandle,
     progress: Option<Channel<RefreshProgress>>,
+    wait_if_busy: bool,
 ) -> AppResult<usize> {
     let state = app.state::<AppState>();
 
     // Only one refresh at a time: the manual command and the periodic
-    // scheduler would otherwise duplicate every fetch. A second caller bows
-    // out cleanly rather than queueing another full pass.
-    let _refresh_guard = match state.refresh_lock.try_lock() {
-        Ok(guard) => guard,
-        Err(_) => {
-            log::debug!("refresh already in progress; skipping this run");
-            if let Some(p) = &progress {
-                let _ = p.send(RefreshProgress::Started { total: 0 });
-                let _ = p.send(RefreshProgress::Finished { new_articles: 0 });
+    // scheduler would otherwise duplicate every fetch. `wait_if_busy` callers
+    // (OPML import) queue behind an in-flight run so their freshly added
+    // feeds still get fetched; everyone else bows out cleanly.
+    let _refresh_guard = if wait_if_busy {
+        state.refresh_lock.lock().await
+    } else {
+        match state.refresh_lock.try_lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                log::debug!("refresh already in progress; skipping this run");
+                if let Some(p) = &progress {
+                    let _ = p.send(RefreshProgress::Started { total: 0 });
+                    let _ = p.send(RefreshProgress::Finished { new_articles: 0 });
+                }
+                return Ok(0);
             }
-            return Ok(0);
         }
     };
 
@@ -243,7 +249,7 @@ pub fn spawn_scheduler(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_secs(8)).await;
         loop {
-            if let Err(e) = refresh_all(&app, None).await {
+            if let Err(e) = refresh_all(&app, None, false).await {
                 log::warn!("scheduled refresh failed: {e}");
             }
             let mins = refresh_interval_minutes(&app).await;

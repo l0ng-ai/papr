@@ -180,7 +180,7 @@ fn handle_event(app: &AppHandle, event: MenuEvent) {
         "tray_refresh" => {
             let app = app.clone();
             tauri::async_runtime::spawn(async move {
-                let _ = scheduler::refresh_all(&app, None).await;
+                let _ = scheduler::refresh_all(&app, None, false).await;
             });
         }
         "tray_markall" => {
