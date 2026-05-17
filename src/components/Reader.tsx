@@ -25,6 +25,17 @@ function youtubeId(url: string | null): string | null {
   return m ? m[1] : null;
 }
 
+/** Open links inside injected HTML (article body, AI summary) in the external
+ *  browser — a bare <a> click would navigate the Tauri webview away from the
+ *  app entirely, with no way back. */
+function interceptLinkClick(e: React.MouseEvent) {
+  const link = (e.target as HTMLElement).closest("a");
+  if (link?.href) {
+    e.preventDefault();
+    openUrl(link.href).catch(() => {});
+  }
+}
+
 export default function Reader({ onToast }: Props) {
   const { t } = useTranslation();
   const qc = useQueryClient();
@@ -113,13 +124,6 @@ export default function Reader({ onToast }: Props) {
     }
   };
 
-  const onBodyClick = (e: React.MouseEvent) => {
-    const link = (e.target as HTMLElement).closest("a");
-    if (link?.href) {
-      e.preventDefault();
-      openUrl(link.href).catch(() => {});
-    }
-  };
 
   const copyLink = () => {
     if (!a?.url) return;
@@ -404,7 +408,7 @@ export default function Reader({ onToast }: Props) {
           <div
             className="article-body"
             data-serif={useSerif}
-            onClick={onBodyClick}
+            onClick={interceptLinkClick}
             dangerouslySetInnerHTML={{
               __html: body || `<p><em>${t("reader.noContent")}</em></p>`,
             }}
@@ -532,6 +536,7 @@ function AIDrawer({
           <>
             <div
               className="ai-prose"
+              onClick={interceptLinkClick}
               dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }}
             />
             <div
