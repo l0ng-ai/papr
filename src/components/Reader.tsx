@@ -53,6 +53,7 @@ export default function Reader({ onToast }: Props) {
   const [scrolled, setScrolled] = useState(false);
   const [showExtracted, setShowExtracted] = useState(true);
   const [tagPick, setTagPick] = useState<{ x: number; y: number } | null>(null);
+  const [heroBroken, setHeroBroken] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   // Article id we already auto-marked read via scroll, so a flurry of scroll
   // events near the foot doesn't fire `setRead` repeatedly before the
@@ -87,6 +88,7 @@ export default function Reader({ onToast }: Props) {
     setShowExtracted(true);
     setScrolled(false);
     setTagPick(null);
+    setHeroBroken(false);
     scrollMarkedRef.current = null;
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
   }, [id]);
@@ -366,7 +368,14 @@ export default function Reader({ onToast }: Props) {
               allowFullScreen
             />
           ) : (
-            a.imageUrl && <img src={a.imageUrl} alt="" />
+            a.imageUrl &&
+            !heroBroken && (
+              <img
+                src={a.imageUrl}
+                alt=""
+                onError={() => setHeroBroken(true)}
+              />
+            )
           )}
 
           {a.enclosures
