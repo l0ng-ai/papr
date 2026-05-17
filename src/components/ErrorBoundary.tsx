@@ -20,6 +20,9 @@ export class ErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: unknown) {
     console.error("Unhandled render error:", error);
+    // A crash during initial mount leaves the boot splash (z-index 9999)
+    // covering everything — drop it so the fallback below is visible.
+    document.getElementById("app-loading")?.remove();
   }
 
   render() {
