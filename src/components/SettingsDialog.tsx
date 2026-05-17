@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import * as api from "../api";
 import { useUi } from "../store";
+import { useArticleActions } from "../hooks/articleActions";
 import { LANGUAGES, setLanguage, type Language } from "../i18n";
 import { feedHost } from "../lib/feedMeta";
 import { errorText } from "../lib/errors";
@@ -643,6 +644,7 @@ function SubscriptionsSection({
 }) {
   const { t } = useTranslation();
   const qc = useQueryClient();
+  const actions = useArticleActions();
   const [search, setSearch] = useState("");
   const fileRef = useRef<HTMLInputElement>(null);
   const filtered = feeds.filter(
@@ -679,7 +681,9 @@ function SubscriptionsSection({
     api
       .deleteFeed(f.id)
       .then(() => {
-        qc.invalidateQueries();
+        // Unsubscribing touches only article-bearing caches — unlike OPML
+        // import, it needs no full invalidation.
+        actions.refreshAfterBulk();
         onToast(t("settings.subscriptions.unsubscribed", { title: f.title }));
       })
       .catch((e) => onToast(errorText(e)));
@@ -1709,7 +1713,7 @@ function AboutSection() {
   return (
     <div className="s-about">
       <div className="mark">
-        <Icon name="rss" size={32} color="#fff" />
+        <Icon name="papr" size={34} color="#fff" />
       </div>
       <h1 className="app-name">Papr</h1>
       <p className="tagline">{t("settings.about.tagline")}</p>
