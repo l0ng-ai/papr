@@ -36,7 +36,6 @@ type Toast = { text: string; kbd?: string; id: number };
 export default function App() {
   const { t } = useTranslation();
   const qc = useQueryClient();
-  const actions = useArticleActions();
 
   const theme = useUi((s) => s.theme);
   const accent = useUi((s) => s.accent);
@@ -128,6 +127,9 @@ export default function App() {
     window.clearTimeout(toastTimer.current);
     toastTimer.current = window.setTimeout(() => setToast(null), 1900);
   }, []);
+
+  // Declared after showToast so a failed mark action surfaces a toast.
+  const actions = useArticleActions(showToast);
 
   // ── background refresh events from the Rust scheduler ──
   useEffect(() => {

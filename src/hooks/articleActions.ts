@@ -3,13 +3,19 @@
 
 import { useQueryClient } from "@tanstack/react-query";
 import * as api from "../api";
+import { errorText } from "../lib/errors";
 import type { ArticleSummary } from "../types";
 
 type Patch = Partial<
   Pick<ArticleSummary, "isRead" | "isStarred" | "readLater">
 >;
 
-export function useArticleActions() {
+/**
+ * Shared article mutations. `onError` (when supplied) is called with a
+ * localized message if a mutation fails — callers fire these actions without
+ * awaiting, so without it a failure would be a silent unhandled rejection.
+ */
+export function useArticleActions(onError?: (msg: string) => void) {
   const qc = useQueryClient();
 
   /** Optimistically patch an article across every cache that may hold it. */
@@ -75,19 +81,31 @@ export function useArticleActions() {
     patch,
     refreshAfterBulk,
     async setRead(id: number, read: boolean) {
-      await api.markRead(id, read);
-      patch(id, { isRead: read });
-      refreshLists();
+      try {
+        await api.markRead(id, read);
+        patch(id, { isRead: read });
+        refreshLists();
+      } catch (e) {
+        onError?.(errorText(e));
+      }
     },
     async setStarred(id: number, starred: boolean) {
-      await api.markStarred(id, starred);
-      patch(id, { isStarred: starred });
-      refreshLists();
+      try {
+        await api.markStarred(id, starred);
+        patch(id, { isStarred: starred });
+        refreshLists();
+      } catch (e) {
+        onError?.(errorText(e));
+      }
     },
     async setReadLater(id: number, value: boolean) {
-      await api.markReadLater(id, value);
-      patch(id, { readLater: value });
-      refreshLists();
+      try {
+        await api.markReadLater(id, value);
+        patch(id, { readLater: value });
+        refreshLists();
+      } catch (e) {
+        onError?.(errorText(e));
+      }
     },
   };
 }

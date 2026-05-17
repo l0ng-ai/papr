@@ -39,7 +39,7 @@ function interceptLinkClick(e: React.MouseEvent) {
 export default function Reader({ onToast }: Props) {
   const { t } = useTranslation();
   const qc = useQueryClient();
-  const actions = useArticleActions();
+  const actions = useArticleActions(onToast);
   const id = useUi((s) => s.selectedArticleId);
   const useSerif = useUi((s) => s.useSerif);
   const focusMode = useUi((s) => s.focusMode);

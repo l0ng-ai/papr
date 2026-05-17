@@ -26,7 +26,7 @@ interface Hover {
 
 export default function ArticleList({ onToast }: Props) {
   const { t } = useTranslation();
-  const actions = useArticleActions();
+  const actions = useArticleActions(onToast);
   const query = useUi((s) => s.query);
   const queryLabel = useUi((s) => s.queryLabel);
   const unreadOnly = useUi((s) => s.unreadOnly);
