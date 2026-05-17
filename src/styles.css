@@ -24,7 +24,6 @@
   /* density */
   --row-py: 14px;
   --list-px: 18px;
-  --gap: 12px;
 
   /* type */
   --ui: 'Inter Tight', -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif;
@@ -57,9 +56,9 @@
   --accent-ink: oklch(0.80 0.10 45);
 }
 
-[data-density="compact"] { --row-py: 10px; --list-px: 14px; --gap: 8px; }
-[data-density="cozy"]    { --row-py: 14px; --list-px: 18px; --gap: 12px; }
-[data-density="spacious"]{ --row-py: 20px; --list-px: 24px; --gap: 16px; }
+[data-density="compact"] { --row-py: 10px; --list-px: 14px; }
+[data-density="cozy"]    { --row-py: 14px; --list-px: 18px; }
+[data-density="spacious"]{ --row-py: 20px; --list-px: 24px; }
 
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
