@@ -561,6 +561,10 @@ function AIDrawer({
   return (
     <div
       className={`ai-drawer ${open ? "open" : ""}`}
+      // A labelled complementary landmark so screen-reader users can jump
+      // straight to the summary.
+      role="complementary"
+      aria-label={t("reader.aiSummaryTitle")}
       // When closed the drawer is only moved off-screen — `inert` keeps its
       // close button and content out of the tab order and the a11y tree.
       inert={!open}
