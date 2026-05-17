@@ -1389,7 +1389,23 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
           ]}
           onChange={(v) => {
             setProvider(v);
-            save("ai_provider", v, t("settings.advanced.aiProviderLabel"));
+            // A model name is provider-specific — carrying the old one over
+            // would send e.g. an OpenAI model to Anthropic. Clear it so the
+            // backend falls back to the new provider's default.
+            setModel("");
+            savedModel.current = "";
+            Promise.all([
+              api.setSetting("ai_provider", v),
+              api.setSetting("ai_model", ""),
+            ])
+              .then(() =>
+                onToast(
+                  t("settings.advanced.aiSaved", {
+                    label: t("settings.advanced.aiProviderLabel"),
+                  }),
+                ),
+              )
+              .catch((e) => onToast(errorText(e)));
           }}
         />
       </Row>
