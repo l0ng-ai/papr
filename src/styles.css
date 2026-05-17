@@ -916,6 +916,11 @@ button { font-family: inherit; }
   grid-template-columns: 1fr;
 }
 .window.focus .article { max-width: 720px; }
+/* In focus mode the reader is the leftmost pane, so its toolbar must clear
+   the macOS traffic-light buttons — which also reveal on hover in fullscreen. */
+.window.focus .reader-toolbar {
+  padding-left: 80px;
+}
 
 /* Toast */
 .toast {
