@@ -527,6 +527,7 @@ button { font-family: inherit; }
   color: var(--ink);
   margin: 14px 0 14px;
   font-family: var(--reader-font);
+  overflow-wrap: break-word;
 }
 .article-meta {
   font-size: 13px;
@@ -546,6 +547,9 @@ button { font-family: inherit; }
   line-height: var(--reader-leading, 1.65);
   color: var(--ink);
   letter-spacing: 0.003em;
+  /* Break long unbreakable strings (e.g. a bare URL in the text) instead of
+     letting them overflow the reading column. */
+  overflow-wrap: break-word;
 }
 .article-body[data-serif="false"] { font-family: var(--ui); font-size: calc(var(--reader-size, 17px) - 1.5px); line-height: var(--reader-leading, 1.6); }
 .article { max-width: var(--reader-width, 680px); }
@@ -1525,6 +1529,7 @@ button { font-family: inherit; }
 }
 
 /* AI drawer — markdown prose (real streaming output) */
+.ai-prose { overflow-wrap: break-word; }
 .ai-prose p { margin: 0 0 0.8em; }
 .ai-prose h1, .ai-prose h2, .ai-prose h3 {
   font-size: 13px; font-weight: 650; margin: 1em 0 0.4em; color: var(--ink);
