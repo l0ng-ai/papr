@@ -9,7 +9,7 @@ export type IconName =
   | "open" | "share" | "more" | "refresh" | "settings" | "chevron-down"
   | "chevron-right" | "globe" | "focus" | "arrow-down" | "arrow-up"
   | "eye" | "eye-off" | "trash" | "mute" | "pin" | "x" | "command"
-  | "copy" | "list" | "grid" | "text" | "alert"
+  | "copy" | "list" | "grid" | "text" | "alert" | "papr"
   | "play" | "pause" | "skip-back" | "skip-fwd" | "headphones";
 
 interface Props {
@@ -25,6 +25,8 @@ export default function Icon({
   color = "currentColor",
   className,
 }: Props) {
+  // Icons are decorative — every place that renders one also supplies a
+  // text label or an aria-label, so hide the SVG from assistive tech.
   const p = {
     width: size,
     height: size,
@@ -35,6 +37,7 @@ export default function Icon({
     strokeLinecap: "round" as const,
     strokeLinejoin: "round" as const,
     className,
+    "aria-hidden": true,
   };
   const filled = {
     width: size,
@@ -42,6 +45,7 @@ export default function Icon({
     viewBox: "0 0 24 24",
     fill: color,
     className,
+    "aria-hidden": true,
   };
 
   switch (name) {
@@ -137,6 +141,8 @@ export default function Icon({
       return <svg {...p}><path d="M13 6a8 8 0 1 0 3 6" /><path d="M16 4v6h-6" /></svg>;
     case "headphones":
       return <svg {...p}><path d="M4 14v-2a8 8 0 0 1 16 0v2" /><rect x="2.5" y="13" width="4.5" height="7" rx="2" /><rect x="17" y="13" width="4.5" height="7" rx="2" /></svg>;
+    case "papr":
+      return <svg {...p}><path d="M5 3h8.5L19 8.5V21H5Z" /><path d="M13.5 3v5.5H19" /><path d="M8 13.5a3.5 3.5 0 0 1 3.5 3.5M8 11a6 6 0 0 1 6 6" /><circle cx="8" cy="17" r="1.15" fill={color} stroke="none" /></svg>;
     default:
       return null;
   }
