@@ -187,6 +187,23 @@ export default function ArticleList({ onToast }: Props) {
     suffix: browse.hasNextPage ? "+" : "",
   });
 
+  // Arrow-key navigation for the listbox (in addition to the global j/k).
+  const onListKeyDown = (e: React.KeyboardEvent) => {
+    if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(e.key)) return;
+    if (items.length === 0) return;
+    e.preventDefault();
+    const cur = items.findIndex((x) => x.id === selectedId);
+    const next =
+      e.key === "Home"
+        ? 0
+        : e.key === "End"
+          ? items.length - 1
+          : e.key === "ArrowDown"
+            ? Math.min(items.length - 1, cur < 0 ? 0 : cur + 1)
+            : Math.max(0, cur < 0 ? 0 : cur - 1);
+    openArticle(items[next].id);
+  };
+
   return (
     <div className="list" role="region" aria-labelledby="article-list-title">
       <div className="list-header" data-tauri-drag-region>
@@ -270,6 +287,13 @@ export default function ArticleList({ onToast }: Props) {
 
         {!browse.isLoading && items.length > 0 && (
           <div
+            role="listbox"
+            tabIndex={0}
+            aria-labelledby="article-list-title"
+            aria-activedescendant={
+              selectedId != null ? `option-article-${selectedId}` : undefined
+            }
+            onKeyDown={onListKeyDown}
             style={{
               height: virt.getTotalSize(),
               position: "relative",
@@ -297,6 +321,9 @@ export default function ArticleList({ onToast }: Props) {
                     className={`art ${viewMode === "card" ? "card" : ""} ${
                       selectedId === a.id ? "active" : ""
                     } ${a.isRead ? "read" : ""}`}
+                    role="option"
+                    id={`option-article-${a.id}`}
+                    aria-selected={selectedId === a.id}
                     onClick={() => openArticle(a.id)}
                     onContextMenu={(e) => {
                       e.preventDefault();
