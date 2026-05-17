@@ -42,14 +42,24 @@ export default function TagPicker({
       if (!ref.current?.contains(e.target as Node)) onClose();
     };
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    // Tabbing past the popover's last control should dismiss it, the way a
+    // click outside does — otherwise it floats over the page, orphaned from
+    // the keyboard. A null relatedTarget (focus fell to <body>, e.g. a row
+    // re-rendered away) is left to the outside-click / Escape paths instead.
+    const onFocusOut = (e: FocusEvent) => {
+      const next = e.relatedTarget as Node | null;
+      if (next && !ref.current?.contains(next)) onClose();
+    };
     const timer = window.setTimeout(() => {
       document.addEventListener("mousedown", onDown);
       window.addEventListener("keydown", onKey);
+      document.addEventListener("focusout", onFocusOut);
     }, 0);
     return () => {
       window.clearTimeout(timer);
       document.removeEventListener("mousedown", onDown);
       window.removeEventListener("keydown", onKey);
+      document.removeEventListener("focusout", onFocusOut);
     };
   }, [onClose]);
 
