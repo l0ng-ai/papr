@@ -135,6 +135,13 @@ static MIGRATIONS: LazyLock<Migrations> = LazyLock::new(|| {
             );
             "#,
         ),
+        // v6 — index over the effective article date the list sorts by,
+        // COALESCE(published_at, fetched_at), so a dateless entry sorts by
+        // when it was fetched instead of sinking below every dated article.
+        M::up(
+            "CREATE INDEX idx_articles_sort
+             ON articles(COALESCE(published_at, fetched_at) DESC, id DESC);",
+        ),
     ])
 });
 
@@ -543,12 +550,15 @@ pub fn list_articles(
     }
     sql.push_str("WHERE ");
     sql.push_str(&where_clauses.join(" AND "));
+    // Sort by the effective date — COALESCE(published_at, fetched_at) — so
+    // an article with no feed-supplied date orders by when it arrived rather
+    // than sinking to the bottom. Backed by `idx_articles_sort`.
     sql.push_str(if searching {
         " ORDER BY fts.rank "
     } else if oldest_first {
-        " ORDER BY a.published_at ASC, a.id ASC "
+        " ORDER BY COALESCE(a.published_at, a.fetched_at) ASC, a.id ASC "
     } else {
-        " ORDER BY a.published_at DESC, a.id DESC "
+        " ORDER BY COALESCE(a.published_at, a.fetched_at) DESC, a.id DESC "
     });
     sql.push_str("LIMIT ? OFFSET ?");
     binds.push(Value::Integer(limit));
