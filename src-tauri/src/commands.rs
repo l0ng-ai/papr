@@ -301,18 +301,22 @@ pub async fn import_opml(app: AppHandle, content: String) -> AppResult<usize> {
     let count = {
         let state = app.state::<AppState>();
         let conn = state.db.lock().await;
+        // One transaction for the whole import — a mid-list failure rolls
+        // back rather than leaving feeds (and auto-created folders) partly
+        // imported.
+        let tx = conn.unchecked_transaction()?;
         let mut added = 0;
         for feed in imported {
-            if db::find_feed_by_url(&conn, &feed.feed_url)?.is_some() {
+            if db::find_feed_by_url(&tx, &feed.feed_url)?.is_some() {
                 continue;
             }
             let folder_id = match &feed.folder {
-                Some(name) => Some(db::folder_id_by_name(&conn, name)?),
+                Some(name) => Some(db::folder_id_by_name(&tx, name)?),
                 None => None,
             };
             let source_type = parse::detect_source_type(&feed.feed_url);
             db::insert_feed(
-                &conn,
+                &tx,
                 &feed.feed_url,
                 None,
                 &feed.title,
@@ -322,6 +326,7 @@ pub async fn import_opml(app: AppHandle, content: String) -> AppResult<usize> {
             )?;
             added += 1;
         }
+        tx.commit()?;
         added
     };
     // Newly imported feeds have no articles yet — kick off a refresh. Pass
