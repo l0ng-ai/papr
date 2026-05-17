@@ -23,6 +23,7 @@
     "pause": "Pause",
     "back15": "Back 15s",
     "fwd30": "Forward 30s",
+    "seek": "Seek",
     "speed": "Playback speed",
     "close": "Close player",
     "loadError": "Couldn't play this episode"

@@ -151,6 +151,9 @@ export default function PlayerBar() {
             step={1}
             value={Math.min(time, duration || 0)}
             onChange={(e) => seek(Number(e.target.value))}
+            aria-label={t("player.seek")}
+            // Announce the elapsed time, not the raw second count.
+            aria-valuetext={clock(time)}
           />
           <span className="player-time">{clock(duration)}</span>
         </>
