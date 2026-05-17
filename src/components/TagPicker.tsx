@@ -53,6 +53,16 @@ export default function TagPicker({
     };
   }, [onClose]);
 
+  // Move focus into the popover on open so it is keyboard-reachable, and
+  // restore it to the trigger (the toolbar tag button) on close.
+  useEffect(() => {
+    const trigger = document.activeElement as HTMLElement | null;
+    ref.current
+      ?.querySelector<HTMLElement>('[role="button"], input')
+      ?.focus();
+    return () => trigger?.focus?.();
+  }, []);
+
   const sync = () => {
     qc.invalidateQueries({ queryKey: ["article", articleId] });
     qc.invalidateQueries({ queryKey: ["tags"] });
@@ -91,7 +101,16 @@ export default function TagPicker({
             <div
               key={tag.id}
               className={`tag-picker-row ${on ? "on" : ""}`}
+              role="button"
+              tabIndex={0}
+              aria-pressed={on}
               onClick={() => toggle(tag.id, !on)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  toggle(tag.id, !on);
+                }
+              }}
             >
               <span
                 className="tag-dot"

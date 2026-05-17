@@ -1794,7 +1794,8 @@ button { font-family: inherit; }
   font-size: 12.5px;
   color: var(--ink-2);
 }
-.tag-picker-row:hover { background: var(--hover); }
+.tag-picker-row:hover,
+.tag-picker-row:focus-visible { background: var(--hover); outline: none; }
 .tag-picker-row.on { color: var(--ink); font-weight: 500; }
 .tag-picker-name {
   flex: 1;
