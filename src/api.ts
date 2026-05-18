@@ -158,6 +158,12 @@ export const freshrssSync = () => invoke<number>("freshrss_sync");
 // ── tray ──
 export const refreshTray = () => invoke<void>("refresh_tray");
 
+// ── deep links ──
+/** Drain a `papr://subscribe` URL delivered before the webview could receive
+ *  the `deep-link-subscribe` event (a cold-start launch). */
+export const takePendingDeepLink = () =>
+  invoke<string | null>("take_pending_deep_link");
+
 // ── tags ──
 export const listTags = () => invoke<Tag[]>("list_tags");
 export const createTag = (name: string) =>

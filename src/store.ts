@@ -4,6 +4,7 @@
 
 import { create } from "zustand";
 import i18n from "./i18n";
+import * as api from "./api";
 import type { ArticleQuery } from "./types";
 
 export type Theme = "light" | "dark";
@@ -11,6 +12,20 @@ export type Accent = "clay" | "pine" | "indigo" | "ink";
 export type Density = "compact" | "cozy" | "spacious";
 export type ViewMode = "list" | "card";
 export type StartupView = "all" | "unread" | "starred" | "last";
+
+/** Valid ranges for the reader appearance sliders — the single source of
+ *  truth shared by the Settings sliders, persistence validation, and the
+ *  `setReader` write guard, so all three stay in lockstep. */
+export const READER_BOUNDS = {
+  size: { min: 14, max: 22 },
+  leading: { min: 130, max: 200 },
+  width: { min: 520, max: 840 },
+} as const;
+
+/** Clamp `n` into `[min, max]`. */
+function clamp(n: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, n));
+}
 
 /** Behavioural preferences driven by the Settings panel. */
 export interface Prefs {
@@ -35,13 +50,18 @@ const ls = {
       ? (v as T)
       : fallback;
   },
-  num: (k: string, fallback: number) => {
+  /** A persisted number, clamped to `[min, max]`. localStorage is
+   *  webview-writable and may hold a corrupt non-numeric value (NaN would
+   *  reach a CSS variable like `--reader-size: NaNpx` and break the layout)
+   *  or a stale out-of-range value from an older build with different
+   *  slider limits — both would distort the reader. NaN falls back; an
+   *  in-band-but-out-of-range value is clamped into range. */
+  num: (k: string, fallback: number, min: number, max: number) => {
     const v = localStorage.getItem(k);
     if (v == null) return fallback;
     const n = Number(v);
-    // Guard against a corrupt non-numeric value — NaN would otherwise reach
-    // a CSS variable (e.g. `--reader-size: NaNpx`) and break the layout.
-    return Number.isFinite(n) ? n : fallback;
+    if (!Number.isFinite(n)) return fallback;
+    return Math.min(max, Math.max(min, n));
   },
   bool: (k: string, fallback: boolean) => {
     const v = localStorage.getItem(k);
@@ -110,6 +130,16 @@ const PREF_KEYS: (keyof Prefs)[] = [
   "hideReadOnStartup",
 ];
 
+/** Mirror the active theme into the backend settings table so the Rust side
+ *  can paint the native window in the matching colour *before* the webview
+ *  loads on the next launch — without this, a dark-theme user sees a brief
+ *  light flash at window-create time (the `tauri.conf.json` background is a
+ *  fixed light colour the backend has no other way to override). Mirrors the
+ *  way `i18n.ts` persists the language for backend-localised text. */
+function mirrorTheme(theme: Theme): void {
+  api.setSetting("theme", theme).catch(() => {});
+}
+
 function loadPrefs(): Prefs {
   return {
     showSidebarCounts: ls.bool("pref.showSidebarCounts", true),
@@ -144,9 +174,14 @@ export const useUi = create<UiState>((set) => ({
   ),
   viewMode: ls.oneOf<ViewMode>("viewMode", ["list", "card"], "list"),
   useSerif: ls.bool("useSerif", true),
-  readerSize: ls.num("readerSize", 17),
-  readerLeading: ls.num("readerLeading", 165),
-  readerWidth: ls.num("readerWidth", 680),
+  readerSize: ls.num("readerSize", 17, READER_BOUNDS.size.min, READER_BOUNDS.size.max),
+  readerLeading: ls.num(
+    "readerLeading",
+    165,
+    READER_BOUNDS.leading.min,
+    READER_BOUNDS.leading.max,
+  ),
+  readerWidth: ls.num("readerWidth", 680, READER_BOUNDS.width.min, READER_BOUNDS.width.max),
 
   prefs: loadPrefs(),
 
@@ -163,16 +198,32 @@ export const useUi = create<UiState>((set) => ({
   toggleUnreadOnly: () => set((s) => ({ unreadOnly: !s.unreadOnly })),
   toggleSort: () => set((s) => ({ sortOldest: !s.sortOldest })),
 
-  setTheme: (theme) => { ls.set("theme", theme); set({ theme }); },
+  setTheme: (theme) => { ls.set("theme", theme); mirrorTheme(theme); set({ theme }); },
   setAccent: (accent) => { ls.set("accent", accent); set({ accent }); },
   setDensity: (density) => { ls.set("density", density); set({ density }); },
   setViewMode: (viewMode) => { ls.set("viewMode", viewMode); set({ viewMode }); },
   setUseSerif: (useSerif) => { ls.set("useSerif", useSerif); set({ useSerif }); },
   setReader: (p) => {
-    if (p.readerSize != null) ls.set("readerSize", p.readerSize);
-    if (p.readerLeading != null) ls.set("readerLeading", p.readerLeading);
-    if (p.readerWidth != null) ls.set("readerWidth", p.readerWidth);
-    set(p);
+    // Clamp on write too: any caller (or a stale slider range) is kept from
+    // pushing an out-of-range value into the persisted store or a CSS var.
+    const next: Partial<Pick<UiState, "readerSize" | "readerLeading" | "readerWidth">> = {};
+    if (p.readerSize != null) {
+      next.readerSize = clamp(p.readerSize, READER_BOUNDS.size.min, READER_BOUNDS.size.max);
+      ls.set("readerSize", next.readerSize);
+    }
+    if (p.readerLeading != null) {
+      next.readerLeading = clamp(
+        p.readerLeading,
+        READER_BOUNDS.leading.min,
+        READER_BOUNDS.leading.max,
+      );
+      ls.set("readerLeading", next.readerLeading);
+    }
+    if (p.readerWidth != null) {
+      next.readerWidth = clamp(p.readerWidth, READER_BOUNDS.width.min, READER_BOUNDS.width.max);
+      ls.set("readerWidth", next.readerWidth);
+    }
+    set(next);
   },
 
   setPref: (patch) => {
@@ -185,3 +236,8 @@ export const useUi = create<UiState>((set) => ({
   setFocusMode: (focusMode) => set({ focusMode }),
   setAiOpen: (aiOpen) => set({ aiOpen }),
 }));
+
+// Seed the backend's theme copy on startup so an existing install — whose
+// theme has lived only in localStorage until now — still gets the native
+// launch background themed correctly from the next launch onward.
+mirrorTheme(useUi.getState().theme);

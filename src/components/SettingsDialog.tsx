@@ -1,14 +1,16 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { cloneElement, isValidElement, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { getVersion } from "@tauri-apps/api/app";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import * as api from "../api";
-import { useUi } from "../store";
+import { useUi, READER_BOUNDS } from "../store";
 import { useArticleActions } from "../hooks/articleActions";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { LANGUAGES, setLanguage, type Language } from "../i18n";
 import { feedHost } from "../lib/feedMeta";
 import { errorText } from "../lib/errors";
+import { downloadFile } from "../lib/download";
 import type { Feed, Rule, RuleAction, RuleField, RulePreview } from "../types";
 import Icon, { type IconName } from "./Icon";
 import FeedAvatar from "./FeedAvatar";
@@ -35,6 +37,26 @@ const SECTIONS: { id: string; labelKey: string; icon: IconName; color: string }[
   { id: "about", labelKey: "settings.nav.about", icon: "sparkle", color: "#111" },
 ];
 
+/** The app version read from the Tauri bundle config at runtime, cached so the
+ *  one IPC round-trip is shared between the sidebar footer and the About pane.
+ *  Sourcing it live keeps the displayed version from drifting out of sync with
+ *  `tauri.conf.json` the way a hardcoded string does on every release bump. */
+let versionPromise: Promise<string> | null = null;
+function useAppVersion(): string {
+  const [version, setVersion] = useState("");
+  useEffect(() => {
+    versionPromise ??= getVersion().catch(() => "");
+    let live = true;
+    versionPromise.then((v) => {
+      if (live) setVersion(v);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+  return version;
+}
+
 export default function SettingsDialog({
   onClose,
   onToast,
@@ -45,6 +67,7 @@ export default function SettingsDialog({
   const [section, setSection] = useState(initialSection ?? "general");
   const feeds = useQuery({ queryKey: ["feeds"], queryFn: api.listFeeds });
   const windowRef = useRef<HTMLDivElement>(null);
+  const version = useAppVersion();
   useFocusTrap(windowRef);
 
   useEffect(() => {
@@ -103,7 +126,9 @@ export default function SettingsDialog({
             </div>
           ))}
           <div className="settings-nav-spacer" />
-          <div className="settings-version">Papr 0.1.0 · macOS</div>
+          <div className="settings-version">
+            Papr{version && ` ${version}`} · macOS
+          </div>
         </div>
 
         <div className="settings-content">
@@ -643,8 +668,8 @@ function ReadingSection() {
         <Row label={t("settings.reading.fontSize")}>
           <Slider
             value={readerSize}
-            min={14}
-            max={22}
+            min={READER_BOUNDS.size.min}
+            max={READER_BOUNDS.size.max}
             unit="px"
             onChange={(v) => setReader({ readerSize: v })}
           />
@@ -652,8 +677,8 @@ function ReadingSection() {
         <Row label={t("settings.reading.lineHeight")}>
           <Slider
             value={readerLeading}
-            min={130}
-            max={200}
+            min={READER_BOUNDS.leading.min}
+            max={READER_BOUNDS.leading.max}
             step={5}
             unit="%"
             onChange={(v) => setReader({ readerLeading: v })}
@@ -665,8 +690,8 @@ function ReadingSection() {
         <Row label={t("settings.reading.maxWidth")}>
           <Slider
             value={readerWidth}
-            min={520}
-            max={840}
+            min={READER_BOUNDS.width.min}
+            max={READER_BOUNDS.width.max}
             step={20}
             unit="px"
             onChange={(v) => setReader({ readerWidth: v })}
@@ -720,13 +745,7 @@ function SubscriptionsSection({
   const exportOpml = async () => {
     try {
       const xml = await api.exportOpml();
-      const blob = new Blob([xml], { type: "text/xml" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "subscriptions.opml";
-      a.click();
-      URL.revokeObjectURL(url);
+      downloadFile(xml, "subscriptions.opml", "text/xml");
       onToast(t("settings.subscriptions.opmlExported"));
     } catch (e) {
       onToast(errorText(e));
@@ -2066,6 +2085,7 @@ function RuleEditor({
 /* ── about ───────────────────────────────────────────────── */
 function AboutSection() {
   const { t } = useTranslation();
+  const version = useAppVersion();
   return (
     <div className="s-about">
       <div className="mark">
@@ -2073,7 +2093,9 @@ function AboutSection() {
       </div>
       <h1 className="app-name">Papr</h1>
       <p className="tagline">{t("settings.about.tagline")}</p>
-      <div className="version">Version 0.1.0 · macOS</div>
+      <div className="version">
+        Version{version && ` ${version}`} · macOS
+      </div>
       <p className="credits">
         {t("settings.about.creditsFonts")}
         <br />

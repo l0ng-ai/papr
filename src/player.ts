@@ -13,6 +13,12 @@ export interface Track {
   src: string;
 }
 
+/** Selectable playback speeds, slowest to fastest. The single source of
+ *  truth for what counts as a valid rate — PlayerBar cycles through these. */
+export const PLAYBACK_RATES = [0.75, 1, 1.25, 1.5, 2] as const;
+
+const DEFAULT_RATE = 1;
+
 interface PlayerState {
   track: Track | null;
   /** Whether playback should be running (PlayerBar drives the element). */
@@ -30,12 +36,21 @@ interface PlayerState {
 }
 
 const RATE_KEY = "player.rate";
-const initialRate = Number(localStorage.getItem(RATE_KEY)) || 1;
+
+// localStorage is webview-writable and may hold a stale or corrupt value
+// (an out-of-range, negative, or non-numeric rate). An invalid playbackRate
+// throws on assignment or plays garbled audio, so only accept a known rate.
+function loadRate(): number {
+  const stored = Number(localStorage.getItem(RATE_KEY));
+  return (PLAYBACK_RATES as readonly number[]).includes(stored)
+    ? stored
+    : DEFAULT_RATE;
+}
 
 export const usePlayer = create<PlayerState>((set, get) => ({
   track: null,
   playing: false,
-  rate: initialRate,
+  rate: loadRate(),
 
   play: (track) => {
     const cur = get().track;
@@ -48,8 +63,12 @@ export const usePlayer = create<PlayerState>((set, get) => ({
   setPlaying: (playing) => set({ playing }),
   toggle: () => set((s) => ({ playing: s.track ? !s.playing : false })),
   setRate: (rate) => {
-    localStorage.setItem(RATE_KEY, String(rate));
-    set({ rate });
+    // Guard the element's playbackRate: ignore anything off the known list.
+    const next = (PLAYBACK_RATES as readonly number[]).includes(rate)
+      ? rate
+      : DEFAULT_RATE;
+    localStorage.setItem(RATE_KEY, String(next));
+    set({ rate: next });
   },
   close: () => set({ track: null, playing: false }),
 }));

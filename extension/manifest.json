@@ -27,7 +27,6 @@
       "run_at": "document_idle"
     }
   ],
-  "permissions": ["tabs"],
   "browser_specific_settings": {
     "gecko": {
       "id": "papr-feed-finder@papr.app",

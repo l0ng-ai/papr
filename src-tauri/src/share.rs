@@ -344,9 +344,19 @@ pub fn build_kindle_message(cfg: &KindleConfig, article: &ShareArticle) -> AppRe
 pub fn send_to_kindle(cfg: &KindleConfig, article: &ShareArticle) -> AppResult<()> {
     let message = build_kindle_message(cfg, article)?;
     let creds = Credentials::new(cfg.smtp_username.clone(), cfg.smtp_password.clone());
-    // STARTTLS on the submission port is the near-universal configuration for
-    // consumer SMTP providers (Gmail, Fastmail, …).
-    let mailer = SmtpTransport::starttls_relay(&cfg.smtp_host)
+    // Pick the TLS mode by port. Port 465 is implicit TLS (SMTPS) — the
+    // connection is wrapped in TLS from the first byte; using STARTTLS against
+    // it fails because the server never speaks plaintext. Every other port
+    // (587 submission, 25, custom) uses STARTTLS: connect in the clear, then
+    // upgrade. Without this split a user who entered 465 — a common consumer
+    // SMTP setting (Gmail, Fastmail, …) — could never send to Kindle, the send
+    // failing with an opaque handshake error.
+    let builder = if cfg.smtp_port == 465 {
+        SmtpTransport::relay(&cfg.smtp_host)
+    } else {
+        SmtpTransport::starttls_relay(&cfg.smtp_host)
+    };
+    let mailer = builder
         .map_err(|e| AppError::other(format!("SMTP connect: {e}")))?
         .port(cfg.smtp_port)
         .credentials(creds)

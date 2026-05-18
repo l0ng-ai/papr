@@ -37,6 +37,9 @@ scraper = "0.21"
 ego-tree = "0.9"  # scraper's DOM tree type — walked directly for text extraction
 url = "2"
 opml = "1"
+# Decode fetched HTML pages in their declared charset (Shift-JIS, GBK,
+# ISO-8859-1, …) instead of assuming UTF-8. Already in the tree via reqwest.
+encoding_rs = "0.8"
 
 # email newsletter ingestion (F5): IMAP polling + RFC822 parsing.
 # `imap` 3.x is pre-release; pinned exactly. `rustls-tls` avoids an OpenSSL

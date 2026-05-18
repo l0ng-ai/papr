@@ -18,6 +18,22 @@ interface Props {
 /** Which kind of source the dialog is currently configuring. */
 type Tab = "feed" | "newsletter";
 
+/** The IMAP port `add_newsletter_source` falls back to (implicit-TLS IMAP). */
+const DEFAULT_IMAP_PORT = 993;
+
+/**
+ * Coerce the free-text port field into a valid TCP port. The backend command
+ * argument is typed `u16`, so a value the user typed that is out of the
+ * 1–65535 range (an extra digit) or non-integer (`993.5`) would otherwise fail
+ * Tauri's argument deserialization with a cryptic, non-localised error before
+ * `add_newsletter_source` even runs. Anything invalid falls back to 993.
+ */
+function parsePort(raw: string): number {
+  const n = Number(raw.trim());
+  if (!Number.isInteger(n) || n < 1 || n > 65535) return DEFAULT_IMAP_PORT;
+  return n;
+}
+
 /** Subscribe to a new source — feed URL or an IMAP newsletter mailbox. */
 export default function AddFeedDialog({ onClose, onToast, initialUrl }: Props) {
   const { t } = useTranslation();
@@ -30,6 +46,18 @@ export default function AddFeedDialog({ onClose, onToast, initialUrl }: Props) {
   const [url, setUrl] = useState(initialUrl ?? "");
   const [folderId, setFolderId] = useState<number | null>(null);
   const folders = useQuery({ queryKey: ["folders"], queryFn: api.listFolders });
+
+  // A `papr://subscribe` deep link can arrive while the dialog is already
+  // open (the user opened it manually first). `useState(initialUrl)` only
+  // reads the prop on mount, so without this the new feed URL would be
+  // silently dropped. Sync prop changes into the input and surface the feed
+  // tab so the prefilled URL is visible.
+  useEffect(() => {
+    if (initialUrl) {
+      setUrl(initialUrl);
+      setTab("feed");
+    }
+  }, [initialUrl]);
 
   // ── discovery (feature F6): debounced search of the curated directory
   // plus a live page scrape when the query looks like a URL. ──
@@ -89,7 +117,7 @@ export default function AddFeedDialog({ onClose, onToast, initialUrl }: Props) {
       api.addNewsletterSource({
         title: nlTitle.trim() || null,
         host: nlHost.trim(),
-        port: Number(nlPort) || 993,
+        port: parsePort(nlPort),
         username: nlUser.trim(),
         password: nlPass,
         folder: nlFolder.trim() || "INBOX",
@@ -190,7 +218,13 @@ export default function AddFeedDialog({ onClose, onToast, initialUrl }: Props) {
                     {t("addFeed.discoverSearching")}
                   </div>
                 )}
-                {!discovery.isLoading && !hasResults && (
+                {/* A failed search must not masquerade as "no feeds found". */}
+                {!discovery.isLoading && discovery.isError && (
+                  <div className="discover-empty">
+                    {t("addFeed.discoverError")}
+                  </div>
+                )}
+                {!discovery.isLoading && !discovery.isError && !hasResults && (
                   <div className="discover-empty">
                     {t("addFeed.discoverNoResults")}
                   </div>

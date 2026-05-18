@@ -125,6 +125,37 @@ export default function Sidebar({
       })
       .catch((e) => onToast(errorText(e)));
 
+  // After deleting a feed / folder / tag, the active sidebar selection may
+  // still point at the entity that no longer exists — leaving the article
+  // list stranded on an empty list under the deleted entity's name. Reset the
+  // view to "All" in that case. Deleting a feed also cascade-deletes its
+  // articles, so a still-open article from that feed must be cleared too
+  // (otherwise the reader is left showing a load error). `guard`'s promise
+  // resolves only on success, so this never fires for a failed delete.
+  const guardDelete = (
+    p: Promise<unknown>,
+    ok: string,
+    kind: "feed" | "folder" | "tag",
+    id: number,
+  ) =>
+    guard(
+      p.then(() => {
+        const st = useUi.getState();
+        if (st.query.kind === kind && st.query.value === id) {
+          st.select({ kind: "all" }, t("smart.all"));
+        } else if (kind === "feed" && st.selectedArticleId != null) {
+          // A different view is active, but the open article may belong to
+          // the feed just unsubscribed — its detail is gone, so close it.
+          const open = qc.getQueryData<{ feedId: number }>([
+            "article",
+            st.selectedArticleId,
+          ]);
+          if (open?.feedId === id) st.openArticle(null);
+        }
+      }),
+      ok,
+    );
+
   const allFeeds = feeds.data ?? [];
   const allFolders = folders.data ?? [];
   const allTags = tags.data ?? [];
@@ -196,9 +227,11 @@ export default function Sidebar({
         label: t("sidebar.unsubscribe"),
         danger: true,
         onClick: () =>
-          guard(
+          guardDelete(
             api.deleteFeed(f.id),
             t("sidebar.toastUnsubscribed", { feed: f.title }),
+            "feed",
+            f.id,
           ),
       },
     ];
@@ -232,7 +265,12 @@ export default function Sidebar({
       label: t("sidebar.deleteFolder"),
       danger: true,
       onClick: () =>
-        guard(api.deleteFolder(folder.id), t("sidebar.toastFolderDeleted")),
+        guardDelete(
+          api.deleteFolder(folder.id),
+          t("sidebar.toastFolderDeleted"),
+          "folder",
+          folder.id,
+        ),
     },
   ];
 
@@ -291,7 +329,12 @@ export default function Sidebar({
       label: t("sidebar.deleteTag"),
       danger: true,
       onClick: () =>
-        guard(api.deleteTag(tag.id), t("sidebar.toastTagDeleted")),
+        guardDelete(
+          api.deleteTag(tag.id),
+          t("sidebar.toastTagDeleted"),
+          "tag",
+          tag.id,
+        ),
     },
     ];
   };
@@ -323,7 +366,12 @@ export default function Sidebar({
     if (from < 0 || to < 0 || from === to) return;
     const next = [...allTags];
     const [moved] = next.splice(from, 1);
-    next.splice(to, 0, moved);
+    // The `drop-above` indicator marks an insertion point *before* the target
+    // tag. After removing the dragged item, every index past `from` shifts
+    // down by one — so a downward drag must insert at `to - 1` to land the
+    // tag above the target, not below it.
+    const insertAt = from < to ? to - 1 : to;
+    next.splice(insertAt, 0, moved);
     persistTagOrder(next);
   };
 
@@ -430,7 +478,11 @@ export default function Sidebar({
 
         <div className="sb-section-title">
           <span>{t("sidebar.feeds")}</span>
-          <button onClick={onAddFeed} title={t("sidebar.addFeed")}>
+          <button
+            onClick={onAddFeed}
+            title={t("sidebar.addFeed")}
+            aria-label={t("sidebar.addFeed")}
+          >
             <Icon name="plus" size={12} />
           </button>
         </div>
@@ -448,8 +500,13 @@ export default function Sidebar({
           </div>
         )}
 
-        {/* ungrouped feeds — also the drop zone for "move out of folder" */}
-        {ungrouped.length > 0 && (
+        {/* Ungrouped feeds — also the drop zone for "move out of folder".
+            Rendered whenever there are ungrouped feeds, OR while a feed drag
+            is in progress: without the latter, a drag-to-ungroup would have
+            no target to land on once every feed lives inside a folder. */}
+        {(ungrouped.length > 0 ||
+          (dragId != null &&
+            allFeeds.find((f) => f.id === dragId)?.folderId != null)) && (
           <div
             onDragOver={(e) => {
               if (dragId != null) {
@@ -464,13 +521,21 @@ export default function Sidebar({
                 : undefined
             }
           >
-            {ungrouped.map(feedRow)}
+            {ungrouped.length > 0 ? (
+              ungrouped.map(feedRow)
+            ) : (
+              <div className="sb-drop-hint">{t("sidebar.dropUngroup")}</div>
+            )}
           </div>
         )}
 
         {allFolders.map((folder) => {
           const inFolder = allFeeds.filter((f) => f.folderId === folder.id);
           const isCollapsed = collapsed[folder.id];
+          // Aggregate unread for the folder. Shown only while collapsed —
+          // expanded, the per-feed badges already carry the same signal, and a
+          // header total would just duplicate them.
+          const folderUnread = inFolder.reduce((n, f) => n + f.unreadCount, 0);
           return (
             <div
               key={folder.id}
@@ -504,7 +569,10 @@ export default function Sidebar({
                 }}
               >
                 <Icon name="chevron-down" size={11} />
-                <span>{folder.name}</span>
+                <span className="sb-folder-name">{folder.name}</span>
+                {showCounts && isCollapsed && folderUnread > 0 && (
+                  <span className="sb-count">{folderUnread}</span>
+                )}
               </div>
               {!isCollapsed && inFolder.map(feedRow)}
             </div>
@@ -513,7 +581,11 @@ export default function Sidebar({
 
         <div className="sb-section-title">
           <span>{t("sidebar.tags")}</span>
-          <button onClick={createTag} title={t("sidebar.newTagTitle")}>
+          <button
+            onClick={createTag}
+            title={t("sidebar.newTagTitle")}
+            aria-label={t("sidebar.newTagTitle")}
+          >
             <Icon name="plus" size={12} />
           </button>
         </div>
@@ -579,11 +651,16 @@ export default function Sidebar({
       </div>
 
       <div className="sb-footer">
-        <button title={t("sidebar.addFeedShortcut")} onClick={onAddFeed}>
+        <button
+          title={t("sidebar.addFeedShortcut")}
+          aria-label={t("sidebar.addFeedShortcut")}
+          onClick={onAddFeed}
+        >
           <Icon name="plus" size={14} />
         </button>
         <button
           title={t("sidebar.refreshAll")}
+          aria-label={t("sidebar.refreshAll")}
           onClick={onRefresh}
           disabled={refreshing}
           className={refreshing ? "spinning" : ""}
@@ -592,12 +669,17 @@ export default function Sidebar({
         </button>
         <button
           title={t("sidebar.opmlImportExport")}
+          aria-label={t("sidebar.opmlImportExport")}
           onClick={() => onOpenSettings("subscriptions")}
         >
           <Icon name="open" size={14} />
         </button>
         <div className="spacer" />
-        <button title={t("sidebar.settings")} onClick={() => onOpenSettings()}>
+        <button
+          title={t("sidebar.settings")}
+          aria-label={t("sidebar.settings")}
+          onClick={() => onOpenSettings()}
+        >
           <Icon name="settings" size={14} />
         </button>
       </div>

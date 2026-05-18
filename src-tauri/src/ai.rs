@@ -18,6 +18,15 @@ const AI_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 /// length and cost. Summaries / Q&A / digests all fit comfortably within it.
 const MAX_TOKENS: u32 = 1024;
 
+/// Hard cap on the SSE line buffer. A well-behaved provider delimits every
+/// event with a newline, so the buffer never holds more than a single frame.
+/// A misbehaving or non-SSE endpoint (the base URL can point at any
+/// OpenAI-compatible server, including a local one) could instead stream bytes
+/// with no newline at all — without this cap that response would accumulate in
+/// memory unbounded. 8 MiB is far larger than any genuine SSE frame while
+/// still stopping a runaway stream, mirroring `fetch::MAX_BODY_BYTES`.
+const MAX_SSE_BUFFER: usize = 8 * 1024 * 1024;
+
 /// Token-level events streamed to the frontend over an `ipc::Channel`.
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase", tag = "type", content = "data")]
@@ -90,15 +99,25 @@ impl Provider {
     }
 }
 
+/// The result of a streamed chat completion.
+pub struct ChatOutcome {
+    /// The accumulated response text.
+    pub text: String,
+    /// Whether the stream ran to completion. `false` when the frontend dropped
+    /// the channel mid-stream (the user closed the AI panel) — the text is then
+    /// a truncated fragment that callers must not persist as a finished result.
+    pub completed: bool,
+}
+
 /// Stream a single-turn chat completion, forwarding each token to `channel`.
-/// Returns the fully accumulated response text.
+/// Returns the accumulated response text and whether the stream completed.
 pub async fn stream_chat(
     client: &Client,
     cfg: &AiConfig,
     system: &str,
     user: &str,
     channel: &Channel<AiEvent>,
-) -> AppResult<String> {
+) -> AppResult<ChatOutcome> {
     let result = match cfg.provider {
         Provider::Anthropic => stream_anthropic(client, cfg, system, user, channel).await,
         Provider::OpenAi => stream_openai(client, cfg, system, user, channel).await,
@@ -120,7 +139,7 @@ async fn stream_anthropic(
     system: &str,
     user: &str,
     channel: &Channel<AiEvent>,
-) -> AppResult<String> {
+) -> AppResult<ChatOutcome> {
     let body = json!({
         "model": cfg.model,
         "max_tokens": MAX_TOKENS,
@@ -146,7 +165,7 @@ async fn stream_openai(
     system: &str,
     user: &str,
     channel: &Channel<AiEvent>,
-) -> AppResult<String> {
+) -> AppResult<ChatOutcome> {
     let body = json!({
         "model": cfg.model,
         "max_tokens": MAX_TOKENS,
@@ -171,7 +190,7 @@ async fn consume_sse(
     mut resp: reqwest::Response,
     channel: &Channel<AiEvent>,
     provider: Provider,
-) -> AppResult<String> {
+) -> AppResult<ChatOutcome> {
     if !resp.status().is_success() {
         let status = resp.status();
         let detail = resp.text().await.unwrap_or_default();
@@ -183,6 +202,14 @@ async fn consume_sse(
 
     while let Some(chunk) = resp.chunk().await? {
         buf.extend_from_slice(&chunk);
+        // Guard against a provider that never delimits its frames: a buffer
+        // this large is not a genuine SSE event, so fail instead of growing
+        // memory without bound.
+        if buf.len() > MAX_SSE_BUFFER {
+            return Err(AppError::other(
+                "AI stream error: response is not server-sent events",
+            ));
+        }
         while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
             let raw: Vec<u8> = buf.drain(..=pos).collect();
             let line = String::from_utf8_lossy(&raw);
@@ -206,22 +233,29 @@ async fn consume_sse(
                 full.push_str(&text);
                 // A send failure means the frontend dropped the channel (the
                 // user closed the AI panel). Stop streaming instead of
-                // downloading the rest of the response into a void.
+                // downloading the rest of the response into a void — and flag
+                // the result as interrupted so the caller does not persist a
+                // truncated fragment as a finished summary.
                 if channel.send(AiEvent::Delta(text)).is_err() {
                     log::debug!("AI stream channel closed; aborting early");
-                    return Ok(full);
+                    return Ok(ChatOutcome { text: full, completed: false });
                 }
             }
         }
     }
-    Ok(full)
+    Ok(ChatOutcome { text: full, completed: true })
 }
 
 /// Detect a provider error object carried inside an SSE data frame.
+///
+/// For the OpenAI-compatible path the error must be a non-null object: many
+/// compatible servers (OpenRouter and others) include a literal `"error": null`
+/// alongside `choices` in their *successful* chunks. Treating that as a fault
+/// would abort an otherwise-fine generation with a bogus "stream error".
 fn extract_error(v: &Value, provider: Provider) -> Option<String> {
     let err = match provider {
         Provider::Anthropic => (v["type"] == "error").then(|| &v["error"]),
-        Provider::OpenAi => v.get("error"),
+        Provider::OpenAi => v.get("error").filter(|e| e.is_object()),
     }?;
     Some(
         err["message"]
@@ -244,5 +278,72 @@ fn extract_delta(v: &Value, provider: Provider) -> Option<String> {
         Provider::OpenAi => v["choices"][0]["delta"]["content"]
             .as_str()
             .map(String::from),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{extract_delta, extract_error, Provider};
+    use serde_json::json;
+
+    #[test]
+    fn openai_null_error_field_is_not_an_error() {
+        // OpenRouter and other OpenAI-compatible servers ship `"error": null`
+        // inside ordinary successful chunks — it must not abort the stream.
+        let chunk = json!({
+            "choices": [{ "delta": { "content": "hello" } }],
+            "error": null,
+        });
+        assert_eq!(extract_error(&chunk, Provider::OpenAi), None);
+        assert_eq!(
+            extract_delta(&chunk, Provider::OpenAi).as_deref(),
+            Some("hello")
+        );
+    }
+
+    #[test]
+    fn openai_real_error_object_is_surfaced() {
+        let chunk = json!({ "error": { "message": "rate limit exceeded" } });
+        assert_eq!(
+            extract_error(&chunk, Provider::OpenAi).as_deref(),
+            Some("rate limit exceeded")
+        );
+    }
+
+    #[test]
+    fn openai_error_object_without_message_falls_back() {
+        let chunk = json!({ "error": { "code": 500 } });
+        assert_eq!(
+            extract_error(&chunk, Provider::OpenAi).as_deref(),
+            Some("stream error")
+        );
+    }
+
+    #[test]
+    fn openai_plain_delta_chunk_has_no_error() {
+        let chunk = json!({ "choices": [{ "delta": { "content": "x" } }] });
+        assert_eq!(extract_error(&chunk, Provider::OpenAi), None);
+    }
+
+    #[test]
+    fn anthropic_error_event_is_surfaced() {
+        let chunk = json!({ "type": "error", "error": { "message": "overloaded" } });
+        assert_eq!(
+            extract_error(&chunk, Provider::Anthropic).as_deref(),
+            Some("overloaded")
+        );
+    }
+
+    #[test]
+    fn anthropic_content_delta_is_not_an_error() {
+        let chunk = json!({
+            "type": "content_block_delta",
+            "delta": { "type": "text_delta", "text": "world" },
+        });
+        assert_eq!(extract_error(&chunk, Provider::Anthropic), None);
+        assert_eq!(
+            extract_delta(&chunk, Provider::Anthropic).as_deref(),
+            Some("world")
+        );
     }
 }

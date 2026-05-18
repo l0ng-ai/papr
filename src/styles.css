@@ -251,7 +251,8 @@ button { font-family: inherit; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.sb-item .sb-count {
+.sb-item .sb-count,
+.sb-folder .sb-count {
   font-size: 11px;
   color: var(--muted);
   font-variant-numeric: tabular-nums;
@@ -273,6 +274,12 @@ button { font-family: inherit; }
 }
 .sb-folder svg { transition: transform .2s; }
 .sb-folder.collapsed svg { transform: rotate(-90deg); }
+.sb-folder .sb-folder-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .sb-feed-avatar {
   width: 18px; height: 18px;
@@ -317,6 +324,18 @@ button { font-family: inherit; }
 
 /* Drag-sort */
 .sb-item.dragging { opacity: 0.4; }
+/* Placeholder drop target shown during a feed drag when no ungrouped feed
+   exists — gives "drag out of folder" somewhere to land. */
+.sb-drop-hint {
+  margin: 2px 8px;
+  padding: 10px 12px;
+  font-size: 11.5px;
+  color: var(--muted);
+  text-align: center;
+  border: 1px dashed var(--hair);
+  border-radius: 8px;
+  pointer-events: none;
+}
 .sb-item.drop-above::after {
   content: '';
   position: absolute;
@@ -878,6 +897,12 @@ button { font-family: inherit; }
   padding: 5px;
   animation: cp-pop .12s ease;
   font-size: 13px;
+  /* A menu with many entries (e.g. a feed's "Move to folder…" list in a
+     short window) can be taller than the viewport. Without a cap, the
+     position clamp pins the top at 8px and the bottom rows spill past the
+     window edge unreachable — so cap the height and let the menu scroll. */
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
 }
 .ctx-item {
   display: flex;

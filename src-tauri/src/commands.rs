@@ -75,8 +75,8 @@ pub async fn add_feed(
         match sources::normalize_source(&url) {
             Normalized::Feed { url, source_type } => (url, Some(source_type)),
             Normalized::NeedsYoutubeResolution { page_url } => {
-                let (page_bytes, _, _) = fetch::get(&client, &page_url).await?;
-                let html = String::from_utf8_lossy(&page_bytes);
+                let (page_bytes, ct, _) = fetch::get(&client, &page_url).await?;
+                let html = fetch::decode_html(&page_bytes, ct.as_deref());
                 let channel_id = sources::extract_channel_id(&html)
                     .ok_or_else(|| AppError::code("youtubeChannelNotFound"))?;
                 (
@@ -88,13 +88,13 @@ pub async fn add_feed(
         };
 
     // Step 1: fetch whatever the user gave us (or the normalized feed URL).
-    let (bytes, _ct, final_url) = fetch::get(&client, &effective_url).await?;
+    let (bytes, ct, final_url) = fetch::get(&client, &effective_url).await?;
 
     // Step 2: if it is a feed use it directly, otherwise discover one.
     let (feed_url, feed_bytes) = if parse::looks_like_feed(&bytes) {
         (final_url, bytes)
     } else {
-        let html = String::from_utf8_lossy(&bytes);
+        let html = fetch::decode_html(&bytes, ct.as_deref());
         let candidates = parse::discover_feeds(&html, &final_url);
         let candidate = candidates
             .into_iter()
@@ -151,12 +151,24 @@ pub async fn add_feed(
         .map(|v| v == "1")
         .unwrap_or(false);
     let rules = db::active_rules(&conn).unwrap_or_default();
-    let mut unread = 0i64;
     for article in &parsed.articles {
-        if db::upsert_article(&conn, feed_id, article, dedup, &rules)? {
-            unread += 1;
-        }
+        db::upsert_article(&conn, feed_id, article, dedup, &rules)?;
     }
+    // Record that the feed was just fetched. `add_feed` fetches the document
+    // here in step 1/2, so without this `last_fetched_at` would stay NULL —
+    // the feed would wrongly read as "never refreshed" until the next
+    // scheduler tick, and the tick would also re-fetch it in full a moment
+    // after this add. (The conditional-GET revalidators are not captured —
+    // `fetch::get` does not surface ETag / Last-Modified — so the next poll
+    // does one full GET before it can store them; that is a single missed
+    // optimisation, not incorrect behaviour, and many feeds send no ETag at
+    // all.)
+    let _ = db::touch_feed(&conn, feed_id);
+    let last_fetched_at = db::feed_last_fetched(&conn, feed_id).ok().flatten();
+    // Count actual unread rows rather than tallying insertions: keeps the
+    // returned `unread_count` aligned with the sidebar's `list_feeds` count
+    // regardless of how filter rules pre-set article state.
+    let unread = db::count_feed_unread(&conn, feed_id)?;
     drop(conn);
 
     Ok(Feed {
@@ -168,7 +180,7 @@ pub async fn add_feed(
         favicon_url: favicon,
         folder_id,
         source_type: source_type.as_str().to_string(),
-        last_fetched_at: None,
+        last_fetched_at,
         fetch_error: None,
         unread_count: unread,
     })
@@ -193,7 +205,7 @@ pub async fn search_feed_directory(
     if discovery::looks_like_url(&query) {
         let target = discovery::normalize_query_url(&query);
         let client = state.http();
-        if let Ok((bytes, _ct, final_url)) = fetch::get(&client, &target).await {
+        if let Ok((bytes, ct, final_url)) = fetch::get(&client, &target).await {
             if parse::looks_like_feed(&bytes) {
                 // The pasted URL is itself a feed — surface it directly.
                 let title = parse::parse_feed(&bytes, &final_url)
@@ -201,7 +213,7 @@ pub async fn search_feed_directory(
                     .and_then(|p| p.title);
                 results.push(DiscoveryResult::from_scrape(final_url, title));
             } else {
-                let html = String::from_utf8_lossy(&bytes);
+                let html = fetch::decode_html(&bytes, ct.as_deref());
                 for feed_url in parse::discover_feeds(&html, &final_url) {
                     results.push(DiscoveryResult::from_scrape(feed_url, None));
                 }
@@ -359,8 +371,10 @@ pub async fn extract_fulltext(state: State<'_, AppState>, article_id: i64) -> Ap
     };
 
     let http = state.http();
-    let (bytes, _ct, final_url) = fetch::get(&http, &url).await?;
-    let html = String::from_utf8_lossy(&bytes).into_owned();
+    let (bytes, ct, final_url) = fetch::get(&http, &url).await?;
+    // Decode in the page's declared charset — a non-UTF-8 page (Shift-JIS,
+    // GBK, ISO-8859-1, …) would otherwise become mojibake before Readability.
+    let html = fetch::decode_html(&bytes, ct.as_deref());
 
     // Readability is not Send — run it on the blocking pool.
     let extracted =
@@ -483,6 +497,14 @@ pub async fn ai_summarize(
         let (title, body) = db::article_text(&conn, article_id)?;
         (title, body, load_ai_config(&conn)?, response_language(&conn))
     };
+    // A title-only item (link-aggregator posts, some podcast/video feeds carry
+    // no body text) gives the model nothing to summarize. Without this guard it
+    // would invent a "summary" from the bare title alone — and that fabricated
+    // text would then be persisted to `ai_summary`. Bail out the same way
+    // `ai_ask` / `ai_digest` do when their input is empty.
+    if body.trim().is_empty() {
+        return Err(AppError::code("noArticleBody"));
+    }
     let system = format!(
         "You are a sharp news editor. Summarize the article in 3-4 \
          clear, factual sentences. Output only the summary prose.{lang}"
@@ -490,10 +512,14 @@ pub async fn ai_summarize(
     let user = format!("Title: {title}\n\n{}", truncate(&body, 8000));
 
     let http = state.http();
-    let summary = ai::stream_chat(&http, &cfg, &system, &user, &on_token).await?;
-    if !summary.trim().is_empty() {
+    let outcome = ai::stream_chat(&http, &cfg, &system, &user, &on_token).await?;
+    // Persist only a summary that streamed to completion. If the user closed
+    // the AI panel mid-stream the channel was dropped and `outcome.text` holds
+    // just a truncated fragment — caching that would make the next open show a
+    // broken half-summary with no way to regenerate it.
+    if outcome.completed && !outcome.text.trim().is_empty() {
         let conn = state.db.lock().await;
-        db::set_ai_summary(&conn, article_id, summary.trim())?;
+        db::set_ai_summary(&conn, article_id, outcome.text.trim())?;
     }
     Ok(())
 }
@@ -509,15 +535,17 @@ pub async fn ai_ask(
     let (cfg, context, lang) = {
         let conn = state.read().await;
         let cfg = load_ai_config(&conn)?;
-        let hits =
-            db::list_articles(&conn, &ArticleQuery::All, false, Some(&question), false, 6, 0)?;
+        // RAG retrieval is recall-oriented: match articles that share *any* of
+        // the question's keywords. `list_articles` AND-joins every search word,
+        // which for a natural-language question matches nothing.
+        let hits = db::search_articles_for_rag(&conn, &question, 6)?;
         let mut context = String::new();
-        for hit in hits {
-            let (title, body) = db::article_text(&conn, hit.id)?;
+        for (id, _title, feed_title) in hits {
+            let (title, body) = db::article_text(&conn, id)?;
             context.push_str(&format!(
                 "## {} — {}\n{}\n\n",
                 title,
-                hit.feed_title,
+                feed_title,
                 truncate(&body, 1200)
             ));
         }
@@ -701,6 +729,14 @@ pub async fn freshrss_sync(app: AppHandle) -> AppResult<usize> {
 pub async fn refresh_tray(app: AppHandle) -> AppResult<()> {
     crate::tray::refresh(&app).await;
     Ok(())
+}
+
+/// Drain a `papr://subscribe` URL that was delivered before the webview could
+/// receive the `deep-link-subscribe` event (a cold-start launch). The frontend
+/// calls this once on mount; returns `None` when there is nothing pending.
+#[tauri::command]
+pub async fn take_pending_deep_link(state: State<'_, AppState>) -> AppResult<Option<String>> {
+    Ok(state.take_pending_deep_link())
 }
 
 // ─────────────────────────── tags ───────────────────────────
@@ -904,26 +940,31 @@ pub async fn add_newsletter_source(
     }
 
     // Verify the credentials by actually connecting. The `imap` crate is
-    // blocking, so the connection runs on the blocking pool.
+    // blocking, so the connection runs on the blocking pool — and it has no
+    // per-operation timeout, so a server that completes the TCP/TLS handshake
+    // but then stalls mid-command would block this command forever (the Add
+    // dialog spinner never resolves, the blocking worker thread is leaked).
+    // Bound the whole probe with the same wall-clock cap the scheduler's
+    // background poll uses, so a wedged mailbox degrades to a clean error.
     let probe_cfg = cfg.clone();
-    let messages =
-        tokio::task::spawn_blocking(move || newsletter::fetch_recent(&probe_cfg, 30))
-            .await
-            .map_err(|e| AppError::other(format!("newsletter poll task: {e}")))??;
+    let messages = match tokio::time::timeout(
+        std::time::Duration::from_secs(scheduler::NEWSLETTER_POLL_TIMEOUT_SECS),
+        tokio::task::spawn_blocking(move || newsletter::fetch_recent(&probe_cfg, 30)),
+    )
+    .await
+    {
+        Ok(joined) => joined
+            .map_err(|e| AppError::other(format!("newsletter poll task: {e}")))??,
+        Err(_) => return Err(AppError::code("newsletterPollTimeout")),
+    };
 
     // Persist the source, then ingest the messages just fetched.
     let conn = state.db.lock().await;
-    let feed_id = db::insert_newsletter_source(
-        &conn,
-        &feed_url,
-        &title,
-        &cfg.host,
-        cfg.port,
-        &cfg.username,
-        &cfg.password,
-        &cfg.folder,
-    )?;
+    let feed_id = db::insert_newsletter_source(&conn, &feed_url, &title, &cfg)?;
     let rules = db::active_rules(&conn).unwrap_or_default();
+    // `upsert_article` returns `true` only for genuinely new *unread* rows, so
+    // articles a `read` rule pre-marked read are correctly excluded from the
+    // returned `unread_count` (matching the sidebar's `list_feeds` count).
     let mut unread = 0i64;
     for raw in &messages {
         if let Some(parsed) = newsletter::email_to_article(raw) {
@@ -932,6 +973,14 @@ pub async fn add_newsletter_source(
             }
         }
     }
+    // Record that the mailbox was just polled. The IMAP fetch above is a
+    // genuine, successful refresh of this source — without this the feed's
+    // `last_fetched_at` stays NULL and the sidebar reads it as "never
+    // refreshed" until the next scheduler tick (up to the refresh interval
+    // away). Mirrors `touch_feed` in `scheduler::poll_newsletters` for the
+    // background poll, and the same fix iteration 189 applied to `add_feed`.
+    let _ = db::touch_feed(&conn, feed_id);
+    let last_fetched_at = db::feed_last_fetched(&conn, feed_id).ok().flatten();
     drop(conn);
 
     Ok(Feed {
@@ -943,7 +992,7 @@ pub async fn add_newsletter_source(
         favicon_url: None,
         folder_id: None,
         source_type: SourceType::Newsletter.as_str().to_string(),
-        last_fetched_at: None,
+        last_fetched_at,
         fetch_error: None,
         unread_count: unread,
     })
@@ -1000,13 +1049,15 @@ pub async fn create_highlight(
     let conn = state.db.lock().await;
     db::insert_highlight(
         &conn,
-        article_id,
-        &quote,
-        &prefix,
-        &suffix,
-        text_offset,
-        &color,
-        &note,
+        &db::NewHighlight {
+            article_id,
+            quote: &quote,
+            prefix: &prefix,
+            suffix: &suffix,
+            text_offset,
+            color: &color,
+            note: &note,
+        },
     )
 }
 
@@ -1086,6 +1137,44 @@ pub async fn export_highlights_markdown(
     Ok(export::build_markdown(&article, &highlights))
 }
 
+/// Derive a filesystem-safe `.md` note name from an article title.
+///
+/// Three hazards are handled, since the title is attacker-influenced feed
+/// content written straight to the user's vault folder:
+///   * path separators / reserved characters are mapped to `-`;
+///   * a leading `.` is stripped — a title of `.` or `..` would otherwise
+///     produce a hidden file (`.md`) or an odd one (`..md`);
+///   * the stem is truncated to fit a 255-*byte* filename component (the
+///     POSIX/HFS+/APFS limit). A long title — easily reached with CJK text,
+///     where each character is 3 bytes — would otherwise make `fs::write`
+///     fail with a raw `ENAMETOOLONG` instead of just saving.
+fn obsidian_note_filename(title: &str, article_id: i64) -> String {
+    let safe: String = title
+        .chars()
+        .map(|c| if "/\\:*?\"<>|".contains(c) { '-' } else { c })
+        .collect();
+    // Trim whitespace and leading dots so the stem can't be empty or hidden.
+    let safe = safe.trim().trim_start_matches('.').trim();
+    if safe.is_empty() {
+        return format!("highlights-{article_id}.md");
+    }
+    // 255 bytes is the per-component cap; leave room for the ".md" suffix.
+    const MAX_STEM_BYTES: usize = 255 - 3;
+    let mut stem = String::with_capacity(safe.len().min(MAX_STEM_BYTES));
+    for c in safe.chars() {
+        if stem.len() + c.len_utf8() > MAX_STEM_BYTES {
+            break;
+        }
+        stem.push(c);
+    }
+    let stem = stem.trim_end();
+    if stem.is_empty() {
+        format!("highlights-{article_id}.md")
+    } else {
+        format!("{stem}.md")
+    }
+}
+
 /// Write an article's highlights as a Markdown file into the user-configured
 /// Obsidian vault folder (the `obsidian_vault` setting). Returns the path
 /// written. Uses `std::fs` directly — no file-dialog plugin is bundled.
@@ -1107,16 +1196,7 @@ pub async fn export_highlights_to_obsidian(
         let conn = state.read().await;
         db::get_article(&conn, article_id)?.title
     };
-    let safe: String = title
-        .chars()
-        .map(|c| if "/\\:*?\"<>|".contains(c) { '-' } else { c })
-        .collect();
-    let safe = safe.trim();
-    let name = if safe.is_empty() {
-        format!("highlights-{article_id}.md")
-    } else {
-        format!("{safe}.md")
-    };
+    let name = obsidian_note_filename(&title, article_id);
     let dir = PathBuf::from(vault.trim());
     fs::create_dir_all(&dir)
         .map_err(|e| AppError::other(format!("create vault folder: {e}")))?;
@@ -1383,7 +1463,59 @@ pub async fn send_article(
 
 #[cfg(test)]
 mod tests {
-    use super::html_to_text;
+    use super::{html_to_text, obsidian_note_filename};
+
+    #[test]
+    fn obsidian_filename_replaces_reserved_chars() {
+        assert_eq!(
+            obsidian_note_filename("a/b:c*d?", 1),
+            "a-b-c-d-.md"
+        );
+    }
+
+    #[test]
+    fn obsidian_filename_falls_back_for_empty_or_dotted_title() {
+        // Whitespace-only, and titles that would yield a hidden / odd file.
+        assert_eq!(obsidian_note_filename("   ", 7), "highlights-7.md");
+        assert_eq!(obsidian_note_filename(".", 7), "highlights-7.md");
+        assert_eq!(obsidian_note_filename("..", 7), "highlights-7.md");
+    }
+
+    #[test]
+    fn obsidian_filename_strips_leading_dot() {
+        // A leading dot would make the note a hidden file in the vault.
+        assert_eq!(obsidian_note_filename(".hidden", 1), "hidden.md");
+    }
+
+    #[test]
+    fn obsidian_filename_truncates_to_byte_limit() {
+        // A title longer than the 255-byte component cap must not produce a
+        // filename that fails `fs::write` with ENAMETOOLONG.
+        let long = "a".repeat(400);
+        let name = obsidian_note_filename(&long, 1);
+        assert!(name.len() <= 255, "filename {} bytes", name.len());
+        assert!(name.ends_with(".md"));
+    }
+
+    #[test]
+    fn obsidian_filename_truncates_on_char_boundary() {
+        // CJL characters are 3 bytes each — truncation must not split one.
+        let long = "界".repeat(200); // 600 bytes
+        let name = obsidian_note_filename(&long, 1);
+        assert!(name.len() <= 255);
+        assert!(name.ends_with(".md"));
+        // The stem (sans ".md") must still be valid UTF-8 whole characters.
+        let stem = name.strip_suffix(".md").unwrap();
+        assert!(stem.chars().all(|c| c == '界'));
+    }
+
+    #[test]
+    fn obsidian_filename_keeps_ordinary_title() {
+        assert_eq!(
+            obsidian_note_filename("My Article Title", 1),
+            "My Article Title.md"
+        );
+    }
 
     #[test]
     fn html_to_text_strips_tags() {

@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import * as api from "../api";
@@ -27,15 +27,69 @@ function youtubeId(url: string | null): string | null {
   return m ? m[1] : null;
 }
 
-/** Open links inside injected HTML (article body, AI summary) in the external
- *  browser — a bare <a> click would navigate the Tauri webview away from the
- *  app entirely, with no way back. */
-function interceptLinkClick(e: React.MouseEvent) {
-  const link = (e.target as HTMLElement).closest("a");
-  if (link?.href) {
-    e.preventDefault();
-    openUrl(link.href).catch(() => {});
+/** Decode a URL fragment, tolerating a malformed `%` escape. A real-world
+ *  anchor can carry a literal percent (`#100%-growth`, `#section-50%`), which
+ *  is not a valid escape sequence — `decodeURIComponent` throws `URIError` on
+ *  it. The bare value still works as an `id` lookup, so fall back to it rather
+ *  than letting the throw escape the click handler and kill the link. */
+function decodeFragment(frag: string): string {
+  try {
+    return decodeURIComponent(frag);
+  } catch {
+    return frag;
   }
+}
+
+/** Pull the in-page fragment out of a link click, or null if it isn't one.
+ *
+ *  Two shapes count as in-page: a bare `#frag` href, and — because the body
+ *  HTML is sanitized with the article's URL as the rewrite base — an absolute
+ *  `https://site/article#frag` that resolves to the very article being read.
+ *  `sourceUrl` is the article's own URL, used to recognise that second case.
+ */
+function inPageFragment(raw: string, sourceUrl: string | null): string | null {
+  if (raw[0] === "#") return decodeFragment(raw.slice(1));
+  if (!sourceUrl) return null;
+  try {
+    const u = new URL(raw);
+    const b = new URL(sourceUrl);
+    if (u.hash && u.origin === b.origin && u.pathname === b.pathname) {
+      return decodeFragment(u.hash.slice(1));
+    }
+  } catch {
+    /* not a parseable absolute URL — treat as external */
+  }
+  return null;
+}
+
+/** Build a click handler for links inside injected HTML (article body, AI
+ *  summary). In-page anchor links (footnotes, tables of contents) scroll to
+ *  their target within the reader; everything else opens in the external
+ *  browser — a bare <a> click would otherwise navigate the Tauri webview away
+ *  from the app entirely (or, for a fragment link, to a bogus `app://…#frag`). */
+function makeLinkClickHandler(sourceUrl: string | null) {
+  return (e: React.MouseEvent) => {
+    const link = (e.target as HTMLElement).closest("a");
+    if (!link) return;
+    const raw = link.getAttribute("href");
+    if (!raw) return;
+    e.preventDefault();
+
+    const hash = inPageFragment(raw, sourceUrl);
+    if (hash != null) {
+      if (hash === "") return; // bare `#` — no element to reach
+      const root = link.closest(".article-body, .ai-prose");
+      // getElementById can't be scoped to the body, so match by id or the
+      // legacy `<a name>` form within the rendered content.
+      const target = root?.querySelector(
+        `[id="${CSS.escape(hash)}"], a[name="${CSS.escape(hash)}"]`,
+      );
+      target?.scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
+
+    openUrl(link.href).catch(() => {});
+  };
 }
 
 export default function Reader({ onToast }: Props) {
@@ -124,12 +178,21 @@ export default function Reader({ onToast }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [a?.id]);
 
+  // The extracted article id travels as the mutation variable, not via the
+  // `a` closure: extraction is async and the user can switch articles before
+  // it resolves. Keying onSuccess off the live `a` would invalidate the wrong
+  // article (the extracted text never shows on return) and toast "full text
+  // extracted" while reading an unrelated, un-extracted article.
   const extract = useMutation({
-    mutationFn: () => api.extractFulltext(a!.id),
-    onSuccess: () => {
-      setShowExtracted(true);
-      qc.invalidateQueries({ queryKey: ["article", a!.id] });
-      onToast(t("reader.fullTextExtracted"));
+    mutationFn: (articleId: number) => api.extractFulltext(articleId),
+    onSuccess: (_data, articleId) => {
+      qc.invalidateQueries({ queryKey: ["article", articleId] });
+      // Only the article still on screen should flip into the extracted view
+      // and surface the toast.
+      if (useUi.getState().selectedArticleId === articleId) {
+        setShowExtracted(true);
+        onToast(t("reader.fullTextExtracted"));
+      }
     },
     onError: (e) => onToast(errorText(e)),
   });
@@ -146,9 +209,24 @@ export default function Reader({ onToast }: Props) {
     const plain = (a.contentHtml || "").replace(/<[^>]+>/g, "").trim();
     if (plain.length >= 800) return; // feed already delivers the full text
     autoExtractedRef.current = a.id;
-    extract.mutate();
+    extract.mutate(a.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [a?.id, a?.extractedHtml, autoExtract]);
+
+  // Mark the current article read once its foot is reached. Also fires for an
+  // article short enough to need no scrolling at all (`scrollHeight` already
+  // within `clientHeight`) — that case produces no `scroll` event, so without
+  // a render-time check a fully-visible short article would never be marked
+  // read despite "mark read on scroll" being on.
+  const markReadIfAtFoot = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el || !markReadOnScroll || !a || a.isRead) return;
+    if (scrollMarkedRef.current === a.id) return;
+    if (el.scrollHeight - el.scrollTop - el.clientHeight < 120) {
+      scrollMarkedRef.current = a.id;
+      actions.setRead(a.id, true);
+    }
+  }, [markReadOnScroll, a, actions]);
 
   const onScroll = () => {
     const el = scrollRef.current;
@@ -156,18 +234,19 @@ export default function Reader({ onToast }: Props) {
     setScrolled(el.scrollTop > 8);
     const max = el.scrollHeight - el.clientHeight;
     setProgress(max > 0 ? Math.min(1, el.scrollTop / max) : 0);
-    // Mark read once the reader is scrolled to the foot of the article.
-    if (
-      markReadOnScroll &&
-      a &&
-      !a.isRead &&
-      scrollMarkedRef.current !== a.id &&
-      el.scrollHeight - el.scrollTop - el.clientHeight < 120
-    ) {
-      scrollMarkedRef.current = a.id;
-      actions.setRead(a.id, true);
-    }
+    markReadIfAtFoot();
   };
+
+  // A short article that fits the viewport never fires `scroll`, so check the
+  // foot condition once the body has laid out (article switch, extract toggle,
+  // extraction finishing). The check is deferred briefly so body images have a
+  // chance to load — measuring `scrollHeight` before they do could read a
+  // too-small height and mark a genuinely long article read prematurely. The
+  // `scrollMarkedRef` guard keeps it idempotent.
+  useEffect(() => {
+    const timer = window.setTimeout(markReadIfAtFoot, 400);
+    return () => window.clearTimeout(timer);
+  }, [markReadIfAtFoot, showExtracted, a?.extractedHtml, a?.contentHtml]);
 
 
   const copyLink = () => {
@@ -264,10 +343,13 @@ export default function Reader({ onToast }: Props) {
   const body =
     (showExtracted && a.extractedHtml ? a.extractedHtml : a.contentHtml) || "";
   const ytId = a.sourceType === "youtube" ? youtubeId(a.url) : null;
-  // Changes whenever the rendered body markup changes (article switch,
-  // extract toggle, extraction finishing) — HighlightLayer re-applies its
-  // <mark> overlay each time this differs.
-  const bodyVersion = body.length + (showExtracted ? 1 : 0);
+  // Identifies the rendered body markup so HighlightLayer can re-apply its
+  // <mark> overlay whenever the Reader swaps the body (extract toggle,
+  // extraction finishing). The body string itself is used rather than a
+  // numeric proxy like its length: two distinct bodies (e.g. the feed
+  // content vs. the extracted full text) can share a length, and a length
+  // collision would leave the new DOM with no highlights re-applied.
+  const bodyVersion = body;
 
   return (
     <div className="reader" role="main">
@@ -320,7 +402,7 @@ export default function Reader({ onToast }: Props) {
             extract.isPending ? "spinning" : ""
           }`}
           onClick={() =>
-            hasExtracted ? setShowExtracted((v) => !v) : extract.mutate()
+            hasExtracted ? setShowExtracted((v) => !v) : extract.mutate(a.id)
           }
           // Extraction needs the source URL; without one (and nothing
           // extracted yet) the button can only error, so disable it.
@@ -508,7 +590,7 @@ export default function Reader({ onToast }: Props) {
             className="article-body"
             ref={bodyRef}
             data-serif={useSerif}
-            onClick={interceptLinkClick}
+            onClick={makeLinkClickHandler(a.url)}
             dangerouslySetInnerHTML={{
               __html: body || `<p><em>${t("reader.noContent")}</em></p>`,
             }}
@@ -571,13 +653,32 @@ function AIDrawer({
   const [busy, setBusy] = useState(false);
   const [failed, setFailed] = useState(false);
   const [retry, setRetry] = useState(0);
+  // Identifies the latest summarize run. Closing the drawer mid-stream cancels
+  // an effect run but the component stays mounted (it is only moved off-screen),
+  // so the underlying request keeps streaming and its promise settles later.
+  // Only the run whose generation still matches may touch `busy` on settle —
+  // otherwise a stale run's `finally` would either wedge the drawer on the
+  // loading state or clobber a newer run's `busy` flag.
+  const runRef = useRef(0);
 
   // Generate a summary the first time the drawer opens for an article, and
   // again whenever the user hits Retry. `failed` is in the guard so a failed
   // run isn't silently re-attempted just because the drawer was reopened.
   useEffect(() => {
     if (!open || busy || text || failed) return;
+    const run = ++runRef.current;
     let cancelled = false;
+    // Whether the stream settled (resolved or rejected) on its own. If the
+    // cleanup runs while this is still false, the drawer was closed mid-stream
+    // — the accumulated `text` is then a truncated fragment.
+    let settled = false;
+    // An error raised inside the stream surfaces twice: once as an `error`
+    // channel event (carrying the precise provider message) and again as the
+    // command's rejected promise. Toast only the first so the user does not
+    // see the same failure reported twice; the `.catch` still toasts for
+    // failures that abort before streaming starts (no key, bad config) and so
+    // never emit an `error` event.
+    let sawErrorEvent = false;
     setBusy(true);
     setText("");
     api
@@ -585,6 +686,7 @@ function AIDrawer({
         if (cancelled) return;
         if (ev.type === "delta") setText((s) => (s ?? "") + ev.data);
         else if (ev.type === "error") {
+          sawErrorEvent = true;
           setFailed(true);
           onToast(ev.data);
         }
@@ -593,14 +695,25 @@ function AIDrawer({
         if (!cancelled) qc.invalidateQueries({ queryKey: ["article", article.id] });
       })
       .catch((e) => {
-        if (!cancelled) {
+        if (!cancelled && !sawErrorEvent) {
           setFailed(true);
           onToast(errorText(e));
         }
       })
-      .finally(() => !cancelled && setBusy(false));
+      .finally(() => {
+        settled = true;
+        // Clear `busy` for the current run even if it was cancelled — the
+        // component is still mounted, and leaving `busy` true would wedge the
+        // drawer on the loading state. Skip if a newer run has superseded us.
+        if (runRef.current === run) setBusy(false);
+      });
     return () => {
       cancelled = true;
+      // Closed mid-stream: the backend discards an interrupted generation
+      // (it is never persisted), so drop the partial fragment held here too.
+      // Reopening then re-generates from scratch instead of showing — and
+      // permanently freezing on — a truncated half-summary.
+      if (!settled) setText(article.aiSummary);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, article.id, retry]);
@@ -631,7 +744,12 @@ function AIDrawer({
           <Icon name="sparkle-fill" size={15} />
         </span>
         <h3>{t("reader.aiSummaryTitle")}</h3>
-        <button className="tb-btn close" onClick={onClose} title={t("common.close")}>
+        <button
+          className="tb-btn close"
+          onClick={onClose}
+          title={t("common.close")}
+          aria-label={t("common.close")}
+        >
           <Icon name="x" size={14} />
         </button>
       </div>
@@ -658,7 +776,7 @@ function AIDrawer({
           <>
             <div
               className="ai-prose"
-              onClick={interceptLinkClick}
+              onClick={makeLinkClickHandler(article.url)}
               dangerouslySetInnerHTML={{ __html: html }}
             />
             <div

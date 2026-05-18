@@ -209,13 +209,26 @@ fn normalize_mastodon(full_url: &str, path: &str) -> Option<String> {
 
 /// Pull a YouTube channel id (`UC…`) out of a channel page's HTML.
 ///
-/// Pure and network-free: `add_feed` fetches the page, this parses it. Tries,
-/// in order: the `"channelId":"UC…"` JSON key embedded in the page, the
-/// `<link rel="canonical" href=".../channel/UC…">` tag, and an `externalId`
-/// meta value. Returns `None` if no id can be found.
+/// Pure and network-free: `add_feed` fetches the page, this parses it.
+///
+/// Source order matters for *correctness*, not just coverage. A channel page's
+/// HTML embeds many `channelId` values — recommended channels, the uploader of
+/// every thumbnail in the sidebar, comment authors — and they often appear
+/// *before* the page's own id. Picking the first `"channelId"` blindly would
+/// subscribe the user to the wrong channel. So the authoritative,
+/// page-owner-specific signals are tried first:
+///
+/// 1. `"externalId"` / `"externalChannelId"` — YouTube's own metadata keys for
+///    *this* channel; never used for sidebar/recommended entries.
+/// 2. `<link rel="canonical" href=".../channel/UC…">` — the `<head>` canonical
+///    URL always points at the page's own channel.
+/// 3. The `og:url` (or any) bare `/channel/UC…` substring.
+/// 4. Only as a last resort, the ambiguous plain `"channelId"` JSON key.
+///
+/// Returns `None` if no id can be found.
 pub fn extract_channel_id(html: &str) -> Option<String> {
-    // 1. `"channelId":"UC..."` — present in ytInitialData / metadata blobs.
-    for key in ["\"channelId\":\"", "\"externalId\":\"", "\"externalChannelId\":\""] {
+    // 1. Owner-specific metadata keys — unambiguous, so tried first.
+    for key in ["\"externalId\":\"", "\"externalChannelId\":\""] {
         if let Some(id) = find_after(html, key, '"') {
             if is_channel_id(&id) {
                 return Some(id);
@@ -239,6 +252,14 @@ pub fn extract_channel_id(html: &str) -> Option<String> {
         }
     }
 
+    // 4. Last resort: the plain `"channelId"` JSON key. Ambiguous (also used
+    //    for recommended channels), so only consulted when nothing above hit.
+    if let Some(id) = find_after(html, "\"channelId\":\"", '"') {
+        if is_channel_id(&id) {
+            return Some(id);
+        }
+    }
+
     None
 }
 
@@ -253,14 +274,28 @@ fn find_after(html: &str, marker: &str, end: char) -> Option<String> {
 
 /// Find a `<link rel="canonical">` tag and pull a `/channel/UC…` id from its
 /// `href`. Order-insensitive about the `rel` / `href` attribute positions.
+///
+/// A `rel="canonical"` substring that is not wrapped in a real `<…>` tag — it
+/// can appear as text inside an embedded `<script>` JSON blob, or lead a
+/// malformed document — must be skipped rather than aborting the scan: a
+/// genuine `<link rel="canonical">` may still follow later in the document.
 fn canonical_channel_id(html: &str) -> Option<String> {
     let lower = html.to_lowercase();
     let mut search = 0;
     while let Some(rel) = lower[search..].find("rel=\"canonical\"") {
         let abs = search + rel;
-        // The enclosing <link …> tag: scan back to '<' and forward to '>'.
-        let tag_start = lower[..abs].rfind('<')?;
-        let tag_end = lower[abs..].find('>')? + abs;
+        // The enclosing <link …> tag: scan forward to '>' and back to '<'.
+        let Some(rel_tag_end) = lower[abs..].find('>') else {
+            // No '>' anywhere after this point — nothing more to scan.
+            break;
+        };
+        let tag_end = rel_tag_end + abs;
+        let Some(tag_start) = lower[..abs].rfind('<') else {
+            // No opening '<' before this occurrence — not a real tag; skip it
+            // and keep scanning for a later, well-formed canonical link.
+            search = tag_end;
+            continue;
+        };
         let tag = &html[tag_start..tag_end];
         if let Some(rest) = tag.split("/channel/").nth(1) {
             let id: String = rest
@@ -473,6 +508,45 @@ mod tests {
     }
 
     #[test]
+    fn extract_channel_id_from_external_id_key() {
+        let html = r#"{"metadata":{"externalId":"UCXuqSBlHAE6Xw-yeJA0Tunw"}}"#;
+        assert_eq!(
+            extract_channel_id(html).as_deref(),
+            Some("UCXuqSBlHAE6Xw-yeJA0Tunw")
+        );
+    }
+
+    #[test]
+    fn extract_channel_id_prefers_owner_over_recommended() {
+        // A real channel page embeds `channelId` for recommended/sidebar
+        // channels *before* the page's own id. The owner-specific `externalId`
+        // (and the <head> canonical link) must win so the user does not get
+        // subscribed to a recommended channel by mistake.
+        let html = r#"<head>
+            <link rel="canonical" href="https://www.youtube.com/channel/UCXuqSBlHAE6Xw-yeJA0Tunw">
+            </head><body><script>var data = {
+              "relatedChannels":[{"channelId":"UCwrongRecommendedAAAAA1"}],
+              "metadata":{"externalId":"UCXuqSBlHAE6Xw-yeJA0Tunw"}
+            };</script></body>"#;
+        assert_eq!(
+            extract_channel_id(html).as_deref(),
+            Some("UCXuqSBlHAE6Xw-yeJA0Tunw"),
+            "owner id must win over a recommended channel's id"
+        );
+    }
+
+    #[test]
+    fn extract_channel_id_falls_back_to_plain_channel_id_key() {
+        // When no owner-specific signal exists, the plain `channelId` key is
+        // still consulted as a last resort.
+        let html = r#"{"channelId":"UCXuqSBlHAE6Xw-yeJA0Tunw"}"#;
+        assert_eq!(
+            extract_channel_id(html).as_deref(),
+            Some("UCXuqSBlHAE6Xw-yeJA0Tunw")
+        );
+    }
+
+    #[test]
     fn extract_channel_id_from_canonical_link() {
         let html = r#"<head><link rel="canonical" href="https://www.youtube.com/channel/UCXuqSBlHAE6Xw-yeJA0Tunw"></head>"#;
         assert_eq!(
@@ -484,6 +558,34 @@ mod tests {
     #[test]
     fn extract_channel_id_canonical_attrs_reordered() {
         let html = r#"<link href="https://www.youtube.com/channel/UCXuqSBlHAE6Xw-yeJA0Tunw" rel="canonical">"#;
+        assert_eq!(
+            extract_channel_id(html).as_deref(),
+            Some("UCXuqSBlHAE6Xw-yeJA0Tunw")
+        );
+    }
+
+    #[test]
+    fn extract_channel_id_canonical_scan_survives_leading_non_tag_match() {
+        // A `rel="canonical"` substring with no opening `<` before it (it leads
+        // the document — a stray token or escaped script text) is not a real
+        // tag. The previous scan used `?` on the `rfind('<')`, aborting the
+        // whole `canonical_channel_id` scan on this non-tag occurrence so the
+        // genuine `<link rel="canonical">` that follows was never reached.
+        let html = "rel=\"canonical\" stray leading text >\n            \
+            <link rel=\"canonical\" href=\"https://www.youtube.com/channel/UCXuqSBlHAE6Xw-yeJA0Tunw\">";
+        assert_eq!(
+            canonical_channel_id(html).as_deref(),
+            Some("UCXuqSBlHAE6Xw-yeJA0Tunw"),
+            "a non-tag leading rel=\"canonical\" must not abort the scan"
+        );
+    }
+
+    #[test]
+    fn extract_channel_id_canonical_handles_unterminated_tag() {
+        // A `rel="canonical"` with no closing `>` anywhere after it
+        // (truncated / garbled HTML) must not panic — the scan simply stops.
+        // The bare `/channel/UC…` substring rule still recovers the id.
+        let html = "<link rel=\"canonical\" href=\"https://www.youtube.com/channel/UCXuqSBlHAE6Xw-yeJA0Tunw";
         assert_eq!(
             extract_channel_id(html).as_deref(),
             Some("UCXuqSBlHAE6Xw-yeJA0Tunw")

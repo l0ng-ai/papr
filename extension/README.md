@@ -28,6 +28,15 @@ the Papr window and opens its **Add feed** dialog prefilled with the feed URL.
 Papr must be installed and have been launched at least once for the OS to know
 about the scheme.
 
+## Permissions
+
+The extension requests **no permissions**. Feed detection runs entirely in a
+declared content script (`content_scripts` in the manifest), and the popup
+talks to that content script with `chrome.tabs.sendMessage` — none of which
+needs the `"tabs"` permission. Reading a tab's URL or title *would* require it,
+but the extension never does: it only ever uses `tab.id`. Keeping the
+permission list empty means the browser shows no install-time warning.
+
 ## Install for development (load unpacked)
 
 ### Chrome / Edge / Brave

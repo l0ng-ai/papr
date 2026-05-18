@@ -22,22 +22,32 @@ pub fn parse(content: &str) -> AppResult<Vec<ImportedFeed>> {
     Ok(feeds)
 }
 
+/// The human-facing label of an outline: its `text` attribute, falling back to
+/// the `title` attribute. Many OPML exporters label folder/feed outlines with
+/// only `title` (which the spec permits), leaving `text` empty.
+fn outline_label(outline: &Outline) -> Option<&str> {
+    if !outline.text.is_empty() {
+        Some(outline.text.as_str())
+    } else {
+        outline.title.as_deref().filter(|t| !t.is_empty())
+    }
+}
+
 fn collect(outline: &Outline, folder: Option<&str>, out: &mut Vec<ImportedFeed>) {
     if let Some(url) = &outline.xml_url {
-        let title = if outline.text.is_empty() {
-            outline.title.clone().unwrap_or_else(|| url.clone())
-        } else {
-            outline.text.clone()
-        };
+        let title = outline_label(outline).unwrap_or(url).to_string();
         out.push(ImportedFeed {
             feed_url: url.clone(),
             title,
             folder: folder.map(|s| s.to_string()),
         });
     }
-    // A childless-of-feeds outline acts as a folder for its descendants.
+    // A childless-of-feeds outline acts as a folder for its descendants. Use
+    // the same `text`-then-`title` label resolution feeds get — otherwise a
+    // folder outline labelled only with `title` would import its feeds into a
+    // folder with an empty name.
     let child_folder = if outline.xml_url.is_none() && !outline.outlines.is_empty() {
-        Some(outline.text.as_str())
+        outline_label(outline).or(folder)
     } else {
         folder
     };
@@ -79,4 +89,97 @@ pub fn build(feeds: &[(String, String, Option<String>)]) -> AppResult<String> {
     }
 
     doc.to_string().map_err(|e| AppError::Opml(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build, parse};
+
+    #[test]
+    fn parses_flat_feed_list() {
+        let xml = r#"<opml version="2.0"><head/><body>
+            <outline text="Blog A" xmlUrl="https://a.example/feed.xml"/>
+            <outline text="Blog B" xmlUrl="https://b.example/feed.xml"/>
+        </body></opml>"#;
+        let feeds = parse(xml).expect("parse");
+        assert_eq!(feeds.len(), 2);
+        assert_eq!(feeds[0].title, "Blog A");
+        assert_eq!(feeds[0].feed_url, "https://a.example/feed.xml");
+        assert!(feeds[0].folder.is_none());
+    }
+
+    #[test]
+    fn parses_feeds_nested_in_a_folder() {
+        let xml = r#"<opml version="2.0"><head/><body>
+            <outline text="Tech">
+                <outline text="Feed 1" xmlUrl="https://1.example/f"/>
+                <outline text="Feed 2" xmlUrl="https://2.example/f"/>
+            </outline>
+        </body></opml>"#;
+        let feeds = parse(xml).expect("parse");
+        assert_eq!(feeds.len(), 2);
+        assert!(feeds.iter().all(|f| f.folder.as_deref() == Some("Tech")));
+    }
+
+    #[test]
+    fn folder_label_falls_back_to_title_attribute() {
+        // A folder outline labelled only with `title` (no `text`) — common in
+        // real-world exports. Its feeds must land in a folder named "News",
+        // not a folder with an empty name.
+        let xml = r#"<opml version="2.0"><head/><body>
+            <outline title="News">
+                <outline text="Feed" xmlUrl="https://n.example/f"/>
+            </outline>
+        </body></opml>"#;
+        let feeds = parse(xml).expect("parse");
+        assert_eq!(feeds.len(), 1);
+        assert_eq!(feeds[0].folder.as_deref(), Some("News"));
+    }
+
+    #[test]
+    fn feed_title_falls_back_to_title_then_url() {
+        let xml = r#"<opml version="2.0"><head/><body>
+            <outline title="Titled Feed" xmlUrl="https://t.example/f"/>
+            <outline xmlUrl="https://u.example/f"/>
+        </body></opml>"#;
+        let feeds = parse(xml).expect("parse");
+        assert_eq!(feeds[0].title, "Titled Feed");
+        // No text and no title — the URL itself is the last-resort label.
+        assert_eq!(feeds[1].title, "https://u.example/f");
+    }
+
+    #[test]
+    fn build_round_trips_through_parse() {
+        let input = vec![
+            (
+                "Folderless".to_string(),
+                "https://x.example/f".to_string(),
+                None,
+            ),
+            (
+                "In Folder".to_string(),
+                "https://y.example/f".to_string(),
+                Some("Tech".to_string()),
+            ),
+        ];
+        let xml = build(&input).expect("build");
+        let feeds = parse(&xml).expect("re-parse");
+        assert_eq!(feeds.len(), 2);
+        let folderless = feeds
+            .iter()
+            .find(|f| f.feed_url == "https://x.example/f")
+            .expect("folderless feed");
+        assert!(folderless.folder.is_none());
+        let foldered = feeds
+            .iter()
+            .find(|f| f.feed_url == "https://y.example/f")
+            .expect("foldered feed");
+        assert_eq!(foldered.title, "In Folder");
+        assert_eq!(foldered.folder.as_deref(), Some("Tech"));
+    }
+
+    #[test]
+    fn parse_rejects_malformed_document() {
+        assert!(parse("not opml at all").is_err());
+    }
 }

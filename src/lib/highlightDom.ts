@@ -133,9 +133,47 @@ export function clearHighlights(root: HTMLElement): void {
 }
 
 /**
+ * Map a DOM point (`container`, `offset`) to an offset within the plain text
+ * that `collectTextSpans` produces. `atEnd` decides the fallback when the
+ * point lands inside a skipped <mark> or past every span: an unresolved start
+ * snaps forward (0 or the next span's start), an unresolved end snaps to the
+ * tail of the text — so a range that brackets a <mark> still yields a sane,
+ * mark-free slice.
+ */
+function pointToOffset(
+  spans: TextSpan[],
+  container: Node,
+  offset: number,
+  atEnd: boolean,
+): number {
+  for (const span of spans) {
+    if (span.node === container) {
+      // Common case: the point sits inside this collected text node.
+      return span.start + Math.min(offset, span.node.data.length);
+    }
+  }
+  // The point is not inside a collected node (an element boundary, or inside
+  // a skipped <mark>). Use document order to place it relative to the spans.
+  for (const span of spans) {
+    const pos = container.compareDocumentPosition(span.node);
+    // The span follows the point — the point falls at this span's start.
+    if (pos & Node.DOCUMENT_POSITION_FOLLOWING) return span.start;
+  }
+  const last = spans[spans.length - 1];
+  return atEnd && last ? last.start + last.node.data.length : 0;
+}
+
+/**
  * Describe the current text selection inside `root` as a highlight anchor:
  * its quoted text and plain-text offset. Returns `null` when the selection is
  * empty or falls outside the article body.
+ *
+ * Both the offset *and* the quote are taken from the same plain text
+ * `plainText` / `applyHighlights` use — i.e. text inside existing <mark>
+ * elements is skipped. Using `Range.toString()` for the quote would instead
+ * include marked text, so a selection that brackets an existing highlight
+ * would store a quote that is not a substring of the anchoring basis and could
+ * never be re-anchored on reopen.
  */
 export function selectionAnchor(
   root: HTMLElement,
@@ -145,18 +183,14 @@ export function selectionAnchor(
   const range = sel.getRangeAt(0);
   if (!root.contains(range.commonAncestorContainer)) return null;
 
-  const quote = sel.toString();
+  // Resolve both ends of the selection against the mark-free plain text, then
+  // slice the quote out of that same basis — so the quote, the offset and the
+  // text `findAnchor` searches all agree even across an existing highlight.
+  const { spans, text } = collectTextSpans(root);
+  const textOffset = pointToOffset(spans, range.startContainer, range.startOffset, false);
+  const endOffset = pointToOffset(spans, range.endContainer, range.endOffset, true);
+  const quote = text.slice(textOffset, Math.max(textOffset, endOffset));
   if (!quote.trim()) return null;
 
-  // Map the selection start to a plain-text offset by measuring the text of a
-  // range from the body start up to the selection start.
-  const measure = document.createRange();
-  measure.selectNodeContents(root);
-  try {
-    measure.setEnd(range.startContainer, range.startOffset);
-  } catch {
-    return null;
-  }
-  const textOffset = measure.toString().length;
   return { quote, textOffset };
 }

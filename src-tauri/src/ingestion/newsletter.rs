@@ -121,11 +121,19 @@ pub fn email_to_article(raw: &[u8]) -> Option<ParsedEmail> {
         (None, String::new())
     };
 
-    // ── Date → RFC 3339. `mail-parser` already decodes RFC 2822 dates. ──
+    // ── Date → RFC 3339. `mail-parser` already decodes RFC 2822 dates. A
+    // future-dated `Date:` header (clock-wrong sender, spam) would otherwise
+    // pin the message to the top of the newest-first list forever, so clamp
+    // it the same way the RSS path does in `parse::clamp_publish_date`. ──
     let published_at = msg
         .date()
         .map(|d| d.to_rfc3339())
-        .filter(|s| !s.is_empty());
+        .filter(|s| !s.is_empty())
+        .map(|s| match chrono::DateTime::parse_from_rfc3339(&s) {
+            Ok(dt) => crate::ingestion::parse::clamp_publish_date(dt.with_timezone(&chrono::Utc))
+                .to_rfc3339(),
+            Err(_) => s,
+        });
 
     // ── GUID: Message-ID is globally unique; hash the body if missing. ──
     let guid = msg
@@ -309,6 +317,24 @@ Content-Type: text/html; charset=utf-8\r\n\
         // body_text is the text rendering of the HTML part.
         assert!(p.article.body_text.contains("Big News"));
         assert!(p.article.body_text.contains("HTML body"));
+    }
+
+    #[test]
+    fn far_future_date_is_clamped_to_now() {
+        // A `Date:` header decades in the future must not pin the message to
+        // the top of the list forever — it is clamped down to ~now.
+        let raw = b"From: a@b.com\r\n\
+Subject: From the future\r\n\
+Date: Mon, 01 Jan 2099 12:00:00 +0000\r\n\
+Message-ID: <future@b.com>\r\n\
+Content-Type: text/plain\r\n\
+\r\n\
+body\r\n";
+        let p = email_to_article(raw).expect("parse");
+        let published = p.article.published_at.expect("has a date");
+        let parsed = chrono::DateTime::parse_from_rfc3339(&published).expect("rfc3339");
+        // Clamped to roughly "now", well short of the year-2099 header.
+        assert!(parsed.with_timezone(&chrono::Utc) < chrono::Utc::now() + chrono::Duration::days(2));
     }
 
     #[test]

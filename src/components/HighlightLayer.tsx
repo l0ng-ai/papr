@@ -12,6 +12,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as api from "../api";
+import { useMenuKeyboard } from "../hooks/useMenuKeyboard";
 import { errorText } from "../lib/errors";
 import {
   applyHighlights,
@@ -20,7 +21,9 @@ import {
   selectionAnchor,
 } from "../lib/highlightDom";
 import { captureContext } from "../lib/anchor";
+import { downloadFile } from "../lib/download";
 import { HIGHLIGHT_COLORS } from "../lib/highlightColors";
+import { clampAxis } from "../lib/viewport";
 import type { Highlight } from "../types";
 import Icon from "./Icon";
 
@@ -29,9 +32,10 @@ interface Props {
   articleId: number;
   /** Ref to the rendered article-body div the highlights are applied into. */
   bodyRef: React.RefObject<HTMLDivElement | null>;
-  /** Bumped by the Reader whenever the body HTML changes (extract toggle,
-   *  article switch) so highlights are re-applied to the fresh DOM. */
-  bodyVersion: number;
+  /** The rendered body HTML — changes whenever the Reader swaps the body
+   *  (extract toggle, extraction finishing) so highlights are re-applied to
+   *  the fresh DOM. Compared by value, so a no-op render does not re-apply. */
+  bodyVersion: string;
   onToast: (msg: string) => void;
 }
 
@@ -57,11 +61,21 @@ export default function HighlightLayer({
   const [highlights, setHighlights] = useState<Highlight[]>([]);
   const [toolbar, setToolbar] = useState<ToolbarPos | null>(null);
   const pendingRef = useRef<PendingSelection | null>(null);
-  // The highlight whose edit popover is open, plus where to anchor it.
-  const [editing, setEditing] = useState<{ hl: Highlight; x: number; y: number } | null>(
+  // The highlight whose edit popover is open, plus where to anchor it. Stores
+  // the id (not a snapshot) so the popover always reflects the live highlight
+  // — recolouring it re-renders the popover's active swatch immediately.
+  const [editing, setEditing] = useState<{ hlId: number; x: number; y: number } | null>(
     null,
   );
   const [exportOpen, setExportOpen] = useState(false);
+
+  // The live highlight backing the open edit popover, looked up fresh from the
+  // current set — so a recolour (which reloads `highlights`) is reflected in
+  // the popover's active swatch. `null` once the highlight is deleted, which
+  // also tears the popover down.
+  const editingHl = editing
+    ? (highlights.find((h) => h.id === editing.hlId) ?? null)
+    : null;
 
   // Load the article's stored highlights.
   const reload = () => {
@@ -126,10 +140,9 @@ export default function HighlightLayer({
       e.preventDefault();
       e.stopPropagation();
       const id = Number((mark as HTMLElement).dataset.hl);
-      const hl = highlights.find((h) => h.id === id);
-      if (!hl) return;
+      if (!highlights.some((h) => h.id === id)) return;
       const r = mark.getBoundingClientRect();
-      setEditing({ hl, x: r.left, y: r.bottom + 6 });
+      setEditing({ hlId: id, x: r.left, y: r.bottom + 6 });
     };
     el.addEventListener("click", onClick, true);
     return () => el.removeEventListener("click", onClick, true);
@@ -168,10 +181,10 @@ export default function HighlightLayer({
           onDismiss={() => setToolbar(null)}
         />
       )}
-      {editing && (
+      {editingHl && editing && (
         <HighlightPopover
-          key={editing.hl.id}
-          hl={editing.hl}
+          key={editingHl.id}
+          hl={editingHl}
           x={editing.x}
           y={editing.y}
           onClose={() => setEditing(null)}
@@ -221,9 +234,10 @@ function SelectionToolbar({
     const el = ref.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
-    let left = pos.x - r.width / 2;
+    // X is a plain two-sided viewport clamp; Y keeps its custom flip-below
+    // behaviour (the toolbar prefers to sit above the selection).
+    const left = clampAxis(pos.x - r.width / 2, r.width, window.innerWidth, 8);
     let top = pos.y - r.height - 8;
-    left = Math.max(8, Math.min(left, window.innerWidth - r.width - 8));
     if (top < 8) top = pos.y + 22; // flip below the selection if clipped
     setPlace({ left, top });
   }, [pos]);
@@ -284,11 +298,13 @@ function HighlightPopover({
     const el = ref.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
-    let left = x;
+    // X is a plain two-sided viewport clamp; Y keeps its custom flip-above
+    // behaviour (when the popover would overflow the bottom it jumps above
+    // the anchor instead of merely being pulled back).
+    const left = clampAxis(x, r.width, window.innerWidth, 8);
     let top = y;
-    if (left + r.width > window.innerWidth - 8) left = window.innerWidth - r.width - 8;
     if (top + r.height > window.innerHeight - 8) top = y - r.height - 28;
-    setPlace({ left: Math.max(8, left), top: Math.max(8, top) });
+    setPlace({ left, top: Math.max(8, top) });
   }, [x, y]);
 
   useEffect(() => {
@@ -396,6 +412,7 @@ function ExportMenu({
   const { t } = useTranslation();
   const ref = useRef<HTMLDivElement>(null);
   const [busy, setBusy] = useState(false);
+  const onKeyDown = useMenuKeyboard(ref);
 
   useEffect(() => {
     const onDown = (e: MouseEvent) => {
@@ -441,15 +458,7 @@ function ExportMenu({
   const saveMd = () =>
     run(async () => {
       const md = await api.exportHighlightsMarkdown(articleId);
-      // No file-dialog plugin is bundled; offer the document as a download
-      // through the webview, which the user can place anywhere.
-      const blob = new Blob([md], { type: "text/markdown" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `highlights-${articleId}.md`;
-      a.click();
-      URL.revokeObjectURL(url);
+      downloadFile(md, `highlights-${articleId}.md`, "text/markdown");
       onToast(t("highlights.savedMarkdown"));
     });
 
@@ -472,7 +481,13 @@ function ExportMenu({
     });
 
   return (
-    <div ref={ref} className="ctx-menu hl-export-menu" role="menu">
+    <div
+      ref={ref}
+      className="ctx-menu hl-export-menu"
+      role="menu"
+      aria-label={t("highlights.exportHeading", { count })}
+      onKeyDown={onKeyDown}
+    >
       <div className="hl-export-head">
         {t("highlights.exportHeading", { count })}
       </div>

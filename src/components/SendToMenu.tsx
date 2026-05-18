@@ -9,7 +9,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as api from "../api";
+import { useMenuKeyboard } from "../hooks/useMenuKeyboard";
 import { errorText } from "../lib/errors";
+import { clampToViewport } from "../lib/viewport";
 import type { ShareTarget, ShareTargets } from "../types";
 import Icon, { type IconName } from "./Icon";
 
@@ -36,18 +38,20 @@ export default function SendToMenu({ articleId, x, y, onClose, onToast }: Props)
   const [place, setPlace] = useState({ left: x, top: y });
   const [targets, setTargets] = useState<ShareTargets | null>(null);
   const [busy, setBusy] = useState<ShareTarget | null>(null);
+  const onKeyDown = useMenuKeyboard(ref, targets != null);
 
-  // Clamp inside the viewport.
+  // Clamp inside the viewport. `targets` is in the deps because the menu
+  // starts as a single short "loading" row and grows to four target rows once
+  // `share_targets` resolves — measuring only on mount would clamp the short
+  // placeholder, leaving the taller real menu overflowing (and its lower
+  // targets clipped) when it opens near the bottom edge. Re-measure once the
+  // real rows have rendered.
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
-    let left = x;
-    let top = y;
-    if (left + r.width > window.innerWidth - 8) left = window.innerWidth - r.width - 8;
-    if (top + r.height > window.innerHeight - 8) top = window.innerHeight - r.height - 8;
-    setPlace({ left: Math.max(8, left), top: Math.max(8, top) });
-  }, [x, y]);
+    setPlace(clampToViewport({ x, y, width: r.width, height: r.height, margin: 8 }));
+  }, [x, y, targets]);
 
   // Load which targets are configured.
   useEffect(() => {
@@ -96,7 +100,9 @@ export default function SendToMenu({ articleId, x, y, onClose, onToast }: Props)
       ref={ref}
       className="ctx-menu hl-export-menu"
       role="menu"
+      aria-label={t("sendTo.heading")}
       style={{ left: place.left, top: place.top }}
+      onKeyDown={onKeyDown}
     >
       <div className="hl-export-head">{t("sendTo.heading")}</div>
       {targets == null ? (

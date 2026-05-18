@@ -77,9 +77,31 @@ export function useArticleActions(onError?: (msg: string) => void) {
     }
   };
 
+  // After a manual feed refresh new articles may have arrived and feed/folder/
+  // tag counts shifted. A bare `invalidateQueries()` would also refetch caches
+  // a fetch never touches (FreshRSS status, rules, the feed-discovery search),
+  // so invalidate only the keys a fetch can actually change — the article
+  // keys, plus storage stats (the new articles grow the database).
+  const refreshAfterFetch = () => {
+    for (const key of [
+      ["counts"],
+      ["feeds"],
+      ["folders"],
+      ["tags"],
+      ["articles"],
+      ["article"],
+      ["search"],
+      ["cp-search"],
+      ["storage-stats"],
+    ]) {
+      qc.invalidateQueries({ queryKey: key });
+    }
+  };
+
   return {
     patch,
     refreshAfterBulk,
+    refreshAfterFetch,
     async setRead(id: number, read: boolean) {
       try {
         await api.markRead(id, read);

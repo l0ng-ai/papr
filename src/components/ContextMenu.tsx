@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import Icon, { type IconName } from "./Icon";
+import { clampToViewport } from "../lib/viewport";
 
 export type MenuEntry =
   | {
@@ -33,11 +34,10 @@ export default function ContextMenu({ x, y, items, onClose }: Props) {
     const el = ref.current;
     if (!el) return;
     const r = el.getBoundingClientRect();
-    let left = x;
-    let top = y;
-    if (left + r.width > window.innerWidth - 8) left = window.innerWidth - r.width - 8;
-    if (top + r.height > window.innerHeight - 8) top = window.innerHeight - r.height - 8;
-    setPos({ left, top });
+    // The menu is anchored at the mouse cursor, so it can open anywhere. The
+    // shared clamp pulls it back from the right/bottom edges and floors it at
+    // the 8px margin, so a menu taller/wider than the window stays reachable.
+    setPos(clampToViewport({ x, y, width: r.width, height: r.height, margin: 8 }));
   }, [x, y]);
 
   useEffect(() => {
@@ -81,10 +81,20 @@ export default function ContextMenu({ x, y, items, onClose }: Props) {
       case "Home": focusAt(0); break;
       case "End": focusAt(menuitems.length - 1); break;
       case "Enter":
-      case " ":
-        e.preventDefault();
-        (document.activeElement as HTMLElement)?.click();
+      case " ": {
+        // The colour-swatch items are real <button>s, which already fire
+        // `click` on Enter/Space natively. Synthesising another `click()`
+        // here would run `onPick` twice (a double tag-recolour mutation).
+        // The plain `ctx-item` rows are <div>s and *do* need the synthetic
+        // click — so only forward the key to non-natively-activatable
+        // elements, mirroring `useMenuKeyboard`.
+        const el = document.activeElement as HTMLElement | null;
+        if (el && el.tagName !== "BUTTON" && el.tagName !== "A") {
+          e.preventDefault();
+          el.click();
+        }
         break;
+      }
     }
   };
 

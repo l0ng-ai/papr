@@ -138,6 +138,8 @@ static MIGRATIONS: LazyLock<Migrations> = LazyLock::new(|| {
         // v6 — index over the effective article date the list sorts by,
         // COALESCE(published_at, fetched_at), so a dateless entry sorts by
         // when it was fetched instead of sinking below every dated article.
+        // (Superseded by v12, which rebuilds this index over a `datetime()`-
+        // normalised expression — see that migration for why.)
         M::up(
             "CREATE INDEX idx_articles_sort
              ON articles(COALESCE(published_at, fetched_at) DESC, id DESC);",
@@ -200,6 +202,37 @@ static MIGRATIONS: LazyLock<Migrations> = LazyLock::new(|| {
             );
             CREATE INDEX idx_highlights_article ON highlights(article_id);
             "#,
+        ),
+        // v12 — rebuild the article-sort index over the *normalised* effective
+        // date. `published_at` is RFC 3339 (`2024-01-15T10:30:00+00:00`, the
+        // `T`-separated form `to_rfc3339` writes) while `fetched_at` uses
+        // SQLite's space-separated form (`2024-01-15 10:30:00`). The old index
+        // (v6) ordered on the *raw* `COALESCE(published_at, fetched_at)`, so a
+        // string `<` compared the two formats byte-for-byte — and the `T`
+        // (0x54) sorts after a space (0x20), making a dated article look up to
+        // a day newer than a same-instant dateless one. A list mixing both
+        // kinds of rows then came out subtly out of chronological order.
+        //
+        // Wrapping the effective date in `datetime()` parses both formats to
+        // one canonical representation. The ORDER BY clauses are wrapped to
+        // match (see `list_articles` / `digest_source` / `preview_rule`); an
+        // index on the raw column can't serve a `datetime()`-wrapped sort, so
+        // the index expression must be wrapped identically for the planner to
+        // keep using it (verified with EXPLAIN QUERY PLAN — no temp B-tree).
+        M::up(
+            "DROP INDEX idx_articles_sort;
+             CREATE INDEX idx_articles_sort
+                 ON articles(datetime(COALESCE(published_at, fetched_at)) DESC,
+                             id DESC);",
+        ),
+        // v13 — mark feeds whose title the user has set by hand. A refresh
+        // pulls the feed document's own `<title>` and `update_feed_meta`
+        // `COALESCE`s it over the stored one, which silently reverted a
+        // manual rename on the very next poll. This flag lets `update_feed_meta`
+        // leave a user-named feed's title alone while still refreshing every
+        // other piece of feed metadata.
+        M::up(
+            "ALTER TABLE feeds ADD COLUMN custom_title INTEGER NOT NULL DEFAULT 0;",
         ),
     ])
 });
@@ -290,6 +323,36 @@ pub fn insert_feed(
     Ok(conn.last_insert_rowid())
 }
 
+/// Promote a feed's `source_type` once its real kind is known from the parsed
+/// document — but only when it is still the generic `'rss'`.
+///
+/// `add_feed` classifies a feed precisely (it has the parsed feed in hand and
+/// runs `parse::refine_source_type`), but `import_opml` can only call
+/// `parse::detect_source_type`, which inspects the URL alone and so cannot see
+/// that a feed is a podcast (audio enclosures) or a Mastodon timeline. An
+/// OPML-imported podcast therefore stays mislabelled `'rss'` forever, losing
+/// its source badge and podcast-specific UI. The refresh loop calls this on
+/// every successful fetch to correct such feeds from their first poll onward.
+///
+/// The `WHERE source_type = 'rss'` guard makes this strictly a promotion: a
+/// feed already classified (youtube / bluesky / podcast / mastodon / reddit /
+/// newsletter) is never touched, so a re-poll cannot demote or churn the type.
+pub fn refine_feed_source_type(
+    conn: &Connection,
+    id: i64,
+    source_type: SourceType,
+) -> AppResult<()> {
+    if source_type == SourceType::Rss {
+        return Ok(());
+    }
+    conn.execute(
+        "UPDATE feeds SET source_type = ?2
+         WHERE id = ?1 AND source_type = 'rss'",
+        params![id, source_type.as_str()],
+    )?;
+    Ok(())
+}
+
 pub fn list_feeds(conn: &Connection) -> AppResult<Vec<Feed>> {
     let mut stmt = conn.prepare(
         "SELECT f.id, f.feed_url, f.site_url, f.title, f.description, f.favicon_url,
@@ -335,6 +398,10 @@ pub fn feeds_to_refresh(conn: &Connection) -> AppResult<Vec<FeedToRefresh>> {
     Ok(rows)
 }
 
+/// Refresh a feed's metadata from its parsed document. A `None` field leaves
+/// the stored value untouched. The feed-supplied `title` is applied only when
+/// the user has *not* renamed the feed by hand (`custom_title = 0`); otherwise
+/// `update_feed_meta` would revert a manual rename on the next poll.
 pub fn update_feed_meta(
     conn: &Connection,
     id: i64,
@@ -345,7 +412,8 @@ pub fn update_feed_meta(
 ) -> AppResult<()> {
     conn.execute(
         "UPDATE feeds SET
-            title       = COALESCE(?2, title),
+            title       = CASE WHEN custom_title = 1 THEN title
+                               ELSE COALESCE(?2, title) END,
             site_url    = COALESCE(?3, site_url),
             description = COALESCE(?4, description),
             favicon_url = COALESCE(?5, favicon_url)
@@ -380,6 +448,15 @@ pub fn touch_feed(conn: &Connection, id: i64) -> AppResult<()> {
     Ok(())
 }
 
+/// A single feed's `last_fetched_at` timestamp, if it has ever been fetched.
+pub fn feed_last_fetched(conn: &Connection, id: i64) -> AppResult<Option<String>> {
+    Ok(conn.query_row(
+        "SELECT last_fetched_at FROM feeds WHERE id = ?1",
+        params![id],
+        |r| r.get::<_, Option<String>>(0),
+    )?)
+}
+
 /// Record a failed fetch, keeping the previous content untouched.
 pub fn set_feed_error(conn: &Connection, id: i64, error: &str) -> AppResult<()> {
     conn.execute(
@@ -395,10 +472,17 @@ pub fn delete_feed(conn: &Connection, id: i64) -> AppResult<()> {
 }
 
 /// (title, feed_url, folder_name) for every feed — used to build OPML exports.
+/// Feeds for OPML export as `(title, feed_url, folder)` tuples. Newsletter
+/// sources are excluded: OPML is an RSS-subscription interchange format, and a
+/// newsletter's `feed_url` is a synthetic `imap://user@host:port/folder`
+/// string — exporting it would emit an `<outline xmlUrl="imap://…">` that any
+/// reader (Papr's own `import_opml` included) would treat as an RSS feed and
+/// then fail to HTTP-fetch forever, with the IMAP credentials not even carried.
 pub fn feeds_for_export(conn: &Connection) -> AppResult<Vec<(String, String, Option<String>)>> {
     let mut stmt = conn.prepare(
         "SELECT f.title, f.feed_url, fo.name
          FROM feeds f LEFT JOIN folders fo ON fo.id = f.folder_id
+         WHERE f.source_type != 'newsletter'
          ORDER BY fo.name, f.title",
     )?;
     let rows = stmt
@@ -426,8 +510,14 @@ pub fn move_feed(conn: &Connection, id: i64, folder_id: Option<i64>) -> AppResul
     Ok(())
 }
 
+/// Set a feed's display title to a user-chosen value. `custom_title` is also
+/// raised so a later refresh's `update_feed_meta` does not revert the rename
+/// back to the feed document's own `<title>`.
 pub fn rename_feed(conn: &Connection, id: i64, title: &str) -> AppResult<()> {
-    conn.execute("UPDATE feeds SET title = ?2 WHERE id = ?1", params![id, title])?;
+    conn.execute(
+        "UPDATE feeds SET title = ?2, custom_title = 1 WHERE id = ?1",
+        params![id, title],
+    )?;
     Ok(())
 }
 
@@ -451,11 +541,7 @@ pub fn insert_newsletter_source(
     conn: &Connection,
     feed_url: &str,
     title: &str,
-    host: &str,
-    port: u16,
-    username: &str,
-    password: &str,
-    folder: &str,
+    cfg: &crate::ingestion::newsletter::NewsletterConfig,
 ) -> AppResult<i64> {
     let tx = conn.unchecked_transaction()?;
     tx.execute(
@@ -466,7 +552,7 @@ pub fn insert_newsletter_source(
     tx.execute(
         "INSERT INTO newsletter_sources(feed_id, host, port, username, password, folder)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![feed_id, host, port, username, password, folder],
+        params![feed_id, cfg.host, cfg.port, cfg.username, cfg.password, cfg.folder],
     )?;
     tx.commit()?;
     Ok(feed_id)
@@ -494,11 +580,13 @@ pub fn list_newsletter_sources(conn: &Connection) -> AppResult<Vec<NewsletterSou
     Ok(rows)
 }
 
-/// `(feed_id, host, port, username, password, folder)` for every newsletter
-/// source — the work list the refresh scheduler polls each cycle.
+/// `(feed_id, IMAP config)` for every newsletter source — the work list the
+/// refresh scheduler polls each cycle. Returning a `NewsletterConfig` directly
+/// spares the caller a field-by-field rebuild.
 pub fn newsletter_sources_to_poll(
     conn: &Connection,
-) -> AppResult<Vec<(i64, String, u16, String, String, String)>> {
+) -> AppResult<Vec<(i64, crate::ingestion::newsletter::NewsletterConfig)>> {
+    use crate::ingestion::newsletter::NewsletterConfig;
     let mut stmt = conn.prepare(
         "SELECT feed_id, host, port, username, password, folder FROM newsletter_sources",
     )?;
@@ -506,11 +594,13 @@ pub fn newsletter_sources_to_poll(
         .query_map([], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, i64>(2)? as u16,
-                r.get::<_, String>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, String>(5)?,
+                NewsletterConfig {
+                    host: r.get::<_, String>(1)?,
+                    port: r.get::<_, i64>(2)? as u16,
+                    username: r.get::<_, String>(3)?,
+                    password: r.get::<_, String>(4)?,
+                    folder: r.get::<_, String>(5)?,
+                },
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -576,20 +666,39 @@ fn rule_matches(rule: &Rule, feed_id: i64, a: &NewArticle) -> bool {
         return false;
     }
     let author = a.author.as_deref().unwrap_or("");
-    let haystack = match rule.field.as_str() {
-        "author" => author.to_lowercase(),
-        "content" => a.body_text.to_lowercase(),
-        "any" => format!("{} {} {}", a.title, author, a.body_text).to_lowercase(),
-        _ => a.title.to_lowercase(),
+    // The fields the rule searches. `any` checks each field *independently*
+    // (mirroring `preview_rule`'s per-column LIKE): a keyword must lie wholly
+    // within one field. Concatenating the fields would let a keyword straddle
+    // a field boundary (e.g. a title ending in "machine" + a body starting
+    // with "learning" matching "machine learning"), so live ingestion would
+    // act on articles the rule preview never counted.
+    let fields: Vec<String> = match rule.field.as_str() {
+        "author" => vec![author.to_lowercase()],
+        "content" => vec![a.body_text.to_lowercase()],
+        "any" => vec![
+            a.title.to_lowercase(),
+            author.to_lowercase(),
+            a.body_text.to_lowercase(),
+        ],
+        _ => vec![a.title.to_lowercase()],
     };
     rule.query
         .split(',')
         .map(|t| t.trim().to_lowercase())
         .filter(|t| !t.is_empty())
-        .any(|term| haystack.contains(&term))
+        .any(|term| fields.iter().any(|h| h.contains(&term)))
 }
 
-/// Insert an article if it is new (by feed_id + guid). Returns true if inserted.
+/// Insert an article if it is new (by feed_id + guid). Returns `true` only when
+/// a genuinely **new and unread** article was inserted — callers tally this as
+/// the count of fresh articles surfaced to the user (refresh toast, "new
+/// articles" notification, `add_newsletter_source`'s `unread_count`).
+///
+/// An article inserted but pre-marked read by a `read` rule returns `false`:
+/// the row landed, but it never shows up as unread, so counting it would
+/// inflate the "N new articles" figure and disagree with the sidebar's unread
+/// count (the same overcount iteration 179 fixed for `add_feed`).
+///
 /// When `dedup` is on, an article whose URL already exists (in any feed) is
 /// skipped — collapsing the same story pushed by multiple feeds. Enabled
 /// `rules` are evaluated first: a `skip` match drops the article entirely,
@@ -657,7 +766,10 @@ pub fn upsert_article(
         )?;
     }
     tx.commit()?;
-    Ok(true)
+    // A row inserted but pre-marked read by a `read` rule is not "new" from
+    // the user's point of view — report it as not-inserted so it is excluded
+    // from new-article tallies.
+    Ok(!start_read)
 }
 
 /// Build and run the article-list query for the given sidebar selection.
@@ -707,19 +819,26 @@ pub fn list_articles(
     if searching {
         sql.push_str("JOIN articles_fts fts ON fts.rowid = a.id ");
         where_clauses.push("articles_fts MATCH ?".into());
-        binds.push(Value::Text(fts_query(search.unwrap())));
+        // Explicit search: every typed word must match (AND), so results
+        // narrow as the user adds terms.
+        binds.push(Value::Text(fts_query(search.unwrap(), false)));
     }
     sql.push_str("WHERE ");
     sql.push_str(&where_clauses.join(" AND "));
     // Sort by the effective date — COALESCE(published_at, fetched_at) — so
     // an article with no feed-supplied date orders by when it arrived rather
-    // than sinking to the bottom. Backed by `idx_articles_sort`.
+    // than sinking to the bottom. The two columns are stored in different
+    // textual formats (`published_at` RFC 3339 with a `T`; `fetched_at` the
+    // space form), so a raw string compare mis-orders a list mixing both;
+    // `datetime()` normalises each side to a single comparable form. Backed
+    // by `idx_articles_sort`, an expression index over the same wrapped
+    // expression (v12) — the planner uses it for both directions, no sort.
     sql.push_str(if searching {
         " ORDER BY fts.rank "
     } else if oldest_first {
-        " ORDER BY COALESCE(a.published_at, a.fetched_at) ASC, a.id ASC "
+        " ORDER BY datetime(COALESCE(a.published_at, a.fetched_at)) ASC, a.id ASC "
     } else {
-        " ORDER BY COALESCE(a.published_at, a.fetched_at) DESC, a.id DESC "
+        " ORDER BY datetime(COALESCE(a.published_at, a.fetched_at)) DESC, a.id DESC "
     });
     sql.push_str("LIMIT ? OFFSET ?");
     binds.push(Value::Integer(limit));
@@ -748,19 +867,58 @@ pub fn list_articles(
     Ok(rows)
 }
 
-/// Turn raw user text into a safe FTS5 MATCH expression (each term prefix-matched).
-fn fts_query(input: &str) -> String {
+/// Turn raw user text into a safe FTS5 MATCH expression (each term
+/// prefix-matched). `or_join` selects how multiple terms combine: `false`
+/// joins them with an implicit AND (every term must match — explicit search,
+/// where adding words narrows results); `true` joins them with `OR` (any term
+/// may match — recall-oriented retrieval, e.g. RAG over a natural-language
+/// question, where AND-ing every word would match nothing).
+///
+/// Punctuation *splits* a word into separate terms rather than being deleted
+/// inside it: the `unicode61` tokenizer indexes `rust-lang` / `node.js` as the
+/// two tokens `rust`+`lang` and `node`+`js`, so collapsing the query side to
+/// `rustlang` / `nodejs` would match nothing the index actually holds.
+fn fts_query(input: &str, or_join: bool) -> String {
     let terms: Vec<String> = input
-        .split_whitespace()
-        .map(|t| t.chars().filter(|c| c.is_alphanumeric()).collect::<String>())
+        .split(|c: char| !c.is_alphanumeric())
         .filter(|t| !t.is_empty())
         .map(|t| format!("\"{t}\"*"))
         .collect();
     if terms.is_empty() {
         "\"\"".into()
+    } else if or_join {
+        terms.join(" OR ")
     } else {
         terms.join(" ")
     }
+}
+
+/// Retrieve up to `limit` articles relevant to a natural-language `question`,
+/// for use as RAG context. Uses OR-joined FTS terms so a multi-word question
+/// still matches articles that contain *some* of its keywords — an AND join
+/// (as explicit search uses) would require every word to appear and so return
+/// nothing for a real question. Returns `(id, title, feed_title)` ordered by
+/// FTS relevance. An all-stopword / punctuation-only question yields no rows.
+pub fn search_articles_for_rag(
+    conn: &Connection,
+    question: &str,
+    limit: i64,
+) -> AppResult<Vec<(i64, String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT a.id, a.title, f.title
+         FROM articles a
+         JOIN feeds f ON f.id = a.feed_id
+         JOIN articles_fts fts ON fts.rowid = a.id
+         WHERE articles_fts MATCH ?1
+         ORDER BY fts.rank
+         LIMIT ?2",
+    )?;
+    let rows = stmt
+        .query_map(params![fts_query(question, true), limit], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
 }
 
 /// Recent articles as `(title, feed_title, text)` for building an AI digest.
@@ -768,7 +926,8 @@ pub fn digest_source(conn: &Connection, limit: i64) -> AppResult<Vec<(String, St
     let mut stmt = conn.prepare(
         "SELECT a.title, f.title, substr(a.body_text, 1, 600)
          FROM articles a JOIN feeds f ON f.id = a.feed_id
-         ORDER BY COALESCE(a.published_at, a.fetched_at) DESC, a.id DESC LIMIT ?1",
+         ORDER BY datetime(COALESCE(a.published_at, a.fetched_at)) DESC, a.id DESC
+         LIMIT ?1",
     )?;
     let rows = stmt
         .query_map(params![limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
@@ -906,13 +1065,21 @@ pub fn mark_all_read(
     // read state the articles never reached. Queue *before* flipping so the
     // `is_read = 0` filter still matches; the SELECT's WHERE also
     // disambiguates the ON CONFLICT clause.
+    //
+    // Articles are queued regardless of whether they already carry a
+    // `remote_id`: freshly fetched items have none until a pull matches them
+    // by URL, and "mark all read" is most often run right after a refresh on
+    // exactly those items. `take_sync_queue` defers any entry whose article
+    // still lacks a remote id, so the change pushes on the sync after the id
+    // is assigned — mirroring the single-article `enqueue_sync` path. The old
+    // `remote_id IS NOT NULL` filter here silently dropped those changes.
     let tx = conn.unchecked_transaction()?;
     if enqueue_sync {
         tx.execute(
             &format!(
                 "INSERT INTO sync_queue(article_id, field, value)
                  SELECT id, 'read', 1 FROM articles
-                 WHERE {pred} AND is_read = 0 AND remote_id IS NOT NULL
+                 WHERE {pred} AND is_read = 0
                  ON CONFLICT(article_id, field) DO UPDATE SET value = 1"
             ),
             bind.as_slice(),
@@ -964,12 +1131,40 @@ pub fn list_tags(conn: &Connection) -> AppResult<Vec<Tag>> {
 }
 
 /// Create a tag, auto-assigning the next palette colour and list position.
+///
+/// Idempotent on name: `tags.name` is `UNIQUE`, so a plain `INSERT` of an
+/// existing name would fail the constraint. Both call sites — the sidebar's
+/// "new tag" prompt and the reader's create-and-attach picker — treat a name
+/// the user typed, which may already exist (the picker even lists every tag
+/// right above the input). Matching is case-insensitive, consistent with how
+/// `list_tags` orders names, so "Rust" and "rust" resolve to one tag rather
+/// than silently diverging. An existing name returns that tag's id instead of
+/// erroring.
 pub fn create_tag(conn: &Connection, name: &str) -> AppResult<i64> {
-    let count: i64 = conn.query_row("SELECT COUNT(*) FROM tags", [], |r| r.get(0))?;
-    let color = TAG_COLORS[(count as usize) % TAG_COLORS.len()];
+    if let Some(id) = conn
+        .query_row(
+            "SELECT id FROM tags WHERE name = ?1 COLLATE NOCASE",
+            params![name],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()?
+    {
+        return Ok(id);
+    }
+    // Position the new tag at the end of the list. `MAX(position)+1` — not
+    // `COUNT(*)` — is required: deleting a tag from the middle leaves a gap,
+    // so a fresh `COUNT(*)` would collide with an existing tag's position and
+    // the new tag would not sort last (only the name tiebreaker would save
+    // it). The colour cycles off the same index so the palette stays varied.
+    let next: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(position), -1) + 1 FROM tags",
+        [],
+        |r| r.get(0),
+    )?;
+    let color = TAG_COLORS[(next as usize) % TAG_COLORS.len()];
     conn.execute(
         "INSERT INTO tags(name, color, position) VALUES (?1, ?2, ?3)",
-        params![name, color, count],
+        params![name, color, next],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -1088,11 +1283,22 @@ pub fn create_rule(
     query: &str,
     action: &str,
 ) -> AppResult<i64> {
-    let count: i64 = conn.query_row("SELECT COUNT(*) FROM rules", [], |r| r.get(0))?;
+    // Position the new rule at the end. `MAX(position)+1` — not `COUNT(*)` —
+    // is required: deleting a rule from the middle leaves a gap, so a fresh
+    // `COUNT(*)` would collide with an existing rule's position and the new
+    // rule would not sort last (`ORDER BY position, id` would then slot it
+    // before any later-positioned rule). Rule order is semantically load-
+    // bearing — `active_rules` evaluates in this order and a `skip` match
+    // short-circuits — so a stale position can change which action fires.
+    let next: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(position), -1) + 1 FROM rules",
+        [],
+        |r| r.get(0),
+    )?;
     conn.execute(
         "INSERT INTO rules(name, feed_id, field, query, action, position)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![name, feed_id, field, query, action, count],
+        params![name, feed_id, field, query, action, next],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -1172,7 +1378,8 @@ pub fn preview_rule(
     )?;
     let mut stmt = conn.prepare(&format!(
         "SELECT a.title FROM articles a WHERE {where_sql}
-         ORDER BY COALESCE(a.published_at, a.fetched_at) DESC, a.id DESC LIMIT 5"
+         ORDER BY datetime(COALESCE(a.published_at, a.fetched_at)) DESC, a.id DESC
+         LIMIT 5"
     ))?;
     let samples = stmt
         .query_map(params_from_iter(binds), |r| r.get(0))?
@@ -1211,21 +1418,34 @@ fn row_to_highlight(r: &rusqlite::Row) -> rusqlite::Result<Highlight> {
     })
 }
 
+/// The fields needed to create a highlight — everything in [`Highlight`]
+/// except the database-assigned `id` and `created_at`. Grouping the anchor
+/// fields (which are all `&str` and otherwise trivially swappable) into one
+/// named value keeps `insert_highlight` calls unambiguous.
+pub struct NewHighlight<'a> {
+    pub article_id: i64,
+    pub quote: &'a str,
+    pub prefix: &'a str,
+    pub suffix: &'a str,
+    pub text_offset: i64,
+    pub color: &'a str,
+    pub note: &'a str,
+}
+
 /// Insert a highlight and return its new id.
-pub fn insert_highlight(
-    conn: &Connection,
-    article_id: i64,
-    quote: &str,
-    prefix: &str,
-    suffix: &str,
-    text_offset: i64,
-    color: &str,
-    note: &str,
-) -> AppResult<i64> {
+pub fn insert_highlight(conn: &Connection, h: &NewHighlight) -> AppResult<i64> {
     conn.execute(
         "INSERT INTO highlights(article_id, quote, prefix, suffix, text_offset, color, note)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![article_id, quote, prefix, suffix, text_offset, color, note],
+        params![
+            h.article_id,
+            h.quote,
+            h.prefix,
+            h.suffix,
+            h.text_offset,
+            h.color,
+            h.note
+        ],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -1325,11 +1545,21 @@ pub fn storage_stats(conn: &Connection) -> AppResult<(i64, i64, i64)> {
 /// Returns the number removed. Age is the effective date —
 /// COALESCE(published_at, fetched_at) — so a dateless article is retained by
 /// fetch age rather than living forever (fetched_at is never NULL).
+///
+/// The two timestamp columns are stored in different textual formats:
+/// `published_at` is RFC 3339 (`2024-01-15T10:30:00+00:00`, written by
+/// `to_rfc3339`) while `fetched_at` and `datetime('now', …)` use SQLite's
+/// space-separated form (`2024-01-15 10:30:00`). A raw string `<` mis-orders
+/// them — the `T` byte sorts *after* a space, so a `published_at` value looks
+/// almost a day newer than it is and same-day articles escape the cutoff.
+/// Wrapping every side in `datetime()` parses both formats to the canonical
+/// representation, so the comparison reflects the real instant.
 pub fn cleanup_old_articles(conn: &Connection, days: i64) -> AppResult<usize> {
     Ok(conn.execute(
         "DELETE FROM articles
          WHERE is_starred = 0 AND read_later = 0 AND is_read = 1
-           AND COALESCE(published_at, fetched_at) < datetime('now', ?1)",
+           AND datetime(COALESCE(published_at, fetched_at))
+               < datetime('now', ?1)",
         params![format!("-{days} days")],
     )?)
 }
@@ -1359,6 +1589,18 @@ pub fn reset_settings(conn: &Connection) -> AppResult<()> {
 
 pub fn count_unread(conn: &Connection) -> AppResult<i64> {
     Ok(conn.query_row("SELECT COUNT(*) FROM articles WHERE is_read = 0", [], |r| r.get(0))?)
+}
+
+/// Unread article count for a single feed — the same expression `list_feeds`
+/// computes per row, used by `add_feed` so its returned `unread_count` matches
+/// what the sidebar will show (rules that pre-mark an article read must not be
+/// counted as unread).
+pub fn count_feed_unread(conn: &Connection, feed_id: i64) -> AppResult<i64> {
+    Ok(conn.query_row(
+        "SELECT COUNT(*) FROM articles WHERE feed_id = ?1 AND is_read = 0",
+        params![feed_id],
+        |r| r.get(0),
+    )?)
 }
 
 /// Timestamp of the most recent successful feed fetch, if any.
@@ -1515,10 +1757,107 @@ mod tests {
         (conn, article_id)
     }
 
+    /// Compact `NewHighlight` builder for the highlight tests.
+    fn hl<'a>(
+        article_id: i64,
+        quote: &'a str,
+        prefix: &'a str,
+        suffix: &'a str,
+        text_offset: i64,
+        color: &'a str,
+        note: &'a str,
+    ) -> NewHighlight<'a> {
+        NewHighlight {
+            article_id,
+            quote,
+            prefix,
+            suffix,
+            text_offset,
+            color,
+            note,
+        }
+    }
+
+    #[test]
+    fn fresh_feed_has_no_last_fetched_until_touched() {
+        let (conn, _) = test_db();
+        let feed_id: i64 = conn
+            .query_row("SELECT id FROM feeds", [], |r| r.get(0))
+            .unwrap();
+        // A just-inserted feed has never been fetched.
+        assert_eq!(feed_last_fetched(&conn, feed_id).unwrap(), None);
+        // `touch_feed` (the same call `add_feed` makes after its initial
+        // fetch) records the fetch time, so the feed no longer reads as
+        // "never refreshed".
+        touch_feed(&conn, feed_id).unwrap();
+        assert!(feed_last_fetched(&conn, feed_id).unwrap().is_some());
+    }
+
+    #[test]
+    fn refine_source_type_promotes_rss_but_never_demotes() {
+        let (conn, _) = test_db();
+        let feed_id: i64 = conn
+            .query_row("SELECT id FROM feeds", [], |r| r.get(0))
+            .unwrap();
+        let kind = |c: &Connection| -> String {
+            c.query_row("SELECT source_type FROM feeds WHERE id = ?1", params![feed_id], |r| {
+                r.get(0)
+            })
+            .unwrap()
+        };
+        // The test feed starts generic.
+        assert_eq!(kind(&conn), "rss");
+
+        // A no-op when the refined kind is still `Rss`.
+        refine_feed_source_type(&conn, feed_id, SourceType::Rss).unwrap();
+        assert_eq!(kind(&conn), "rss");
+
+        // A genuine kind promotes the still-generic feed.
+        refine_feed_source_type(&conn, feed_id, SourceType::Podcast).unwrap();
+        assert_eq!(kind(&conn), "podcast");
+
+        // Once classified, a later call must not churn the type — the
+        // `WHERE source_type = 'rss'` guard makes this strictly a promotion.
+        refine_feed_source_type(&conn, feed_id, SourceType::Mastodon).unwrap();
+        assert_eq!(kind(&conn), "podcast");
+    }
+
+    #[test]
+    fn opml_export_omits_newsletter_sources() {
+        use crate::ingestion::newsletter::NewsletterConfig;
+        let (conn, _) = test_db();
+        // The RSS feed from `test_db` plus a newsletter source whose feed_url
+        // is the synthetic, non-HTTP-fetchable `imap://` form.
+        let cfg = NewsletterConfig {
+            host: "imap.example.com".into(),
+            port: 993,
+            username: "me@example.com".into(),
+            password: "secret".into(),
+            folder: "Newsletters".into(),
+        };
+        insert_newsletter_source(
+            &conn,
+            "imap://me@example.com@imap.example.com:993/Newsletters",
+            "My Newsletter",
+            &cfg,
+        )
+        .unwrap();
+
+        let exported = feeds_for_export(&conn).unwrap();
+        // Only the real RSS feed is exportable — the newsletter is left out so
+        // a re-import never resurrects it as a broken `imap://` RSS feed.
+        assert_eq!(exported.len(), 1);
+        assert_eq!(exported[0].1, "https://example.com/feed.xml");
+        assert!(
+            !exported.iter().any(|(_, url, _)| url.starts_with("imap://")),
+            "no synthetic imap:// url should reach the OPML"
+        );
+    }
+
     #[test]
     fn insert_and_list_highlight() {
         let (conn, aid) = test_db();
-        let id = insert_highlight(&conn, aid, "quoted text", "pre", "suf", 12, "yellow", "")
+        let id = insert_highlight(&conn, &hl(aid, "quoted text", "pre", "suf", 12, "yellow", ""))
             .unwrap();
         let all = list_highlights(&conn, aid).unwrap();
         assert_eq!(all.len(), 1);
@@ -1534,9 +1873,9 @@ mod tests {
     #[test]
     fn highlights_ordered_by_offset() {
         let (conn, aid) = test_db();
-        insert_highlight(&conn, aid, "third", "", "", 90, "yellow", "").unwrap();
-        insert_highlight(&conn, aid, "first", "", "", 10, "yellow", "").unwrap();
-        insert_highlight(&conn, aid, "second", "", "", 50, "yellow", "").unwrap();
+        insert_highlight(&conn, &hl(aid, "third", "", "", 90, "yellow", "")).unwrap();
+        insert_highlight(&conn, &hl(aid, "first", "", "", 10, "yellow", "")).unwrap();
+        insert_highlight(&conn, &hl(aid, "second", "", "", 50, "yellow", "")).unwrap();
         let quotes: Vec<String> = list_highlights(&conn, aid)
             .unwrap()
             .into_iter()
@@ -1548,7 +1887,7 @@ mod tests {
     #[test]
     fn update_note_and_color() {
         let (conn, aid) = test_db();
-        let id = insert_highlight(&conn, aid, "q", "", "", 0, "yellow", "").unwrap();
+        let id = insert_highlight(&conn, &hl(aid, "q", "", "", 0, "yellow", "")).unwrap();
         update_highlight_note(&conn, id, "a thought").unwrap();
         set_highlight_color(&conn, id, "green").unwrap();
         let h = get_highlight(&conn, id).unwrap().unwrap();
@@ -1559,7 +1898,7 @@ mod tests {
     #[test]
     fn delete_highlight_removes_it() {
         let (conn, aid) = test_db();
-        let id = insert_highlight(&conn, aid, "q", "", "", 0, "yellow", "").unwrap();
+        let id = insert_highlight(&conn, &hl(aid, "q", "", "", 0, "yellow", "")).unwrap();
         delete_highlight(&conn, id).unwrap();
         assert!(list_highlights(&conn, aid).unwrap().is_empty());
         assert!(get_highlight(&conn, id).unwrap().is_none());
@@ -1568,7 +1907,7 @@ mod tests {
     #[test]
     fn highlights_cascade_on_article_delete() {
         let (conn, aid) = test_db();
-        insert_highlight(&conn, aid, "q", "", "", 0, "yellow", "").unwrap();
+        insert_highlight(&conn, &hl(aid, "q", "", "", 0, "yellow", "")).unwrap();
         conn.execute("DELETE FROM articles WHERE id = ?1", params![aid])
             .unwrap();
         assert!(list_highlights(&conn, aid).unwrap().is_empty());
@@ -1577,8 +1916,599 @@ mod tests {
     #[test]
     fn list_all_highlights_spans_articles() {
         let (conn, aid) = test_db();
-        insert_highlight(&conn, aid, "one", "", "", 0, "yellow", "").unwrap();
-        insert_highlight(&conn, aid, "two", "", "", 5, "green", "noted").unwrap();
+        insert_highlight(&conn, &hl(aid, "one", "", "", 0, "yellow", "")).unwrap();
+        insert_highlight(&conn, &hl(aid, "two", "", "", 5, "green", "noted")).unwrap();
         assert_eq!(list_all_highlights(&conn).unwrap().len(), 2);
+    }
+
+    // ── FTS query building ───────────────────────────────────────────
+
+    #[test]
+    fn fts_query_and_joins_explicit_search_terms() {
+        // Explicit search: every word required (implicit FTS5 AND).
+        assert_eq!(fts_query("rust async", false), "\"rust\"* \"async\"*");
+    }
+
+    #[test]
+    fn fts_query_or_joins_for_recall() {
+        // RAG retrieval: any word may match.
+        assert_eq!(
+            fts_query("rust async runtime", true),
+            "\"rust\"* OR \"async\"* OR \"runtime\"*"
+        );
+    }
+
+    #[test]
+    fn fts_query_strips_punctuation_and_handles_empty() {
+        // Non-alphanumerics are dropped from each term; an all-punctuation
+        // input collapses to a match-nothing expression in both modes.
+        assert_eq!(fts_query("c++!", false), "\"c\"*");
+        assert_eq!(fts_query("!!! ???", true), "\"\"");
+        assert_eq!(fts_query("   ", false), "\"\"");
+    }
+
+    #[test]
+    fn fts_query_splits_punctuation_into_separate_terms() {
+        // Punctuation *inside* a word splits it into separate terms, matching
+        // how the unicode61 tokenizer indexes the article text — collapsing
+        // `rust-lang` to `rustlang` would match nothing the index holds.
+        assert_eq!(fts_query("rust-lang", false), "\"rust\"* \"lang\"*");
+        assert_eq!(fts_query("node.js", true), "\"node\"* OR \"js\"*");
+        assert_eq!(
+            fts_query("co-op runtime", false),
+            "\"co\"* \"op\"* \"runtime\"*"
+        );
+    }
+
+    /// Insert a second article with searchable text for the RAG tests.
+    fn add_article(conn: &Connection, feed_id: i64, guid: &str, title: &str, body: &str) {
+        let article = NewArticle {
+            guid: guid.into(),
+            url: Some(format!("https://example.com/{guid}")),
+            title: title.into(),
+            author: None,
+            summary: None,
+            content_html: Some(format!("<p>{body}</p>")),
+            body_text: body.into(),
+            image_url: None,
+            published_at: None,
+            enclosures: Vec::new(),
+        };
+        upsert_article(conn, feed_id, &article, false, &[]).unwrap();
+    }
+
+    #[test]
+    fn rag_search_matches_any_keyword_not_all() {
+        let (conn, _aid) = test_db();
+        let feed_id: i64 = conn
+            .query_row("SELECT id FROM feeds", [], |r| r.get(0))
+            .unwrap();
+        add_article(&conn, feed_id, "rust", "Rust news", "the borrow checker explained");
+        add_article(&conn, feed_id, "privacy", "Privacy law", "a new data privacy regulation");
+
+        // A natural-language question shares only *some* words with each
+        // article. An AND join would require every word to appear and return
+        // nothing; the OR-based RAG search still finds both relevant pieces.
+        let hits = search_articles_for_rag(
+            &conn,
+            "what does the new privacy regulation say about the borrow checker",
+            6,
+        )
+        .unwrap();
+        let titles: Vec<&str> = hits.iter().map(|(_, t, _)| t.as_str()).collect();
+        assert!(titles.contains(&"Rust news"), "got: {titles:?}");
+        assert!(titles.contains(&"Privacy law"), "got: {titles:?}");
+    }
+
+    #[test]
+    fn rag_search_empty_question_returns_no_rows() {
+        let (conn, _aid) = test_db();
+        // An all-stopword / punctuation-only question must not error and must
+        // return nothing (the match-nothing `""` expression).
+        assert!(search_articles_for_rag(&conn, "??? !!!", 6).unwrap().is_empty());
+    }
+
+    #[test]
+    fn create_tag_is_idempotent_on_name() {
+        let (conn, _aid) = test_db();
+        let first = create_tag(&conn, "Rust").unwrap();
+        // Re-creating the same name returns the existing id, not a constraint
+        // error, and does not add a second row.
+        let again = create_tag(&conn, "Rust").unwrap();
+        assert_eq!(first, again);
+        // Case-insensitive: "rust" resolves to the same tag as "Rust".
+        let cased = create_tag(&conn, "rust").unwrap();
+        assert_eq!(first, cased);
+        assert_eq!(list_tags(&conn).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn create_tag_after_middle_delete_sorts_last() {
+        // Deleting a tag from the middle of the list leaves a gap in the
+        // `position` sequence. A new tag must still land at the end — a
+        // `COUNT(*)`-based position would collide with an existing row.
+        let (conn, _aid) = test_db();
+        let a = create_tag(&conn, "alpha").unwrap();
+        let b = create_tag(&conn, "beta").unwrap();
+        let _c = create_tag(&conn, "gamma").unwrap();
+        delete_tag(&conn, b).unwrap();
+        let zoo = create_tag(&conn, "zeta").unwrap();
+
+        let order: Vec<i64> = list_tags(&conn).unwrap().iter().map(|t| t.id).collect();
+        assert_eq!(
+            order.last(),
+            Some(&zoo),
+            "a tag created after a middle delete must sort last, got {order:?}",
+        );
+        // The pre-existing tags keep their relative order.
+        assert!(
+            order.iter().position(|&x| x == a) < order.iter().position(|&x| x == zoo),
+        );
+    }
+
+    #[test]
+    fn create_rule_after_middle_delete_sorts_last() {
+        // Same `COUNT(*)`-vs-`MAX(position)` hazard as tags: deleting a rule
+        // from the middle leaves a `position` gap, so a `COUNT(*)`-based
+        // position collides with an existing row and the new rule no longer
+        // sorts last. Rule order is load-bearing for ingestion evaluation.
+        let (conn, _aid) = test_db();
+        // Five rules, positions {0,1,2,3,4}.
+        let _a = create_rule(&conn, "alpha", None, "title", "x", "skip").unwrap();
+        let b = create_rule(&conn, "beta", None, "title", "y", "skip").unwrap();
+        let c = create_rule(&conn, "gamma", None, "title", "z", "skip").unwrap();
+        let _d = create_rule(&conn, "delta", None, "title", "w", "skip").unwrap();
+        let _e = create_rule(&conn, "epsilon", None, "title", "u", "skip").unwrap();
+        // Delete two from the middle, leaving positions {0,3,4} — wide enough
+        // that a `COUNT(*)` value (3) collides with a non-last rule.
+        delete_rule(&conn, b).unwrap();
+        delete_rule(&conn, c).unwrap();
+        let zoo = create_rule(&conn, "zeta", None, "title", "v", "skip").unwrap();
+
+        let order: Vec<i64> = list_rules(&conn).unwrap().iter().map(|r| r.id).collect();
+        assert_eq!(
+            order.last(),
+            Some(&zoo),
+            "a rule created after a middle delete must sort last, got {order:?}",
+        );
+    }
+
+    // ── per-feed unread count ────────────────────────────────────────
+
+    #[test]
+    fn count_feed_unread_excludes_articles_pre_marked_read_by_a_rule() {
+        // A filter rule with a `read` action inserts a matching article
+        // already marked read. `count_feed_unread` must agree with
+        // `list_feeds`: it counts only genuinely-unread rows.
+        let (conn, _aid) = test_db();
+        let feed_id: i64 = conn
+            .query_row("SELECT feed_id FROM articles LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        // The fixture article is unread.
+        assert_eq!(count_feed_unread(&conn, feed_id).unwrap(), 1);
+
+        // A rule that pre-marks anything titled "Sponsored" as read.
+        create_rule(&conn, "ads", None, "title", "Sponsored", "read").unwrap();
+        let rules = active_rules(&conn).unwrap();
+
+        let read_by_rule = NewArticle {
+            guid: "g-sponsored".into(),
+            url: Some("https://example.com/sponsored".into()),
+            title: "Sponsored Post".into(),
+            author: None,
+            summary: None,
+            content_html: None,
+            body_text: "ad copy".into(),
+            image_url: None,
+            published_at: None,
+            enclosures: Vec::new(),
+        };
+        let plain = NewArticle {
+            guid: "g-plain".into(),
+            url: Some("https://example.com/plain".into()),
+            title: "A Normal Post".into(),
+            author: None,
+            summary: None,
+            content_html: None,
+            body_text: "ordinary copy".into(),
+            image_url: None,
+            published_at: None,
+            enclosures: Vec::new(),
+        };
+        // Both rows land, but `upsert_article` returns `true` only for the
+        // genuinely-unread one — the rule-read article is not "new".
+        assert!(
+            !upsert_article(&conn, feed_id, &read_by_rule, false, &rules).unwrap(),
+            "an article pre-marked read by a rule is not a new unread article"
+        );
+        assert!(upsert_article(&conn, feed_id, &plain, false, &rules).unwrap());
+
+        // Three articles inserted total, but the rule-read one is not unread.
+        assert_eq!(
+            count_feed_unread(&conn, feed_id).unwrap(),
+            2,
+            "the rule-read article must not be counted as unread"
+        );
+        // And it matches the count `list_feeds` computes for the same feed.
+        let from_list = list_feeds(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|f| f.id == feed_id)
+            .unwrap()
+            .unread_count;
+        assert_eq!(from_list, 2);
+    }
+
+    #[test]
+    fn upsert_article_reports_rule_read_inserts_as_not_new() {
+        // The refresh scheduler tallies `upsert_article(..) == Ok(true)` into
+        // the "N new articles" count that drives the refresh toast and the OS
+        // notification. An article inserted but pre-marked read by a `read`
+        // rule never appears as unread, so it must NOT be counted as new —
+        // otherwise the toast/notification claims new articles the user can
+        // never find.
+        let (conn, _aid) = test_db();
+        let feed_id: i64 = conn
+            .query_row("SELECT feed_id FROM articles LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        create_rule(&conn, "ads", None, "title", "Sponsored", "read").unwrap();
+        let rules = active_rules(&conn).unwrap();
+
+        let mk = |guid: &str, title: &str| NewArticle {
+            guid: guid.into(),
+            url: Some(format!("https://example.com/{guid}")),
+            title: title.into(),
+            author: None,
+            summary: None,
+            content_html: None,
+            body_text: "copy".into(),
+            image_url: None,
+            published_at: None,
+            enclosures: Vec::new(),
+        };
+
+        // Pre-marked read by the rule → not new.
+        assert!(!upsert_article(&conn, feed_id, &mk("g-ad", "Sponsored Item"), false, &rules)
+            .unwrap());
+        // A plain article → genuinely new.
+        assert!(upsert_article(&conn, feed_id, &mk("g-ok", "Real Story"), false, &rules)
+            .unwrap());
+        // A duplicate guid → not new (no double count).
+        assert!(!upsert_article(&conn, feed_id, &mk("g-ok", "Real Story"), false, &rules)
+            .unwrap());
+    }
+
+    // ── rule matching ────────────────────────────────────────────────
+
+    #[test]
+    fn any_field_rule_does_not_match_keyword_across_field_boundary() {
+        // An `any`-field rule must check each field independently — the same
+        // per-column semantics `preview_rule` uses. A keyword that only exists
+        // because the title's tail and the body's head happen to abut must NOT
+        // fire the rule; otherwise live ingestion acts on articles the rule
+        // preview never counted.
+        let (conn, _aid) = test_db();
+        let feed_id: i64 = conn
+            .query_row("SELECT feed_id FROM articles LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+
+        // A `skip` rule keyed on the two-word phrase "rust weekly".
+        create_rule(&conn, "rw", None, "any", "rust weekly", "skip").unwrap();
+        let rules = active_rules(&conn).unwrap();
+
+        // Title ends in "rust", author starts with "weekly": the old code
+        // concatenated `title author body` with single spaces, so the phrase
+        // appeared only at that join. Per-field matching must not fire here,
+        // and the article must still insert.
+        let straddle = NewArticle {
+            guid: "g-straddle".into(),
+            url: Some("https://example.com/straddle".into()),
+            title: "All about rust".into(),
+            author: Some("Weekly Digest".into()),
+            summary: None,
+            content_html: None,
+            body_text: "body text".into(),
+            image_url: None,
+            published_at: None,
+            enclosures: Vec::new(),
+        };
+        assert!(
+            upsert_article(&conn, feed_id, &straddle, false, &rules).unwrap(),
+            "a keyword straddling the title/author boundary must not skip the article"
+        );
+
+        // The phrase wholly within one field still triggers the skip.
+        let within = NewArticle {
+            guid: "g-within".into(),
+            url: Some("https://example.com/within".into()),
+            title: "The Rust Weekly roundup".into(),
+            author: None,
+            summary: None,
+            content_html: None,
+            body_text: "intro text".into(),
+            image_url: None,
+            published_at: None,
+            enclosures: Vec::new(),
+        };
+        assert!(
+            !upsert_article(&conn, feed_id, &within, false, &rules).unwrap(),
+            "a keyword wholly within one field must still skip the article"
+        );
+    }
+
+    // ── mark_all_read sync queueing ──────────────────────────────────
+
+    #[test]
+    fn mark_all_read_queues_articles_without_a_remote_id() {
+        // Freshly fetched articles carry no `remote_id` until a sync pull
+        // matches them by URL. A bulk "mark all read" run right after a
+        // refresh must still queue those changes so they reach the sync
+        // server once the id is assigned — not silently drop them.
+        let (conn, aid) = test_db();
+        assert_eq!(
+            conn.query_row("SELECT remote_id FROM articles WHERE id = ?1", [aid], |r| r
+                .get::<_, Option<String>>(0))
+                .unwrap(),
+            None,
+            "fixture article should start without a remote id"
+        );
+
+        let n = mark_all_read(&conn, &ArticleQuery::All, true).unwrap();
+        assert_eq!(n, 1, "the one unread article should be flipped to read");
+
+        let queued: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sync_queue WHERE article_id = ?1 AND field = 'read'",
+                [aid],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(queued, 1, "the read change must be queued for sync");
+    }
+
+    #[test]
+    fn mark_all_read_skips_sync_queue_when_not_connected() {
+        // Without a sync server linked, no rows should land in the queue.
+        let (conn, _aid) = test_db();
+        mark_all_read(&conn, &ArticleQuery::All, false).unwrap();
+        let queued: i64 = conn
+            .query_row("SELECT count(*) FROM sync_queue", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(queued, 0);
+    }
+
+    // ── retention cleanup ────────────────────────────────────────────
+
+    /// Insert a read article with an explicit RFC 3339 `published_at`, the
+    /// format `to_rfc3339` produces for every feed-dated article.
+    fn insert_read_article_published(conn: &Connection, feed_id: i64, guid: &str, rfc3339: &str) {
+        let a = NewArticle {
+            guid: guid.into(),
+            url: None,
+            title: "T".into(),
+            author: None,
+            summary: None,
+            content_html: None,
+            body_text: String::new(),
+            image_url: None,
+            published_at: Some(rfc3339.into()),
+            enclosures: Vec::new(),
+        };
+        upsert_article(conn, feed_id, &a, false, &[]).unwrap();
+        conn.execute(
+            "UPDATE articles SET is_read = 1 WHERE guid = ?1",
+            params![guid],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn cleanup_compares_rfc3339_published_at_by_real_instant() {
+        // `published_at` is stored RFC 3339 (`...T...+00:00`) while the
+        // retention cutoff uses SQLite's space-separated form. A raw string
+        // `<` mis-orders the two: the `T` byte sorts *after* a space, so for
+        // an article whose `published_at` falls on the same calendar day as
+        // the cutoff but earlier in the day, the string compare wrongly
+        // reports it as newer and it escapes deletion. The fix normalises
+        // both sides with `datetime()`.
+        //
+        // This test pins exactly that same-day boundary: an article dated to
+        // the cutoff's own calendar day but earlier in that day — genuinely
+        // outside a 30-day window, yet a string compare wrongly keeps it.
+        let (conn, fixture) = test_db();
+        let feed_id: i64 = conn
+            .query_row("SELECT feed_id FROM articles WHERE id = ?1", [fixture], |r| {
+                r.get(0)
+            })
+            .unwrap();
+
+        // The cutoff is "now" minus 30 days, kept at the current wall-clock
+        // time. Date this article to that very same calendar day but at one
+        // second past midnight — genuinely older than the cutoff instant,
+        // yet on a string `<` the RFC 3339 `T` makes it look newer.
+        let now = chrono::Utc::now();
+        let cutoff_day = (now - chrono::Duration::days(30)).date_naive();
+        let old = cutoff_day.and_hms_opt(0, 0, 1).unwrap().and_utc();
+        // Skip the rare case where the test runs within a second of midnight
+        // and the article is not actually before the cutoff.
+        assert!(old < now - chrono::Duration::days(30));
+        insert_read_article_published(&conn, feed_id, "old", &old.to_rfc3339());
+        // Comfortably inside the window — must be kept.
+        let recent = chrono::Utc::now() - chrono::Duration::days(1);
+        insert_read_article_published(&conn, feed_id, "recent", &recent.to_rfc3339());
+
+        let removed = cleanup_old_articles(&conn, 30).unwrap();
+        assert_eq!(removed, 1, "exactly the past-cutoff article should go");
+
+        let surviving: Vec<String> = conn
+            .prepare("SELECT guid FROM articles WHERE guid IN ('old','recent')")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(surviving, ["recent"], "the old article must be deleted");
+    }
+
+    #[test]
+    fn cleanup_keeps_starred_and_read_later_articles() {
+        let (conn, _fixture) = test_db();
+        let feed_id: i64 = conn
+            .query_row("SELECT id FROM feeds", [], |r| r.get(0))
+            .unwrap();
+        let old = (chrono::Utc::now() - chrono::Duration::days(90)).to_rfc3339();
+        insert_read_article_published(&conn, feed_id, "starred", &old);
+        insert_read_article_published(&conn, feed_id, "later", &old);
+        conn.execute("UPDATE articles SET is_starred = 1 WHERE guid = 'starred'", [])
+            .unwrap();
+        conn.execute("UPDATE articles SET read_later = 1 WHERE guid = 'later'", [])
+            .unwrap();
+
+        cleanup_old_articles(&conn, 30).unwrap();
+        let kept: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM articles WHERE guid IN ('starred','later')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept, 2, "starred / read-later articles are never purged");
+    }
+
+    // ── article-list chronological ordering ──────────────────────────
+
+    #[test]
+    fn list_articles_orders_mixed_date_formats_by_real_instant() {
+        // The newest-first list sorts on COALESCE(published_at, fetched_at).
+        // A feed-dated row carries `published_at` as RFC 3339 (`...T...+00:00`,
+        // a `T` separator); a dateless row falls through to `fetched_at`, which
+        // SQLite stores space-separated (`... ...`). A raw string `<` compares
+        // the two formats byte-for-byte and the `T` (0x54) sorts *after* a
+        // space (0x20), so a dated row looks up to a day newer than it is —
+        // a list mixing both kinds of rows comes out subtly out of order.
+        //
+        // This pins that exact mix: a dateless row fetched *later* than a
+        // dated row was published. The dateless one must sort first. Under a
+        // string compare the dated row wins (the `T`); `datetime()` fixes it.
+        let (conn, fixture) = test_db();
+        let feed_id: i64 = conn
+            .query_row("SELECT feed_id FROM articles WHERE id = ?1", [fixture], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        // Drop the bare fixture article so only the two controlled rows remain.
+        conn.execute("DELETE FROM articles WHERE id = ?1", [fixture])
+            .unwrap();
+
+        // Same calendar day so the format difference — not the date — decides:
+        // the dated row published at 10:00, the dateless row fetched at 12:00.
+        // '2024-01-15T10:00:00+00:00' > '2024-01-15 12:00:00' as raw strings
+        // (T beats space) but the dateless row is the genuinely newer one.
+        insert_read_article_published(&conn, feed_id, "dated", "2024-01-15T10:00:00+00:00");
+        let dateless = NewArticle {
+            guid: "dateless".into(),
+            url: None,
+            title: "T".into(),
+            author: None,
+            summary: None,
+            content_html: None,
+            body_text: String::new(),
+            image_url: None,
+            published_at: None,
+            enclosures: Vec::new(),
+        };
+        upsert_article(&conn, feed_id, &dateless, false, &[]).unwrap();
+        conn.execute(
+            "UPDATE articles SET fetched_at = '2024-01-15 12:00:00' WHERE guid = 'dateless'",
+            [],
+        )
+        .unwrap();
+
+        // Newest-first: the dateless row (fetched 12:00) precedes the dated
+        // row (published 10:00).
+        let newest = list_articles(&conn, &ArticleQuery::All, false, None, false, 50, 0).unwrap();
+        let newest_guids: Vec<i64> = newest.iter().map(|a| a.id).collect();
+        let dated_id: i64 = conn
+            .query_row("SELECT id FROM articles WHERE guid = 'dated'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let dateless_id: i64 = conn
+            .query_row("SELECT id FROM articles WHERE guid = 'dateless'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            newest_guids,
+            [dateless_id, dated_id],
+            "newest-first: the later-fetched dateless article must come first"
+        );
+
+        // Oldest-first is the exact mirror.
+        let oldest = list_articles(&conn, &ArticleQuery::All, false, None, true, 50, 0).unwrap();
+        let oldest_guids: Vec<i64> = oldest.iter().map(|a| a.id).collect();
+        assert_eq!(
+            oldest_guids,
+            [dated_id, dateless_id],
+            "oldest-first: the earlier-published dated article must come first"
+        );
+    }
+
+    // ── feed rename vs. refresh ──────────────────────────────────────
+
+    #[test]
+    fn manual_rename_survives_a_metadata_refresh() {
+        // A user renames a feed; a later refresh pulls the feed document's own
+        // `<title>` through `update_feed_meta`. The rename must stick — only
+        // the other metadata (site_url, description, favicon) should update.
+        let (conn, _aid) = test_db();
+        let feed_id: i64 = conn
+            .query_row("SELECT id FROM feeds", [], |r| r.get(0))
+            .unwrap();
+
+        rename_feed(&conn, feed_id, "My Custom Name").unwrap();
+
+        // Simulate a refresh: the feed document still calls itself "Example Feed".
+        update_feed_meta(
+            &conn,
+            feed_id,
+            Some("Example Feed"),
+            Some("https://example.com"),
+            Some("A description"),
+            None,
+        )
+        .unwrap();
+
+        let (title, site_url): (String, Option<String>) = conn
+            .query_row("SELECT title, site_url FROM feeds WHERE id = ?1", [feed_id], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(
+            title, "My Custom Name",
+            "a manual rename must not be reverted by a refresh"
+        );
+        assert_eq!(
+            site_url.as_deref(),
+            Some("https://example.com"),
+            "non-title metadata must still refresh normally"
+        );
+    }
+
+    #[test]
+    fn refresh_updates_title_when_not_renamed() {
+        // A feed the user has never renamed should still pick up the feed
+        // document's title on refresh — the guard only protects manual names.
+        let (conn, _aid) = test_db();
+        let feed_id: i64 = conn
+            .query_row("SELECT id FROM feeds", [], |r| r.get(0))
+            .unwrap();
+
+        update_feed_meta(&conn, feed_id, Some("Renamed Upstream"), None, None, None).unwrap();
+
+        let title: String = conn
+            .query_row("SELECT title FROM feeds WHERE id = ?1", [feed_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(title, "Renamed Upstream");
     }
 }

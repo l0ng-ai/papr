@@ -8,6 +8,7 @@ import { useUi } from "../store";
 import { useArticleActions } from "../hooks/articleActions";
 import { feedAvatar, feedColor, relTime } from "../lib/feedMeta";
 import { errorText } from "../lib/errors";
+import { clampToViewport } from "../lib/viewport";
 import type { ArticleSummary, Feed } from "../types";
 import Icon from "./Icon";
 import ContextMenu, { type MenuEntry } from "./ContextMenu";
@@ -114,6 +115,27 @@ export default function ArticleList({ onToast }: Props) {
 
   useEffect(() => () => window.clearTimeout(hoverTimer.current), []);
 
+  // Dismiss any hover preview (shown or still pending) when the list contents
+  // change — switching feed/folder/tag, or toggling the unread / sort filters.
+  // The hovered row is unmounted by the re-render without firing `mouseleave`,
+  // so without this the preview lingers over the new list (or a pending timer
+  // fires later and measures a now-detached row, placing the preview at 0,0).
+  useEffect(() => {
+    window.clearTimeout(hoverTimer.current);
+    setHover(null);
+  }, [query, unreadOnly, sortOldest]);
+
+  // Jump back to the top of the list whenever the sidebar selection changes.
+  // The scroll container stays mounted across the query swap, so without this
+  // a new feed/folder/tag opens scrolled to wherever the *previous* list was
+  // left — burying its newest articles below the fold. `scrollToOffset(0)`
+  // also resets the virtualizer's internal offset, keeping its rendered window
+  // in sync with the DOM scroll position.
+  useEffect(() => {
+    virt.scrollToOffset(0);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query]);
+
   const markAll = async () => {
     try {
       const n = await api.markAllRead(query);
@@ -130,8 +152,15 @@ export default function ArticleList({ onToast }: Props) {
 
   const onHover = (a: ArticleSummary, e: React.MouseEvent) => {
     window.clearTimeout(hoverTimer.current);
-    const rect = e.currentTarget.getBoundingClientRect();
+    // Hold the row element, not a rect snapshot: the preview only appears
+    // 650ms later, and the list is scrollable — measuring at hover time would
+    // anchor the preview to where the row *was*, so a scroll during the delay
+    // (a common "scroll, then pause on a row" gesture) leaves it floating over
+    // unrelated rows or off-screen. Re-measure inside the timer instead, when
+    // the preview actually opens, so it tracks the row's live position.
+    const row = e.currentTarget;
     hoverTimer.current = window.setTimeout(() => {
+      const rect = row.getBoundingClientRect();
       setHover({ article: a, top: rect.top + 4, left: rect.right + 12 });
     }, 650);
   };
@@ -481,8 +510,17 @@ function HoverPreview({
   left,
   feedTitle,
 }: Hover & { feedTitle: string }) {
-  const adjLeft = Math.min(left, window.innerWidth - 360);
-  const adjTop = Math.min(top, window.innerHeight - 200);
+  // Clamp the preview inside the viewport. The card is a fixed 340px wide;
+  // the 192px height below pairs with the 8px margin to keep the historical
+  // `innerHeight - 200` bottom pull-back. The shared helper bounds both edges
+  // so a narrow/short window can't shove the preview off the top-left corner.
+  const { left: adjLeft, top: adjTop } = clampToViewport({
+    x: left,
+    y: top,
+    width: 340,
+    height: 192,
+    margin: 8,
+  });
   return (
     <div className="hover-preview" style={{ top: adjTop, left: adjLeft }}>
       <div className="hp-feed">{feedTitle}</div>

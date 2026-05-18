@@ -46,8 +46,71 @@ fn pick_site_url(links: &[feed_rs::model::Link]) -> Option<String> {
         .map(|l| l.href.clone())
 }
 
+/// Resolve a possibly-relative link href against the feed's base URL.
+///
+/// `feed_rs::parser::parse` does not carry a base URI, so an Atom feed that
+/// uses relative entry links (`<link href="/posts/123">`) yields relative
+/// hrefs. Stored unresolved, such a URL breaks "open in browser", full-text
+/// extraction and sync URL-matching downstream. Joining against `base` turns
+/// it into the absolute URL the rest of the app expects; an already-absolute
+/// href is returned unchanged, and an unparseable pair falls back to the raw
+/// value rather than dropping the link.
+fn resolve_url(href: &str, base: &str) -> String {
+    match Url::parse(href) {
+        Ok(_) => href.to_string(),
+        Err(_) => Url::parse(base)
+            .ok()
+            .and_then(|b| b.join(href).ok())
+            .map(|u| u.to_string())
+            .unwrap_or_else(|| href.to_string()),
+    }
+}
+
+/// Infer an audio/video MIME type from a media URL's file extension, for
+/// enclosures whose feed omitted the `type` attribute. Returns `None` for
+/// unknown or non-media extensions.
+fn mime_from_url(url: &str) -> Option<&'static str> {
+    // Strip any query string / fragment before reading the extension.
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    let ext = path.rsplit('.').next()?.to_ascii_lowercase();
+    match ext.as_str() {
+        "mp3" => Some("audio/mpeg"),
+        "m4a" | "aac" => Some("audio/aac"),
+        "ogg" | "oga" | "opus" => Some("audio/ogg"),
+        "wav" => Some("audio/wav"),
+        "flac" => Some("audio/flac"),
+        "mp4" | "m4v" => Some("video/mp4"),
+        "webm" => Some("video/webm"),
+        "mov" => Some("video/quicktime"),
+        _ => None,
+    }
+}
+
+/// Clamp a feed-supplied publication date so it never lands in the future.
+///
+/// Misconfigured or spammy feeds routinely ship entries dated weeks, months,
+/// or years ahead. Because the article list sorts on
+/// `COALESCE(published_at, fetched_at) DESC`, a single such entry pins itself
+/// to the top of the newest-first list permanently, burying genuinely recent
+/// articles. A 24-hour grace window absorbs harmless publisher/client clock
+/// skew; anything beyond it is clamped down to "now".
+pub fn clamp_publish_date(
+    date: chrono::DateTime<chrono::Utc>,
+) -> chrono::DateTime<chrono::Utc> {
+    let now = chrono::Utc::now();
+    let cutoff = now + chrono::Duration::hours(24);
+    if date > cutoff {
+        now
+    } else {
+        date
+    }
+}
+
 fn map_entry(e: &Entry, base: &str) -> Option<NewArticle> {
-    let url = pick_site_url(&e.links);
+    // Resolve a relative entry link against the feed's base URL — see
+    // `resolve_url`. Done before `guid` falls back to the URL so the dedup
+    // key is the absolute form too.
+    let url = pick_site_url(&e.links).map(|u| resolve_url(&u, base));
     let guid = if e.id.trim().is_empty() {
         url.clone()?
     } else {
@@ -94,18 +157,21 @@ fn map_entry(e: &Entry, base: &str) -> Option<NewArticle> {
             })
     });
 
-    // Enclosures: audio/video media content (podcasts, video).
+    // Enclosures: audio/video media content (podcasts, video). Many real-world
+    // podcast feeds ship an `<enclosure>` without a `type` attribute, leaving
+    // `content_type` empty — in that case fall back to inferring the kind from
+    // the URL's file extension so the episode stays playable.
     let enclosures: Vec<Enclosure> = e
         .media
         .iter()
         .flat_map(|m| m.content.iter())
         .filter_map(|c| {
             let url = c.url.as_ref()?.to_string();
-            let mime_type = c.content_type.as_ref().map(|t| t.to_string());
-            let is_av = c
-                .content_type
-                .as_ref()
-                .map(|t| matches!(t.ty().as_str(), "audio" | "video"))
+            let declared = c.content_type.as_ref().map(|t| t.to_string());
+            let mime_type = declared.or_else(|| mime_from_url(&url).map(String::from));
+            let is_av = mime_type
+                .as_deref()
+                .map(|m| m.starts_with("audio") || m.starts_with("video"))
                 .unwrap_or(false);
             if is_av {
                 Some(Enclosure {
@@ -132,7 +198,11 @@ fn map_entry(e: &Entry, base: &str) -> Option<NewArticle> {
         content_html,
         body_text,
         image_url,
-        published_at: e.published.or(e.updated).map(|d| d.to_rfc3339()),
+        published_at: e
+            .published
+            .or(e.updated)
+            .map(clamp_publish_date)
+            .map(|d| d.to_rfc3339()),
         enclosures,
     })
 }
@@ -203,4 +273,82 @@ pub fn discover_feeds(html: &str, page_url: &str) -> Vec<String> {
 /// Decide whether bytes look like a feed (vs an HTML page) by attempting a parse.
 pub fn looks_like_feed(bytes: &[u8]) -> bool {
     feed_rs::parser::parse(bytes).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{clamp_publish_date, mime_from_url, resolve_url};
+    use chrono::{Duration, Utc};
+
+    #[test]
+    fn resolve_url_keeps_absolute_links_unchanged() {
+        assert_eq!(
+            resolve_url("https://other.example.com/post/1", "https://feed.example.com/rss"),
+            "https://other.example.com/post/1"
+        );
+    }
+
+    #[test]
+    fn resolve_url_joins_relative_links_against_base() {
+        // Root-relative and document-relative hrefs both resolve to absolutes.
+        assert_eq!(
+            resolve_url("/posts/123", "https://blog.example.com/feed.atom"),
+            "https://blog.example.com/posts/123"
+        );
+        assert_eq!(
+            resolve_url("123", "https://blog.example.com/posts/"),
+            "https://blog.example.com/posts/123"
+        );
+    }
+
+    #[test]
+    fn resolve_url_falls_back_to_raw_when_base_is_unparseable() {
+        assert_eq!(resolve_url("/posts/1", "not a url"), "/posts/1");
+    }
+
+    #[test]
+    fn clamp_leaves_past_dates_untouched() {
+        let past = Utc::now() - Duration::days(30);
+        assert_eq!(clamp_publish_date(past), past);
+    }
+
+    #[test]
+    fn clamp_allows_small_clock_skew() {
+        // A few hours ahead — harmless publisher/client clock skew — is kept.
+        let slightly_ahead = Utc::now() + Duration::hours(6);
+        assert_eq!(clamp_publish_date(slightly_ahead), slightly_ahead);
+    }
+
+    #[test]
+    fn clamp_pulls_far_future_dates_back_to_now() {
+        let far_future = Utc::now() + Duration::days(365);
+        let clamped = clamp_publish_date(far_future);
+        assert!(clamped < far_future);
+        // Clamped to roughly "now" — within a generous tolerance of the call.
+        assert!((Utc::now() - clamped).num_seconds().abs() < 5);
+    }
+
+    #[test]
+    fn infers_audio_and_video_from_extension() {
+        assert_eq!(mime_from_url("https://cdn.example.com/ep1.mp3"), Some("audio/mpeg"));
+        assert_eq!(mime_from_url("http://x/y/show.m4a"), Some("audio/aac"));
+        assert_eq!(mime_from_url("https://x/clip.MP4"), Some("video/mp4"));
+        assert_eq!(mime_from_url("https://x/clip.webm"), Some("video/webm"));
+    }
+
+    #[test]
+    fn ignores_query_and_fragment_when_reading_extension() {
+        assert_eq!(
+            mime_from_url("https://traffic.example.com/ep.mp3?token=abc&t=1"),
+            Some("audio/mpeg")
+        );
+        assert_eq!(mime_from_url("https://x/ep.m4a#chapter2"), Some("audio/aac"));
+    }
+
+    #[test]
+    fn returns_none_for_non_media_or_extensionless_urls() {
+        assert_eq!(mime_from_url("https://example.com/article.html"), None);
+        assert_eq!(mime_from_url("https://example.com/feed"), None);
+        assert_eq!(mime_from_url("https://example.com/image.jpg"), None);
+    }
 }

@@ -3,7 +3,7 @@
 
 use crate::db;
 use crate::error::AppResult;
-use crate::ingestion::newsletter::{self, NewsletterConfig};
+use crate::ingestion::newsletter;
 use crate::ingestion::{fetch, parse};
 use crate::models::RefreshProgress;
 use crate::state::AppState;
@@ -13,6 +13,13 @@ use std::time::Duration;
 use tauri::{ipc::Channel, AppHandle, Emitter, Manager};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
+
+/// Wall-clock cap for polling one newsletter mailbox over IMAP. Generous
+/// enough for a slow mailbox with large messages, short enough that a wedged
+/// server never stalls the refresh cycle. Shared with the interactive
+/// `add_newsletter_source` probe so a hung server can't hang the Add dialog
+/// either.
+pub const NEWSLETTER_POLL_TIMEOUT_SECS: u64 = 90;
 
 /// Outcome of fetching one feed.
 enum Outcome {
@@ -105,19 +112,22 @@ pub async fn refresh_all(
     }
 
     let sem = Arc::new(Semaphore::new(concurrency));
-    let mut set: JoinSet<(i64, Outcome)> = JoinSet::new();
+    // The feed URL travels back out alongside the outcome — `refine_source_type`
+    // needs it for the Mastodon `/@user.rss` pattern check below.
+    let mut set: JoinSet<(i64, String, Outcome)> = JoinSet::new();
     for (id, url, etag, last_modified) in feeds {
         let client = state.http();
         let sem = sem.clone();
         set.spawn(async move {
             let _permit = sem.acquire().await;
-            (id, fetch_one(&client, &url, etag, last_modified).await)
+            let outcome = fetch_one(&client, &url, etag, last_modified).await;
+            (id, url, outcome)
         });
     }
 
     let mut total_new = 0usize;
     while let Some(joined) = set.join_next().await {
-        let Ok((feed_id, outcome)) = joined else {
+        let Ok((feed_id, feed_url, outcome)) = joined else {
             continue;
         };
         let mut new_here = 0usize;
@@ -169,6 +179,19 @@ pub async fn refresh_all(
                     last_modified.as_deref(),
                     None,
                 );
+                // Promote a still-generic `'rss'` feed to its real kind now
+                // that the parsed document reveals it (audio enclosures →
+                // podcast, `/@user.rss` → mastodon). `add_feed` already does
+                // this at subscribe time; `import_opml` cannot — it only sees
+                // the URL — so an OPML-imported podcast would otherwise stay
+                // mislabelled forever. The DB call is a no-op for an already
+                // classified feed.
+                let refined = parse::refine_source_type(
+                    crate::models::SourceType::Rss,
+                    &parsed,
+                    &feed_url,
+                );
+                let _ = db::refine_feed_source_type(&conn, feed_id, refined);
             }
         }
 
@@ -264,26 +287,45 @@ async fn poll_newsletters(
     }
 
     let mut total_new = 0usize;
-    for (feed_id, host, port, username, password, folder) in sources {
-        let cfg = NewsletterConfig {
-            host,
-            port,
-            username,
-            password,
-            folder,
+    for (feed_id, cfg) in sources {
+        // `imap` is a blocking crate with no per-operation timeout: a server
+        // that completes the TCP/TLS handshake but then stalls mid-command
+        // would block this poll forever. Because mailboxes are polled
+        // sequentially, one stuck mailbox would also starve every later one
+        // and prevent `refresh_all` from ever finishing (no `feeds-updated`,
+        // no notification, scheduler wedged). Bound the whole fetch with a
+        // wall-clock timeout so a hung mailbox degrades to a per-feed error.
+        let fetched = match tokio::time::timeout(
+            Duration::from_secs(NEWSLETTER_POLL_TIMEOUT_SECS),
+            tokio::task::spawn_blocking(move || newsletter::fetch_recent(&cfg, 50)),
+        )
+        .await
+        {
+            Ok(joined) => joined
+                .map_err(|e| e.to_string())
+                .and_then(|r| r.map_err(|e| e.to_string())),
+            Err(_) => Err(format!(
+                "IMAP poll timed out after {NEWSLETTER_POLL_TIMEOUT_SECS}s"
+            )),
         };
-        // `imap` is a blocking crate — fetch on the blocking pool.
-        let fetched = tokio::task::spawn_blocking(move || newsletter::fetch_recent(&cfg, 50))
-            .await
-            .map_err(|e| e.to_string())
-            .and_then(|r| r.map_err(|e| e.to_string()));
 
         match fetched {
             Ok(messages) => {
-                let conn = state.db.lock().await;
-                for raw in &messages {
-                    if let Some(parsed) = newsletter::email_to_article(raw) {
-                        match db::upsert_article(&conn, feed_id, &parsed.article, dedup, rules) {
+                // Parse the RFC822 bytes into articles *before* taking the DB
+                // lock — `email_to_article` sanitizes HTML and is CPU-bound, so
+                // doing it inside the locked scope would starve concurrent UI
+                // queries (the same hazard the RSS path avoids with chunking).
+                let articles: Vec<_> = messages
+                    .iter()
+                    .filter_map(|raw| newsletter::email_to_article(raw))
+                    .map(|p| p.article)
+                    .collect();
+                // Insert in bounded chunks, releasing the shared lock between
+                // each, mirroring the RSS ingest loop in `refresh_all`.
+                for chunk in articles.chunks(64) {
+                    let conn = state.db.lock().await;
+                    for article in chunk {
+                        match db::upsert_article(&conn, feed_id, article, dedup, rules) {
                             Ok(true) => total_new += 1,
                             Ok(false) => {}
                             Err(e) => log::warn!(
@@ -292,6 +334,7 @@ async fn poll_newsletters(
                         }
                     }
                 }
+                let conn = state.db.lock().await;
                 let _ = db::touch_feed(&conn, feed_id);
             }
             Err(e) => {

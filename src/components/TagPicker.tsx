@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import * as api from "../api";
 import { errorText } from "../lib/errors";
 import { tagColor } from "../lib/tagColors";
+import { clampToViewport } from "../lib/viewport";
 import Icon from "./Icon";
 
 interface Props {
@@ -97,9 +98,11 @@ export default function TagPicker({
     }
   };
 
-  // Clamp inside the viewport.
-  const left = Math.min(x, window.innerWidth - 248);
-  const top = Math.min(y, window.innerHeight - 320);
+  // Clamp inside the viewport with the shared two-sided helper. The popover
+  // is ~232px wide and ~320px tall; the 248/320 footprint plus the 0px margin
+  // reproduces the historical pull-back while flooring the top-left corner so
+  // a narrow/short window can't push the popover off-screen.
+  const { left, top } = clampToViewport({ x, y, width: 248, height: 320, margin: 0 });
 
   return (
     <div className="tag-picker" ref={ref} style={{ left, top }}>

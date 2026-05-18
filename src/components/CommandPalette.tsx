@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as api from "../api";
+import { useUi } from "../store";
 import { feedHost, relTime } from "../lib/feedMeta";
 import type { ArticleSummary, Feed } from "../types";
 import Icon, { type IconName } from "./Icon";
@@ -57,12 +58,22 @@ export default function CommandPalette({
   onNavigateArticle,
 }: Props) {
   const { t } = useTranslation();
+  // The "Toggle AI summary" action only does anything while an article is
+  // open (its handler in App.tsx no-ops otherwise). Listing it unconditionally
+  // would let the user pick a command that silently does nothing — so hide it
+  // when there is no article to summarise.
+  const hasArticle = useUi((s) => s.selectedArticleId != null);
   const [query, setQuery] = useState("");
   const [debounced, setDebounced] = useState("");
   const [active, setActive] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const cpRef = useRef<HTMLDivElement>(null);
+  // True while the selection just moved by keyboard. Mouse hover also sets
+  // `active`, but scrolling the list to a hovered row yanks content under
+  // the cursor — and can land a different row under it, cascading more hover
+  // events. So the scroll-into-view effect below only fires for keyboard nav.
+  const keyboardNav = useRef(false);
 
   useFocusTrap(cpRef, open);
 
@@ -105,6 +116,8 @@ export default function CommandPalette({
     const out: Item[] = [];
 
     for (const a of ACTIONS) {
+      // Skip article-scoped actions when nothing is open — they would no-op.
+      if (a.action === "toggle-ai" && !hasArticle) continue;
       const label = t(a.labelKey);
       if (q && !label.toLowerCase().includes(q)) continue;
       out.push({
@@ -151,14 +164,24 @@ export default function CommandPalette({
     }
 
     return out;
-  }, [debounced, feeds.data, articleResults.data, onAction, onNavigateFeed, onNavigateArticle, t]);
+  }, [debounced, hasArticle, feeds.data, articleResults.data, onAction, onNavigateFeed, onNavigateArticle, t]);
 
   useEffect(() => {
     if (active >= items.length) setActive(0);
   }, [items.length, active]);
 
-  // Keep the keyboard-selected row visible when arrowing past the fold.
+  // A new query reselects the first row — scroll the list back to the top so
+  // that row is visible (the `keyboardNav`-gated effect below deliberately
+  // ignores this non-keyboard `active` reset).
   useEffect(() => {
+    if (listRef.current) listRef.current.scrollTop = 0;
+  }, [debounced]);
+
+  // Keep the keyboard-selected row visible when arrowing past the fold.
+  // Skipped for mouse-driven selection changes — see `keyboardNav`.
+  useEffect(() => {
+    if (!keyboardNav.current) return;
+    keyboardNav.current = false;
     listRef.current
       ?.querySelector<HTMLElement>(`[data-cp-index="${active}"]`)
       ?.scrollIntoView({ block: "nearest" });
@@ -174,9 +197,11 @@ export default function CommandPalette({
   const handleKey = (e: React.KeyboardEvent) => {
     if (e.key === "ArrowDown") {
       e.preventDefault();
+      keyboardNav.current = true;
       setActive((i) => (i + 1) % Math.max(items.length, 1));
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
+      keyboardNav.current = true;
       setActive((i) => (i - 1 + items.length) % Math.max(items.length, 1));
     } else if (e.key === "Enter") {
       e.preventDefault();
@@ -258,7 +283,9 @@ export default function CommandPalette({
             <div className="cp-empty">
               {articleResults.isFetching
                 ? t("commandPalette.searching")
-                : t("commandPalette.noResults")}
+                : articleResults.isError && debounced.length > 0
+                  ? t("commandPalette.searchError")
+                  : t("commandPalette.noResults")}
             </div>
           ) : (
             <>

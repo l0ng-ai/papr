@@ -28,6 +28,12 @@ pub struct AppState {
     /// command and the periodic scheduler can otherwise fire concurrently —
     /// `try_lock` lets a second run bow out instead of duplicating the work.
     pub refresh_lock: Mutex<()>,
+    /// A `papr://subscribe` URL delivered before the webview registered its
+    /// `deep-link-subscribe` listener — typically a cold-start launch where the
+    /// link arrives during `setup()`. The frontend drains this once on mount
+    /// (`take_pending_deep_link`); a live link, arriving after the listener
+    /// exists, is emitted directly and never lands here.
+    pending_deep_link: std::sync::Mutex<Option<String>>,
 }
 
 impl AppState {
@@ -40,7 +46,27 @@ impl AppState {
             next_reader: AtomicUsize::new(0),
             http: RwLock::new(http),
             refresh_lock: Mutex::new(()),
+            pending_deep_link: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Stash a deep-link URL that arrived before the webview could receive it,
+    /// so the frontend can pick it up once mounted. The most recent link wins —
+    /// the user only acts on one Add-feed dialog at a time.
+    pub fn set_pending_deep_link(&self, url: String) {
+        *self
+            .pending_deep_link
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(url);
+    }
+
+    /// Take the buffered deep-link URL, if any, clearing it so it is delivered
+    /// exactly once.
+    pub fn take_pending_deep_link(&self) -> Option<String> {
+        self.pending_deep_link
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
     }
 
     /// Acquire a read-only connection from the pool (round-robin). Use this for

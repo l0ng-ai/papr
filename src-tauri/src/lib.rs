@@ -28,6 +28,15 @@ use tauri::{Emitter, Manager};
 /// `deep-link-subscribe` event the frontend listens for to open the
 /// Add-feed dialog prefilled with the feed URL. Unrecognised links are
 /// ignored. Pure parsing lives in [`discovery::parse_deep_link`].
+///
+/// A cold-start link is delivered to this handler from inside `setup()` —
+/// *before* the webview has loaded and registered its `deep-link-subscribe`
+/// listener — so a bare `emit` would be dropped on the floor and the Add-feed
+/// dialog would never open. The URL is therefore also buffered in `AppState`;
+/// the frontend drains that buffer once on mount, which catches the cold-start
+/// case. A live link, arriving after the listener exists, is delivered by the
+/// `emit`; its buffered copy is simply never drained (the mount has long
+/// passed) and is discarded with the process.
 fn handle_deep_links(app: &tauri::AppHandle, urls: &[String]) {
     for raw in urls {
         if let Some(DeepLink::Subscribe { url }) = discovery::parse_deep_link(raw) {
@@ -36,6 +45,7 @@ fn handle_deep_links(app: &tauri::AppHandle, urls: &[String]) {
                 let _ = window.unminimize();
                 let _ = window.set_focus();
             }
+            app.state::<AppState>().set_pending_deep_link(url.clone());
             let _ = app.emit("deep-link-subscribe", url);
         }
     }
@@ -57,24 +67,6 @@ pub fn run() {
             None,
         ))
         .setup(|app| {
-            // ── papr:// deep links (feature F6) ───────────────────────
-            // Links opened while the app is already running arrive here;
-            // a cold-start link is delivered the same way once setup runs.
-            {
-                use tauri_plugin_deep_link::DeepLinkExt;
-                let handle = app.handle().clone();
-                app.deep_link().on_open_url(move |event| {
-                    let urls: Vec<String> =
-                        event.urls().iter().map(|u| u.to_string()).collect();
-                    handle_deep_links(&handle, &urls);
-                });
-                // On Linux/Windows dev builds, register the scheme at runtime
-                // so `papr://` resolves without a full bundle install.
-                #[cfg(any(windows, target_os = "linux"))]
-                {
-                    let _ = app.deep_link().register("papr");
-                }
-            }
             // ── Database ──────────────────────────────────────────────
             let data_dir = app.path().app_data_dir().expect("resolve app data dir");
             fs::create_dir_all(&data_dir).ok();
@@ -98,8 +90,48 @@ pub fn run() {
                 .unwrap_or_default();
             let unread = db::count_unread(&conn).unwrap_or(0);
             let latest_fetch = db::latest_fetch(&conn).ok().flatten();
+            // The persisted UI theme, mirrored from the frontend store. Used
+            // just below to paint the native window in the matching colour
+            // before the webview's first frame.
+            let theme = db::get_setting(&conn, "theme").ok().flatten();
 
             app.manage(AppState::new(conn, readers, http));
+
+            // ── papr:// deep links (feature F6) ───────────────────────
+            // Registered after `app.manage` so the handler can always reach
+            // `AppState` to buffer a cold-start link. Links opened while the
+            // app is already running arrive here directly; a cold-start link
+            // is delivered the same way once the event loop starts.
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                let handle = app.handle().clone();
+                app.deep_link().on_open_url(move |event| {
+                    let urls: Vec<String> =
+                        event.urls().iter().map(|u| u.to_string()).collect();
+                    handle_deep_links(&handle, &urls);
+                });
+                // On Linux/Windows dev builds, register the scheme at runtime
+                // so `papr://` resolves without a full bundle install.
+                #[cfg(any(windows, target_os = "linux"))]
+                {
+                    let _ = app.deep_link().register("papr");
+                }
+            }
+
+            // ── Themed launch background ──────────────────────────────
+            // `tauri.conf.json` hardcodes a light window background, so a
+            // dark-theme user would see a brief light flash in the gap
+            // between window creation and the webview's first paint. Repaint
+            // the window in the saved theme's colour here in `setup` — which
+            // runs before that first frame — so the launch is flash-free.
+            // (The frontend re-asserts this on every theme change.)
+            if theme.as_deref() == Some("dark") {
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.set_background_color(Some(tauri::window::Color(
+                        0x16, 0x14, 0x0F, 0xFF,
+                    )));
+                }
+            }
 
             // ── Menu-bar tray (keeps the app resident for refreshes) ──
             tray::build(app.handle(), &lang, unread, latest_fetch.as_deref())?;
@@ -160,6 +192,7 @@ pub fn run() {
             commands::freshrss_status,
             commands::freshrss_sync,
             commands::refresh_tray,
+            commands::take_pending_deep_link,
             commands::list_tags,
             commands::create_tag,
             commands::rename_tag,

@@ -24,11 +24,21 @@ export function feedColor(seed: string | number): string {
   return PALETTE[h % PALETTE.length];
 }
 
+/** Scripts where a single character already reads as a whole word-unit, so
+ *  one glyph makes a good avatar: CJK ideographs (incl. Extension A) plus
+ *  Japanese kana and Korean Hangul. The earlier `/[㐀-鿿]/` test covered only
+ *  Han ideographs, so a kana- or Hangul-titled feed ("ファミ通", "네이버") fell
+ *  through to the latin path and rendered two cramped glyphs instead of one. */
+const CJK_GLYPH = /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af\uf900-\ufaff]/;
+
 /** 1–2 character avatar label: first CJK glyph, or latin initials. */
 export function feedAvatar(title: string): string {
   const t = (title || "").trim();
   if (!t) return "?";
-  if (/[㐀-鿿]/.test(t[0])) return t[0];
+  // Take the first whole code point — `t[0]` would split an astral-plane
+  // character (a CJK Extension B ideograph, an emoji) into a lone surrogate.
+  const first = Array.from(t)[0];
+  if (CJK_GLYPH.test(first)) return first;
   const words = t.split(/[\s·|—-]+/).filter(Boolean);
   if (words.length >= 2 && /[a-zA-Z]/.test(words[0][0]))
     return (words[0][0] + words[1][0]).toUpperCase();
@@ -50,10 +60,13 @@ export function relTime(iso: string | null): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
   const mins = (Date.now() - d.getTime()) / 60000;
+  // The unit suffixes are localised — Japanese / Chinese users expect 時間 /
+  // 小时, not a bare latin "h" — keeping the relative bucket in step with the
+  // already-localised "just now" label and calendar-date fallback below.
   if (mins < 1) return i18n.t("common.justNow");
-  if (mins < 60) return `${Math.floor(mins)}m`;
-  if (mins < 1440) return `${Math.floor(mins / 60)}h`;
-  if (mins < 1440 * 7) return `${Math.floor(mins / 1440)}d`;
+  if (mins < 60) return i18n.t("common.relMinutes", { count: Math.floor(mins) });
+  if (mins < 1440) return i18n.t("common.relHours", { count: Math.floor(mins / 60) });
+  if (mins < 1440 * 7) return i18n.t("common.relDays", { count: Math.floor(mins / 1440) });
   // Beyond a week, show the calendar date — with the year for anything not
   // from the current year, so an archived article isn't ambiguously dated.
   const sameYear = d.getFullYear() === new Date().getFullYear();

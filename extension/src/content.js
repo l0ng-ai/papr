@@ -29,14 +29,19 @@
 
   /** Run detection against the current document. */
   function detect() {
+    // `pageHtml` is consulted by exactly one code path — resolving a YouTube
+    // vanity URL (`@handle`, `/c/`, `/user/`) to a channel id. Serializing the
+    // whole document (`outerHTML` — often megabytes) on every other site is
+    // pure waste, and `detect()` runs again on every `<head>` mutation, so the
+    // waste repeats. Only pay that cost when the page can actually use it.
+    const isYoutube = /(^|\.)youtube\.com$/.test(location.hostname);
     return PaprDetect.detectFeeds({
       pageUrl: location.href,
       links: readLinks(),
-      // documentElement.outerHTML lets the YouTube vanity-URL path resolve a
-      // channel id without an extra network request.
-      pageHtml: document.documentElement
-        ? document.documentElement.outerHTML
-        : "",
+      pageHtml:
+        isYoutube && document.documentElement
+          ? document.documentElement.outerHTML
+          : "",
     });
   }
 
@@ -63,7 +68,15 @@
   // Report once now, and again if the page mutates its <head> (SPAs).
   report();
   if (document.head) {
-    const observer = new MutationObserver(report);
+    // Debounce: a busy page (analytics, lazy CSS, an SPA router) can mutate
+    // its <head> in rapid bursts. Running `detect()` — which reads every
+    // <link> tag — synchronously per mutation would pile up needless work on
+    // the main thread; coalesce a burst into a single trailing report.
+    let timer = 0;
+    const observer = new MutationObserver(function () {
+      clearTimeout(timer);
+      timer = setTimeout(report, 300);
+    });
     observer.observe(document.head, { childList: true, subtree: true });
   }
 })();

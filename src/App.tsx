@@ -94,10 +94,15 @@ export default function App() {
   // Apply the startup view preference once, on first mount.
   useEffect(() => {
     const { startupView, hideReadOnStartup } = useUi.getState().prefs;
+    // Smart-view header labels in the *current* UI language. Smart-view
+    // selections persist a translated label into `lastView`; re-deriving it
+    // here keeps the header correct after a language switch (a feed/folder/tag
+    // label is a proper name, so that case keeps the persisted value).
     const labels: Record<string, string> = {
       all: t("smart.all"),
       unread: t("smart.unread"),
       starred: t("smart.starred"),
+      readLater: t("smart.readLater"),
     };
     if (startupView !== "last" && labels[startupView]) {
       useUi
@@ -110,7 +115,12 @@ export default function App() {
         if (raw) {
           const saved = JSON.parse(raw) as { query?: ArticleQuery; label?: string };
           if (saved.query?.kind) {
-            useUi.getState().select(saved.query, saved.label ?? "");
+            // The persisted label was captured in whatever language was
+            // active when the view was last selected — for a smart view it
+            // would now be stale if the user has since changed languages, so
+            // re-translate it from the current locale.
+            const label = labels[saved.query.kind] ?? saved.label ?? "";
+            useUi.getState().select(saved.query, label);
           }
         }
       } catch {
@@ -166,6 +176,19 @@ export default function App() {
       setAddFeedUrl(e.payload);
       setAddFeed(true);
     });
+    // A cold-start link arrives during the backend's `setup()` — before this
+    // listener exists — so the `emit` above is dropped. The backend buffers
+    // that URL; drain it once on mount so a launch-by-deep-link still opens
+    // the Add-feed dialog.
+    api
+      .takePendingDeepLink()
+      .then((url) => {
+        if (url) {
+          setAddFeedUrl(url);
+          setAddFeed(true);
+        }
+      })
+      .catch(() => {});
     return () => {
       un.then((f) => f());
     };
@@ -184,8 +207,11 @@ export default function App() {
     showToast(t("app.refreshing"));
     api
       .refreshFeeds()
-      .then(async (n) => {
-        await qc.invalidateQueries();
+      .then((n) => {
+        // Refresh only the caches a feed fetch can actually change — a bare
+        // `invalidateQueries()` would also refetch unrelated queries (rules,
+        // FreshRSS status, the open feed-discovery search).
+        actions.refreshAfterFetch();
         showToast(n > 0 ? t("app.foundNew", { count: n }) : t("app.upToDate"));
       })
       .catch((e) => showToast(errorText(e)))
@@ -193,7 +219,7 @@ export default function App() {
         refreshingRef.current = false;
         setRefreshing(false);
       });
-  }, [qc, showToast, t]);
+  }, [actions, showToast, t]);
 
   const markAllRead = useCallback(async () => {
     try {
@@ -262,9 +288,15 @@ export default function App() {
       if (mod) return;
 
       // Skip list/reader shortcuts while any overlay owns the keyboard.
+      // `.hl-popover` is the highlight edit dialog inside the reader and
+      // `.hl-toolbar` is the floating colour toolbar shown when text is
+      // selected: without them here, j/k would navigate away (destroying the
+      // overlay — and, for the toolbar, the live selection the user was about
+      // to highlight), s/u/b would act on the article, and Escape would close
+      // the AI drawer instead of just the overlay.
       if (
         document.querySelector(
-          ".cp-backdrop, .settings-backdrop, .modal-backdrop, .ctx-menu, .tag-picker",
+          ".cp-backdrop, .settings-backdrop, .modal-backdrop, .ctx-menu, .tag-picker, .hl-popover, .hl-toolbar",
         )
       )
         return;
