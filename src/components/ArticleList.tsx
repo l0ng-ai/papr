@@ -7,6 +7,7 @@ import * as api from "../api";
 import { useUi } from "../store";
 import { useArticleActions } from "../hooks/articleActions";
 import { feedAvatar, feedColor, relTime } from "../lib/feedMeta";
+import { isMac } from "../lib/platform";
 import { reportError, toast } from "../toast";
 import { clampToViewport } from "../lib/viewport";
 import type { ArticleSummary, Feed } from "../types";
@@ -254,7 +255,7 @@ export default function ArticleList({ onToast }: Props) {
 
   return (
     <div className="list" role="region" aria-labelledby="article-list-title">
-      <div className="list-header" data-tauri-drag-region>
+      <div className="list-header" {...(isMac && { "data-tauri-drag-region": true })}>
         <h1 className="list-title" id="article-list-title">
           {/* Smart views re-translate live; feed/folder/tag keep their own title. */}
           {query.kind === "feed" ||

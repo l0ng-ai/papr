@@ -8,6 +8,7 @@ import { usePlayer } from "../player";
 import { useArticleActions } from "../hooks/articleActions";
 import { renderMarkdown } from "../lib/markdown";
 import { fullDate } from "../lib/feedMeta";
+import { isMac } from "../lib/platform";
 import { reportError, toast } from "../toast";
 import { tagColor } from "../lib/tagColors";
 import type { ArticleDetail } from "../types";
@@ -320,7 +321,7 @@ export default function Reader({ onToast }: Props) {
     };
     return (
       <div className="reader" role="main">
-        <div className="reader-toolbar" data-tauri-drag-region />
+        {isMac && <div className="reader-toolbar" data-tauri-drag-region />}
         <div className="empty" style={{ flex: 1 }}>
           <div className="glyph">
             <Icon name="rss" size={22} />
@@ -341,7 +342,7 @@ export default function Reader({ onToast }: Props) {
   if (!a) {
     return (
       <div className="reader" role="main">
-        <div className="reader-toolbar" data-tauri-drag-region />
+        {isMac && <div className="reader-toolbar" data-tauri-drag-region />}
         {article.isError ? (
           <div className="empty" style={{ flex: 1 }}>
             <div className="glyph">
@@ -392,7 +393,7 @@ export default function Reader({ onToast }: Props) {
     <div className="reader" role="main">
       <div
         className={`reader-toolbar ${scrolled ? "scrolled" : ""}`}
-        data-tauri-drag-region
+        {...(isMac && { "data-tauri-drag-region": true })}
       >
         <button
           className={`tb-btn ${a.isStarred ? "on" : ""}`}

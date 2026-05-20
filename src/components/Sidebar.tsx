@@ -5,6 +5,7 @@ import * as api from "../api";
 import { useUi } from "../store";
 import { useArticleActions } from "../hooks/articleActions";
 import { withUndo, reportError } from "../toast";
+import { isMac } from "../lib/platform";
 import { tagColor, TAG_PALETTE } from "../lib/tagColors";
 import type { ArticleQuery, Feed, Folder, Tag } from "../types";
 import Icon, { type IconName } from "./Icon";
@@ -463,7 +464,7 @@ export default function Sidebar({
 
   return (
     <div className="sidebar" role="navigation">
-      <div className="titlebar" data-tauri-drag-region />
+      {isMac && <div className="titlebar" data-tauri-drag-region />}
 
       <div className="sb-brand">
         <img className="sb-brand-mark" src="/papr.svg" alt="" />

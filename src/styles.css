@@ -154,10 +154,14 @@ button { font-family: inherit; }
   border-right: 1px solid var(--hair);
   display: flex;
   flex-direction: column;
-  padding-top: 38px;
   position: relative;
   min-height: 0;
 }
+/* On macOS the sidebar reserves a 38px strip at the top so the brand row
+   clears the overlay traffic lights (configured in tauri.conf.json). On
+   Windows/Linux the native title bar already sits above the webview, so the
+   reserved strip would just be dead space. */
+:root[data-platform="mac"] .sidebar { padding-top: 38px; }
 
 .sb-brand {
   display: flex;
@@ -380,10 +384,14 @@ button { font-family: inherit; }
 }
 
 .list-header {
-  padding: 38px 22px 8px;
+  padding: 14px 22px 8px;
   border-bottom: 1px solid var(--hair);
   flex-shrink: 0;
 }
+/* macOS reserves the top strip for the overlay title bar / traffic lights,
+   so the header title sits below it. Other platforms have the native title
+   bar above the webview and don't need the extra inset. */
+:root[data-platform="mac"] .list-header { padding-top: 38px; }
 .list-title {
   font-size: 18px;
   font-weight: 600;
