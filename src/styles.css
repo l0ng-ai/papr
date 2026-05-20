@@ -160,9 +160,11 @@ button { font-family: inherit; }
 }
 /* On macOS the sidebar reserves a 38px strip at the top so the brand row
    clears the overlay traffic lights (configured in tauri.conf.json). On
-   Windows/Linux the native title bar already sits above the webview, so the
-   reserved strip would just be dead space. */
+   Windows/Linux the native title bar already sits above the webview, so a
+   thin breathing strip is enough — without it the search bar would sit
+   flush against the window chrome. */
 :root[data-platform="mac"] .sidebar { padding-top: 38px; }
+:root[data-platform="other"] .sidebar { padding-top: 12px; }
 
 .sb-brand {
   display: flex;
