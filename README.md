@@ -25,9 +25,3 @@ A fast, native RSS reader for the desktop.
 ## Installation
 
 Download the installer for your platform from the [latest release](https://github.com/l0ng-ai/papr/releases/latest).
-
-The macOS build is not signed yet, so Gatekeeper says *"Papr is damaged"*. It isn't — just clear the quarantine flag once after installing:
-
-```bash
-xattr -cr /Applications/Papr.app
-```
