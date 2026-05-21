@@ -145,17 +145,20 @@ export const clearAllData = () => invoke<void>("clear_all_data");
 export const applyNetworkSettings = () =>
   invoke<void>("apply_network_settings");
 
-// ── FreshRSS sync ──
+// ── GReader sync (FreshRSS / Miniflux) ──
+export type GReaderProvider = "freshrss" | "miniflux";
 export interface FreshRssStatus {
   connected: boolean;
   url: string | null;
+  provider: GReaderProvider;
 }
 export const freshrssStatus = () => invoke<FreshRssStatus>("freshrss_status");
 export const freshrssConnect = (
   url: string,
   username: string,
   password: string,
-) => invoke<void>("freshrss_connect", { url, username, password });
+  provider: GReaderProvider = "freshrss",
+) => invoke<void>("freshrss_connect", { url, username, password, provider });
 export const freshrssDisconnect = () => invoke<void>("freshrss_disconnect");
 export const freshrssSync = () => invoke<number>("freshrss_sync");
 

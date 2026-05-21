@@ -917,17 +917,22 @@ function SyncSection({ onToast }: { onToast: (m: string) => void }) {
     queryKey: ["freshrss-status"],
     queryFn: api.freshrssStatus,
   });
+  const [provider, setProvider] = useState<api.GReaderProvider>("freshrss");
   const [url, setUrl] = useState("");
   const [user, setUser] = useState("");
   const [pass, setPass] = useState("");
   const [busy, setBusy] = useState(false);
   const connected = status.data?.connected ?? false;
+  const connectedProvider: api.GReaderProvider =
+    status.data?.provider ?? "freshrss";
+  const providerLabel = (p: api.GReaderProvider) =>
+    p === "miniflux" ? "Miniflux" : "FreshRSS";
 
   const connect = async () => {
     if (!url.trim() || !user.trim()) return;
     setBusy(true);
     try {
-      await api.freshrssConnect(url.trim(), user.trim(), pass);
+      await api.freshrssConnect(url.trim(), user.trim(), pass, provider);
       await qc.invalidateQueries({ queryKey: ["freshrss-status"] });
       onToast(t("settings.sync.connected"));
       setPass("");
@@ -975,15 +980,21 @@ function SyncSection({ onToast }: { onToast: (m: string) => void }) {
   return (
     <>
       <div className="settings-group">
-        <h3 className="settings-group-title">{t("settings.sync.freshrss")}</h3>
+        <h3 className="settings-group-title">{t("settings.sync.greader")}</h3>
         {connected ? (
           <>
             <div className="s-service">
-              <div className="logo" style={{ background: "#4A4A4A" }}>
-                ⚡
+              <div
+                className="logo"
+                style={{
+                  background:
+                    connectedProvider === "miniflux" ? "#1F7AEC" : "#4A4A4A",
+                }}
+              >
+                {connectedProvider === "miniflux" ? "M" : "⚡"}
               </div>
               <div className="info">
-                <div className="title">FreshRSS</div>
+                <div className="title">{providerLabel(connectedProvider)}</div>
                 <div className="desc">{status.data?.url}</div>
               </div>
               <span className="status on">{t("settings.sync.statusConnected")}</span>
@@ -1018,6 +1029,22 @@ function SyncSection({ onToast }: { onToast: (m: string) => void }) {
               {t("settings.sync.connectHint")}
             </p>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <select
+                className="modal-input"
+                style={{ margin: 0 }}
+                value={provider}
+                onChange={(e) =>
+                  setProvider(e.target.value as api.GReaderProvider)
+                }
+                aria-label={t("settings.sync.provider")}
+              >
+                <option value="freshrss">
+                  {t("settings.sync.providerFreshrss")}
+                </option>
+                <option value="miniflux">
+                  {t("settings.sync.providerMiniflux")}
+                </option>
+              </select>
               <input
                 className="modal-input"
                 style={{ margin: 0 }}
@@ -1036,10 +1063,26 @@ function SyncSection({ onToast }: { onToast: (m: string) => void }) {
                 className="modal-input"
                 style={{ margin: 0 }}
                 type="password"
-                placeholder={t("settings.sync.passPlaceholder")}
+                placeholder={
+                  provider === "miniflux"
+                    ? t("settings.sync.appPassPlaceholder")
+                    : t("settings.sync.passPlaceholder")
+                }
                 value={pass}
                 onChange={(e) => setPass(e.target.value)}
               />
+              {provider === "miniflux" && (
+                <p
+                  style={{
+                    fontSize: 12,
+                    color: "var(--muted)",
+                    margin: "2px 0 0",
+                    lineHeight: 1.5,
+                  }}
+                >
+                  {t("settings.sync.minifluxPassHint")}
+                </p>
+              )}
               <div>
                 <button
                   className="s-btn primary"

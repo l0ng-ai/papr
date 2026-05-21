@@ -1,4 +1,9 @@
-//! FreshRSS synchronisation over the Google Reader compatible API.
+//! Synchronisation over the Google Reader compatible API.
+//!
+//! Supports any GReader-compatible backend; today FreshRSS and Miniflux.
+//! Protocol is identical (`ClientLogin`, `reader/api/0/edit-tag`,
+//! `stream/contents/...`, `com.google/*` tags) — only the API root path
+//! differs per provider, so the `Provider` enum centralises that mapping.
 //!
 //! Flow: `ClientLogin` for an auth token, push any queued local read/starred
 //! changes via `edit-tag`, then pull the subscription list (to subscribe to
@@ -17,13 +22,53 @@ const READ_TAG: &str = "user/-/state/com.google/read";
 const STARRED_TAG: &str = "user/-/state/com.google/starred";
 const READING_LIST: &str = "user/-/state/com.google/reading-list";
 
-/// Normalise a user-supplied FreshRSS URL to its GReader API root.
-fn greader_base(url: &str) -> String {
+/// Which GReader-compatible backend the user is connected to. The wire
+/// protocol is identical; only the API root path under the server URL
+/// differs (FreshRSS mounts it at `/api/greader.php`, Miniflux at
+/// `/greader`).
+#[derive(Clone, Copy)]
+enum Provider {
+    FreshRss,
+    Miniflux,
+}
+
+impl Provider {
+    /// Path segment to append to the user-supplied server URL to reach the
+    /// GReader API root.
+    fn path_suffix(self) -> &'static str {
+        match self {
+            Provider::FreshRss => "/api/greader.php",
+            Provider::Miniflux => "/greader",
+        }
+    }
+
+    /// Parse the persisted setting. Missing / unknown → FreshRss, so older
+    /// installs (where this setting didn't exist) keep working unchanged.
+    fn from_setting(s: Option<&str>) -> Self {
+        match s.unwrap_or("").trim() {
+            "miniflux" => Provider::Miniflux,
+            _ => Provider::FreshRss,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Provider::FreshRss => "freshrss",
+            Provider::Miniflux => "miniflux",
+        }
+    }
+}
+
+/// Normalise a user-supplied server URL to its GReader API root for the
+/// chosen provider. Idempotent: if the user already typed the full path,
+/// don't append it again.
+fn greader_base(url: &str, provider: Provider) -> String {
     let t = url.trim().trim_end_matches('/');
-    if t.contains("/api/greader.php") {
+    let suffix = provider.path_suffix();
+    if t.ends_with(suffix) || t.contains(&format!("{suffix}/")) {
         t.to_string()
     } else {
-        format!("{t}/api/greader.php")
+        format!("{t}{suffix}")
     }
 }
 
@@ -121,18 +166,21 @@ struct Href {
     href: String,
 }
 
-/// Stored FreshRSS connection. We persist the long-lived GReader auth token
-/// rather than the password — a leaked token is revocable server-side and
-/// can't be replayed against the user's other accounts. `legacy_pass` holds
-/// a plaintext password from an older install, awaiting one-time migration.
+/// Stored GReader connection. We persist the long-lived auth token rather
+/// than the password — a leaked token is revocable server-side and can't be
+/// replayed against the user's other accounts. `legacy_pass` holds a
+/// plaintext password from an older install, awaiting one-time migration.
 struct Creds {
     url: String,
     user: String,
     auth: Option<String>,
     legacy_pass: Option<String>,
+    provider: Provider,
 }
 
-/// Stored FreshRSS credentials, if a server is configured.
+/// Stored GReader credentials, if a server is configured. The setting keys
+/// are still named `freshrss_*` for backwards compatibility with installs
+/// that predate multi-provider support — the values are provider-agnostic.
 async fn creds(app: &AppHandle) -> AppResult<Option<Creds>> {
     let state = app.state::<AppState>();
     let conn = state.db.lock().await;
@@ -141,42 +189,66 @@ async fn creds(app: &AppHandle) -> AppResult<Option<Creds>> {
     let nonempty = |k| db::get_setting(&conn, k).map(|v| v.filter(|s| !s.is_empty()));
     let auth = nonempty("freshrss_auth")?;
     let legacy_pass = nonempty("freshrss_pass")?;
+    let provider = Provider::from_setting(
+        db::get_setting(&conn, "freshrss_provider")?.as_deref(),
+    );
     if url.trim().is_empty() || user.is_empty() || (auth.is_none() && legacy_pass.is_none()) {
         return Ok(None);
     }
-    Ok(Some(Creds { url, user, auth, legacy_pass }))
+    Ok(Some(Creds { url, user, auth, legacy_pass, provider }))
 }
 
-/// The configured FreshRSS server URL, or `None` when not connected.
-pub async fn connected_url(app: &AppHandle) -> AppResult<Option<String>> {
-    Ok(creds(app).await?.map(|c| c.url))
+/// The configured GReader server URL and provider, or `None` when not
+/// connected.
+pub async fn connected_url(app: &AppHandle) -> AppResult<Option<(String, String)>> {
+    Ok(creds(app).await?.map(|c| (c.url, c.provider.as_str().to_string())))
 }
 
 /// Persist a verified connection, storing the auth token and never the
 /// password (any legacy stored password is also cleared).
-async fn persist_session(app: &AppHandle, url: &str, user: &str, auth: &str) -> AppResult<()> {
+async fn persist_session(
+    app: &AppHandle,
+    url: &str,
+    user: &str,
+    auth: &str,
+    provider: Provider,
+) -> AppResult<()> {
     let state = app.state::<AppState>();
     let conn = state.db.lock().await;
     db::set_setting(&conn, "freshrss_url", url.trim())?;
     db::set_setting(&conn, "freshrss_user", user)?;
     db::set_setting(&conn, "freshrss_auth", auth)?;
     db::set_setting(&conn, "freshrss_pass", "")?;
+    db::set_setting(&conn, "freshrss_provider", provider.as_str())?;
     Ok(())
 }
 
 /// Verify credentials against the server and, on success, persist them.
-pub async fn connect(app: &AppHandle, url: &str, user: &str, pass: &str) -> AppResult<()> {
-    let base = greader_base(url);
+pub async fn connect(
+    app: &AppHandle,
+    url: &str,
+    user: &str,
+    pass: &str,
+    provider: Option<&str>,
+) -> AppResult<()> {
+    let provider = Provider::from_setting(provider);
+    let base = greader_base(url, provider);
     let http = app.state::<AppState>().http();
     let session = login(&http, &base, user, pass).await?; // verifies credentials
-    persist_session(app, url, user, &session.auth).await
+    persist_session(app, url, user, &session.auth, provider).await
 }
 
-/// Forget the stored FreshRSS credentials.
+/// Forget the stored GReader credentials.
 pub async fn disconnect(app: &AppHandle) -> AppResult<()> {
     let state = app.state::<AppState>();
     let conn = state.db.lock().await;
-    for key in ["freshrss_url", "freshrss_user", "freshrss_auth", "freshrss_pass"] {
+    for key in [
+        "freshrss_url",
+        "freshrss_user",
+        "freshrss_auth",
+        "freshrss_pass",
+        "freshrss_provider",
+    ] {
         db::set_setting(&conn, key, "")?;
     }
     Ok(())
@@ -198,7 +270,7 @@ pub async fn sync_now(app: &AppHandle) -> AppResult<usize> {
     let creds = creds(app)
         .await?
         .ok_or_else(|| AppError::code("freshrssNotConnected"))?;
-    let base = greader_base(&creds.url);
+    let base = greader_base(&creds.url, creds.provider);
     let http = app.state::<AppState>().http();
     let session = match &creds.auth {
         Some(auth) => session_with_token(&http, &base, auth.clone()).await?,
@@ -207,7 +279,7 @@ pub async fn sync_now(app: &AppHandle) -> AppResult<usize> {
             // then migrate so the password is no longer kept on disk.
             let pass = creds.legacy_pass.as_deref().unwrap_or_default();
             let session = login(&http, &base, &creds.user, pass).await?;
-            persist_session(app, &creds.url, &creds.user, &session.auth).await?;
+            persist_session(app, &creds.url, &creds.user, &session.auth, creds.provider).await?;
             session
         }
     };

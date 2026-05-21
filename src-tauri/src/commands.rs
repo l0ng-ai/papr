@@ -706,6 +706,10 @@ pub async fn apply_network_settings(state: State<'_, AppState>) -> AppResult<()>
 pub struct FreshRssStatus {
     connected: bool,
     url: Option<String>,
+    /// Which GReader-compatible backend is connected: "freshrss" or
+    /// "miniflux". Always present (defaults to "freshrss") so the UI never
+    /// has to guess for older installs.
+    provider: String,
 }
 
 #[tauri::command]
@@ -714,8 +718,9 @@ pub async fn freshrss_connect(
     url: String,
     username: String,
     password: String,
+    provider: Option<String>,
 ) -> AppResult<()> {
-    crate::sync::connect(&app, &url, &username, &password).await
+    crate::sync::connect(&app, &url, &username, &password, provider.as_deref()).await
 }
 
 #[tauri::command]
@@ -725,10 +730,15 @@ pub async fn freshrss_disconnect(app: AppHandle) -> AppResult<()> {
 
 #[tauri::command]
 pub async fn freshrss_status(app: AppHandle) -> AppResult<FreshRssStatus> {
-    let url = crate::sync::connected_url(&app).await?;
+    let info = crate::sync::connected_url(&app).await?;
+    let (url, provider) = match info {
+        Some((u, p)) => (Some(u), p),
+        None => (None, "freshrss".to_string()),
+    };
     Ok(FreshRssStatus {
         connected: url.is_some(),
         url,
+        provider,
     })
 }
 
