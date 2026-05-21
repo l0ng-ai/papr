@@ -11,6 +11,7 @@ import { LANGUAGES, setLanguage, type Language } from "../i18n";
 import { feedHost } from "../lib/feedMeta";
 import { modKey, modCombo } from "../lib/platform";
 import { reportError } from "../toast";
+import { checkForUpdates } from "../lib/updater";
 import { downloadFile } from "../lib/download";
 import type { Feed, Rule, RuleAction, RuleField, RulePreview } from "../types";
 import Icon, { type IconName } from "./Icon";
@@ -129,7 +130,7 @@ export default function SettingsDialog({
           ))}
           <div className="settings-nav-spacer" />
           <div className="settings-version">
-            Papr{version && ` ${version}`} · macOS
+            Papr{version && ` ${version}`}
           </div>
         </div>
 
@@ -2157,6 +2158,15 @@ function RuleEditor({
 function AboutSection() {
   const { t } = useTranslation();
   const version = useAppVersion();
+  const [checking, setChecking] = useState(false);
+  const onCheck = async () => {
+    setChecking(true);
+    try {
+      await checkForUpdates({ silent: false });
+    } finally {
+      setChecking(false);
+    }
+  };
   return (
     <div className="s-about">
       <div className="mark">
@@ -2165,8 +2175,11 @@ function AboutSection() {
       <h1 className="app-name">Papr</h1>
       <p className="tagline">{t("settings.about.tagline")}</p>
       <div className="version">
-        Version{version && ` ${version}`} · macOS
+        Version{version && ` ${version}`}
       </div>
+      <button className="s-btn about-update" onClick={onCheck} disabled={checking}>
+        {checking ? t("update.checking") : t("update.checkButton")}
+      </button>
       <p className="credits">
         {t("settings.about.creditsFonts")}
         <br />

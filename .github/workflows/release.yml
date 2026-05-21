@@ -61,6 +61,11 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Updater signing — tauri-action signs each bundle with this key and
+          # emits the latest.json the in-app updater polls. Must match the
+          # pubkey baked into tauri.conf.json.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           # macOS code signing — tauri-action imports this cert into a
           # throwaway keychain. Empty on Linux/Windows runners, where these
           # are simply ignored.

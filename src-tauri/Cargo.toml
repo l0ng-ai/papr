@@ -22,6 +22,10 @@ tauri-plugin-window-state = "2"
 # Custom-scheme deep links (feature F6): the browser extension's
 # "Subscribe in Papr" button opens a `papr://subscribe?url=…` link.
 tauri-plugin-deep-link = "2"
+# In-app auto-update: checks the GitHub release feed, downloads the signed
+# bundle, and relaunches into the new version (process plugin does the restart).
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

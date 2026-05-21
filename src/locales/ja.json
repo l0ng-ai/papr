@@ -609,5 +609,13 @@
       "pink": "ピンク",
       "purple": "パープル"
     }
+  },
+  "update": {
+    "available": "アップデートがあります — v{{version}}",
+    "install": "更新して再起動",
+    "installing": "アップデートをダウンロード中…",
+    "upToDate": "最新バージョンです",
+    "checking": "確認中…",
+    "checkButton": "アップデートを確認"
   }
 }

@@ -14,6 +14,8 @@
     "autostart:allow-enable",
     "autostart:allow-disable",
     "autostart:allow-is-enabled",
-    "deep-link:default"
+    "deep-link:default",
+    "updater:default",
+    "process:default"
   ]
 }

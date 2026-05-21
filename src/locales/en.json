@@ -609,5 +609,13 @@
       "pink": "Pink",
       "purple": "Purple"
     }
+  },
+  "update": {
+    "available": "Update available — v{{version}}",
+    "install": "Update & restart",
+    "installing": "Downloading update…",
+    "upToDate": "You're on the latest version",
+    "checking": "Checking…",
+    "checkButton": "Check for updates"
   }
 }

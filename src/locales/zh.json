@@ -609,5 +609,13 @@
       "pink": "粉色",
       "purple": "紫色"
     }
+  },
+  "update": {
+    "available": "有新版本 — v{{version}}",
+    "install": "更新并重启",
+    "installing": "正在下载更新…",
+    "upToDate": "已是最新版本",
+    "checking": "检查中…",
+    "checkButton": "检查更新"
   }
 }
