@@ -83,7 +83,7 @@ export default function SendToMenu({ articleId, x, y, onClose, onToast }: Props)
   return (
     <div
       ref={ref}
-      className="ctx-menu hl-export-menu"
+      className="ctx-menu send-to-menu"
       role="menu"
       aria-label={t("sendTo.heading")}
       style={{ left: place.left, top: place.top }}

@@ -2419,12 +2419,17 @@ button { font-family: inherit; }
   text-transform: uppercase;
   letter-spacing: 0.03em;
 }
-/* The export menu uses <button> for its rows — reset the native chrome. */
-.hl-export-menu .ctx-item {
+/* The export and send-to menus use <button> for their rows — reset the
+   native chrome. The send-to menu keeps .ctx-menu's fixed positioning (it's
+   anchored by a viewport-clamped coordinate, not wrapped next to a trigger),
+   so it only borrows the row styling here, not the absolute placement above. */
+.hl-export-menu .ctx-item,
+.send-to-menu .ctx-item {
   width: 100%;
   border: 0;
   background: none;
   font: inherit;
   text-align: left;
 }
-.hl-export-menu .ctx-item:disabled { opacity: 0.5; cursor: default; }
+.hl-export-menu .ctx-item:disabled,
+.send-to-menu .ctx-item:disabled { opacity: 0.5; cursor: default; }
