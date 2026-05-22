@@ -13,7 +13,6 @@ import { clampToViewport } from "../lib/viewport";
 import type { ArticleSummary, Feed } from "../types";
 import Icon from "./Icon";
 import ContextMenu, { type MenuEntry } from "./ContextMenu";
-import SendToMenu from "./SendToMenu";
 
 const PAGE = 60;
 
@@ -53,12 +52,6 @@ export default function ArticleList({ onToast }: Props) {
     x: number;
     y: number;
     article: ArticleSummary;
-  } | null>(null);
-  // The "Send to…" popover, opened from the context menu (F8).
-  const [sendTo, setSendTo] = useState<{
-    x: number;
-    y: number;
-    articleId: number;
   } | null>(null);
   const [hover, setHover] = useState<Hover | null>(null);
   const hoverTimer = useRef<number | undefined>(undefined);
@@ -205,15 +198,6 @@ export default function ArticleList({ onToast }: Props) {
       label: a.isRead ? t("articleList.menuMarkUnread") : t("articleList.menuMarkRead"),
       shortcut: "U",
       onClick: () => actions.setRead(a.id, !a.isRead),
-    },
-    { separator: true },
-    {
-      icon: "open",
-      label: t("sendTo.title"),
-      onClick: () => {
-        // Open the share popover anchored at the context menu's position.
-        if (menu) setSendTo({ x: menu.x, y: menu.y, articleId: a.id });
-      },
     },
     ...(a.url
       ? ([
@@ -434,15 +418,6 @@ export default function ArticleList({ onToast }: Props) {
         />
       )}
 
-      {sendTo && (
-        <SendToMenu
-          articleId={sendTo.articleId}
-          x={sendTo.x}
-          y={sendTo.y}
-          onClose={() => setSendTo(null)}
-          onToast={onToast}
-        />
-      )}
     </div>
   );
 }

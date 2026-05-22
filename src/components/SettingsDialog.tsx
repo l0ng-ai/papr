@@ -33,7 +33,6 @@ const SECTIONS: { id: string; labelKey: string; icon: IconName; color: string }[
   { id: "subscriptions", labelKey: "settings.nav.subscriptions", icon: "rss", color: "#d97706" },
   { id: "filters", labelKey: "settings.nav.filters", icon: "mute", color: "#9333ea" },
   { id: "sync", labelKey: "settings.nav.sync", icon: "refresh", color: "#2c8a3e" },
-  { id: "integrations", labelKey: "settings.nav.integrations", icon: "share", color: "#0d7a8a" },
   { id: "shortcuts", labelKey: "settings.nav.shortcuts", icon: "command", color: "#5a5fc4" },
   { id: "notifications", labelKey: "settings.nav.notifications", icon: "inbox", color: "#a8501f" },
   { id: "advanced", labelKey: "settings.nav.advanced", icon: "sort", color: "#4a4a4a" },
@@ -94,7 +93,6 @@ export default function SettingsDialog({
     subscriptions: t("settings.sub.subscriptions", { count: feedCount }),
     filters: t("settings.sub.filters"),
     sync: t("settings.sub.sync"),
-    integrations: t("settings.sub.integrations"),
     shortcuts: t("settings.sub.shortcuts"),
     notifications: t("settings.sub.notifications"),
     advanced: t("settings.sub.advanced"),
@@ -162,9 +160,6 @@ export default function SettingsDialog({
               <FiltersSection feeds={feeds.data ?? []} onToast={onToast} />
             )}
             {section === "sync" && <SyncSection onToast={onToast} />}
-            {section === "integrations" && (
-              <IntegrationsSection onToast={onToast} />
-            )}
             {section === "shortcuts" && <ShortcutsSection />}
             {section === "notifications" && <NotificationsSection />}
             {section === "advanced" && <AdvancedSection onToast={onToast} />}
@@ -1073,235 +1068,6 @@ function SyncSection({ onToast }: { onToast: (m: string) => void }) {
   );
 }
 
-/* ── integrations (highlight export — feature F7) ────────── */
-
-/** One labelled text field bound to a backend `settings` key. Loads its
- *  current value on mount and writes back on Save. */
-function IntegrationField({
-  settingKey,
-  label,
-  placeholder,
-  password,
-  onToast,
-}: {
-  settingKey: string;
-  label: string;
-  placeholder: string;
-  password?: boolean;
-  onToast: (m: string) => void;
-}) {
-  const { t } = useTranslation();
-  const [value, setValue] = useState("");
-  const [loaded, setLoaded] = useState(false);
-  const [saved, setSaved] = useState(false);
-
-  useEffect(() => {
-    api
-      .getSetting(settingKey)
-      .then((v) => setValue(v ?? ""))
-      .catch(() => {})
-      .finally(() => setLoaded(true));
-  }, [settingKey]);
-
-  const save = async () => {
-    try {
-      await api.setSetting(settingKey, value.trim());
-      setSaved(true);
-      window.setTimeout(() => setSaved(false), 1500);
-      onToast(t("settings.integrations.saved"));
-    } catch (e) {
-      reportError(e);
-    }
-  };
-
-  return (
-    <div style={{ marginTop: 10 }}>
-      <label
-        style={{
-          display: "block",
-          fontSize: 12,
-          fontWeight: 600,
-          color: "var(--ink-2)",
-          marginBottom: 4,
-        }}
-      >
-        {label}
-      </label>
-      <div style={{ display: "flex", gap: 8 }}>
-        <input
-          className="modal-input"
-          style={{ margin: 0, flex: 1 }}
-          type={password ? "password" : "text"}
-          placeholder={placeholder}
-          value={value}
-          disabled={!loaded}
-          onChange={(e) => setValue(e.target.value)}
-        />
-        <button className="s-btn" onClick={save} disabled={!loaded}>
-          {saved ? <Icon name="check" size={12} /> : t("settings.integrations.save")}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function IntegrationsSection({ onToast }: { onToast: (m: string) => void }) {
-  const { t } = useTranslation();
-  return (
-    <>
-      <div className="settings-group">
-        <h3 className="settings-group-title">
-          {t("settings.integrations.obsidianTitle")}
-        </h3>
-        <p className="modal-hint" style={{ marginBottom: 4 }}>
-          {t("settings.integrations.obsidianDesc")}
-        </p>
-        <IntegrationField
-          settingKey="obsidian_vault"
-          label={t("settings.integrations.obsidianVault")}
-          placeholder={t("settings.integrations.obsidianVaultPlaceholder")}
-          onToast={onToast}
-        />
-      </div>
-
-      <div className="settings-group">
-        <h3 className="settings-group-title">
-          {t("settings.integrations.readwiseTitle")}
-        </h3>
-        <p className="modal-hint" style={{ marginBottom: 4 }}>
-          {t("settings.integrations.readwiseDesc")}
-        </p>
-        <IntegrationField
-          settingKey="readwise_token"
-          label={t("settings.integrations.readwiseToken")}
-          placeholder={t("settings.integrations.readwiseTokenPlaceholder")}
-          password
-          onToast={onToast}
-        />
-      </div>
-
-      <div className="settings-group">
-        <h3 className="settings-group-title">
-          {t("settings.integrations.notionTitle")}
-        </h3>
-        <p className="modal-hint" style={{ marginBottom: 4 }}>
-          {t("settings.integrations.notionDesc")}
-        </p>
-        <IntegrationField
-          settingKey="notion_token"
-          label={t("settings.integrations.notionToken")}
-          placeholder={t("settings.integrations.notionTokenPlaceholder")}
-          password
-          onToast={onToast}
-        />
-        <IntegrationField
-          settingKey="notion_page"
-          label={t("settings.integrations.notionPage")}
-          placeholder={t("settings.integrations.notionPagePlaceholder")}
-          onToast={onToast}
-        />
-        <p className="modal-hint" style={{ marginTop: 6 }}>
-          {t("settings.integrations.notionShareNote")}
-        </p>
-      </div>
-
-      {/* ── "Send to…" share targets (feature F8) ── */}
-      <div className="settings-group">
-        <h3 className="settings-group-title">
-          {t("settings.integrations.pocketTitle")}
-        </h3>
-        <p className="modal-hint" style={{ marginBottom: 4 }}>
-          {t("settings.integrations.pocketDesc")}
-        </p>
-        <IntegrationField
-          settingKey="pocket_consumer_key"
-          label={t("settings.integrations.pocketConsumerKey")}
-          placeholder={t("settings.integrations.pocketConsumerKeyPlaceholder")}
-          onToast={onToast}
-        />
-        <IntegrationField
-          settingKey="pocket_access_token"
-          label={t("settings.integrations.pocketAccessToken")}
-          placeholder={t("settings.integrations.pocketAccessTokenPlaceholder")}
-          password
-          onToast={onToast}
-        />
-      </div>
-
-      <div className="settings-group">
-        <h3 className="settings-group-title">
-          {t("settings.integrations.instapaperTitle")}
-        </h3>
-        <p className="modal-hint" style={{ marginBottom: 4 }}>
-          {t("settings.integrations.instapaperDesc")}
-        </p>
-        <IntegrationField
-          settingKey="instapaper_username"
-          label={t("settings.integrations.instapaperUsername")}
-          placeholder={t("settings.integrations.instapaperUsernamePlaceholder")}
-          onToast={onToast}
-        />
-        <IntegrationField
-          settingKey="instapaper_password"
-          label={t("settings.integrations.instapaperPassword")}
-          placeholder={t("settings.integrations.instapaperPasswordPlaceholder")}
-          password
-          onToast={onToast}
-        />
-      </div>
-
-      <div className="settings-group">
-        <h3 className="settings-group-title">
-          {t("settings.integrations.kindleTitle")}
-        </h3>
-        <p className="modal-hint" style={{ marginBottom: 4 }}>
-          {t("settings.integrations.kindleDesc")}
-        </p>
-        <IntegrationField
-          settingKey="kindle_address"
-          label={t("settings.integrations.kindleAddress")}
-          placeholder={t("settings.integrations.kindleAddressPlaceholder")}
-          onToast={onToast}
-        />
-        <IntegrationField
-          settingKey="kindle_smtp_host"
-          label={t("settings.integrations.kindleSmtpHost")}
-          placeholder={t("settings.integrations.kindleSmtpHostPlaceholder")}
-          onToast={onToast}
-        />
-        <IntegrationField
-          settingKey="kindle_smtp_port"
-          label={t("settings.integrations.kindleSmtpPort")}
-          placeholder={t("settings.integrations.kindleSmtpPortPlaceholder")}
-          onToast={onToast}
-        />
-        <IntegrationField
-          settingKey="kindle_smtp_username"
-          label={t("settings.integrations.kindleSmtpUsername")}
-          placeholder={t("settings.integrations.kindleSmtpUsernamePlaceholder")}
-          onToast={onToast}
-        />
-        <IntegrationField
-          settingKey="kindle_smtp_password"
-          label={t("settings.integrations.kindleSmtpPassword")}
-          placeholder={t("settings.integrations.kindleSmtpPasswordPlaceholder")}
-          password
-          onToast={onToast}
-        />
-        <IntegrationField
-          settingKey="kindle_from_address"
-          label={t("settings.integrations.kindleFromAddress")}
-          placeholder={t("settings.integrations.kindleFromAddressPlaceholder")}
-          onToast={onToast}
-        />
-        <p className="modal-hint" style={{ marginTop: 6 }}>
-          {t("settings.integrations.kindleNote")}
-        </p>
-      </div>
-    </>
-  );
-}
-
 /* ── shortcuts ───────────────────────────────────────────── */
 function ShortcutsSection() {
   const { t } = useTranslation();
@@ -1716,11 +1482,14 @@ function DangerZone({ onToast }: { onToast: (m: string) => void }) {
 
 /** Real AI provider configuration — backing the AI summary feature. */
 function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const qc = useQueryClient();
   const [provider, setProvider] = useState<"anthropic" | "openai">("anthropic");
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
+  // Empty = not yet set; the Select then falls back to the UI language.
+  const [translateLang, setTranslateLang] = useState("");
   const savedKey = useRef("");
   const savedModel = useRef("");
   const savedBaseUrl = useRef("");
@@ -1731,8 +1500,9 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
       api.getSetting("ai_api_key"),
       api.getSetting("ai_model"),
       api.getSetting("ai_base_url"),
+      api.getSetting("translate_target_lang"),
     ])
-      .then(([p, k, m, b]) => {
+      .then(([p, k, m, b, tl]) => {
         if (p === "openai" || p === "anthropic") setProvider(p);
         if (k) {
           setApiKey(k);
@@ -1746,6 +1516,7 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
           setBaseUrl(b);
           savedBaseUrl.current = b;
         }
+        if (tl) setTranslateLang(tl);
       })
       .catch(() => {});
   }, []);
@@ -1869,6 +1640,23 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
           }}
         />
       </Row>
+      <Row
+        label={t("settings.advanced.translateLang")}
+        desc={t("settings.advanced.translateLangDesc")}
+      >
+        <Select
+          value={translateLang || i18n.language}
+          options={LANGUAGES.map((l) => ({ value: l.code, label: l.label }))}
+          onChange={(v) => {
+            setTranslateLang(v);
+            save("translate_target_lang", v, t("settings.advanced.translateLangLabel"));
+            // The reader caches this setting to decide whether a stored
+            // translation is still current — refresh it so a language change
+            // takes effect immediately.
+            qc.invalidateQueries({ queryKey: ["setting", "translate_target_lang"] });
+          }}
+        />
+      </Row>
     </div>
   );
 }
@@ -1888,6 +1676,17 @@ function FiltersSection({
   const [editing, setEditing] = useState<Rule | "new" | null>(null);
 
   const refresh = () => qc.invalidateQueries({ queryKey: ["rules"] });
+  // Saving a rule also backfills existing articles (star / read / skip), so
+  // refresh the article list, sidebar counts and per-feed counts the backfill
+  // touched — not just the rule list. The editor shows the "saved"/"applied"
+  // toast itself, since only it knows how many articles were affected.
+  const afterSaved = () => {
+    setEditing(null);
+    refresh();
+    qc.invalidateQueries({ queryKey: ["articles"] });
+    qc.invalidateQueries({ queryKey: ["counts"] });
+    qc.invalidateQueries({ queryKey: ["feeds"] });
+  };
   const feedName = (id: number | null) =>
     id == null
       ? t("settings.filters.allFeeds")
@@ -1941,11 +1740,7 @@ function FiltersSection({
           rule={null}
           feeds={feeds}
           onCancel={() => setEditing(null)}
-          onSaved={() => {
-            setEditing(null);
-            refresh();
-            onToast(t("settings.filters.saved"));
-          }}
+          onSaved={afterSaved}
           onToast={onToast}
         />
       )}
@@ -2025,6 +1820,9 @@ function RuleEditor({
   const [busy, setBusy] = useState(false);
   const [preview, setPreview] = useState<RulePreview | null>(null);
   const [previewing, setPreviewing] = useState(false);
+  // When a `skip` rule would delete existing matches, hold that count here to
+  // pop a confirmation before the destructive backfill runs.
+  const [pendingDelete, setPendingDelete] = useState<number | null>(null);
 
   // Debounced dry-run: count matching stored articles as the draft changes.
   useEffect(() => {
@@ -2052,24 +1850,57 @@ function RuleEditor({
     };
   }, [query, field, scope]);
 
-  const save = async () => {
-    if (!query.trim()) {
-      onToast(t("settings.filters.needQuery"));
-      return;
-    }
+  // A rule backfills the existing backlog only when it's active: new rules
+  // start enabled, and an existing rule keeps its current enabled state (the
+  // editor has no enabled toggle — that lives in the rule list).
+  const willApply = rule ? rule.enabled : true;
+
+  // Save the rule, then backfill the existing articles it matches. Split out
+  // from `save` so the `skip` confirmation can resume here after the user agrees.
+  const persist = async () => {
     setBusy(true);
     const feedId = scope === "" ? null : Number(scope);
+    const q = query.trim();
     try {
       if (rule) {
-        await api.updateRule(rule.id, name, rule.enabled, feedId, field, query, action);
+        await api.updateRule(rule.id, name, rule.enabled, feedId, field, q, action);
       } else {
-        await api.createRule(name, feedId, field, query, action);
+        await api.createRule(name, feedId, field, q, action);
       }
+      const applied = willApply
+        ? await api.applyRuleToExisting(feedId, field, q, action)
+        : 0;
+      onToast(
+        applied > 0
+          ? t("settings.filters.appliedExisting", { count: applied })
+          : t("settings.filters.saved"),
+      );
       onSaved();
     } catch (e) {
       reportError(e);
       setBusy(false);
     }
+  };
+
+  const save = async () => {
+    const q = query.trim();
+    if (!q) {
+      onToast(t("settings.filters.needQuery"));
+      return;
+    }
+    // `skip` deletes the existing articles it matches — confirm first, showing
+    // the exact count fetched fresh (not the debounced preview, which may lag).
+    if (willApply && action === "skip") {
+      setBusy(true);
+      const feedId = scope === "" ? null : Number(scope);
+      const p = await api.previewRule(feedId, field, q).catch(() => null);
+      setBusy(false);
+      if (p && p.count > 0) {
+        setPendingDelete(p.count);
+        return;
+      }
+    }
+    await persist();
   };
 
   return (
@@ -2150,6 +1981,15 @@ function RuleEditor({
           {t("common.save")}
         </button>
       </div>
+      {pendingDelete != null && (
+        <ConfirmDialog
+          title={t("settings.filters.confirmSkipTitle")}
+          message={t("settings.filters.confirmSkipMessage", { count: pendingDelete })}
+          confirmLabel={t("settings.filters.confirmSkipConfirm")}
+          onConfirm={persist}
+          onClose={() => setPendingDelete(null)}
+        />
+      )}
     </div>
   );
 }

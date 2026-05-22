@@ -12,7 +12,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as api from "../api";
-import { useMenuKeyboard } from "../hooks/useMenuKeyboard";
 import { reportError, withUndo } from "../toast";
 import {
   applyHighlights,
@@ -21,7 +20,6 @@ import {
   selectionAnchor,
 } from "../lib/highlightDom";
 import { captureContext } from "../lib/anchor";
-import { downloadFile } from "../lib/download";
 import { HIGHLIGHT_COLORS } from "../lib/highlightColors";
 import { clampAxis } from "../lib/viewport";
 import type { Highlight } from "../types";
@@ -36,7 +34,6 @@ interface Props {
    *  (extract toggle, extraction finishing) so highlights are re-applied to
    *  the fresh DOM. Compared by value, so a no-op render does not re-apply. */
   bodyVersion: string;
-  onToast: (msg: string) => void;
 }
 
 /** The floating colour toolbar's anchor point (viewport coordinates). */
@@ -55,7 +52,6 @@ export default function HighlightLayer({
   articleId,
   bodyRef,
   bodyVersion,
-  onToast,
 }: Props) {
   const { t } = useTranslation();
   const [highlights, setHighlights] = useState<Highlight[]>([]);
@@ -67,7 +63,6 @@ export default function HighlightLayer({
   const [editing, setEditing] = useState<{ hlId: number; x: number; y: number } | null>(
     null,
   );
-  const [exportOpen, setExportOpen] = useState(false);
 
   // The live highlight backing the open edit popover, looked up fresh from the
   // current set — so a recolour (which reloads `highlights`) is reflected in
@@ -88,7 +83,6 @@ export default function HighlightLayer({
     setHighlights([]);
     reload();
     setEditing(null);
-    setExportOpen(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [articleId]);
 
@@ -227,26 +221,6 @@ export default function HighlightLayer({
           onDelete={deleteHighlight}
         />
       )}
-      <div className="hl-export-wrap">
-        <button
-          className="tb-btn"
-          title={t("highlights.exportTitle")}
-          aria-label={t("highlights.exportTitle")}
-          onClick={() => setExportOpen((v) => !v)}
-          aria-haspopup="menu"
-          aria-expanded={exportOpen}
-        >
-          <Icon name="share" size={16} />
-        </button>
-        {exportOpen && (
-          <ExportMenu
-            articleId={articleId}
-            count={highlights.length}
-            onClose={() => setExportOpen(false)}
-            onToast={onToast}
-          />
-        )}
-      </div>
     </>
   );
 }
@@ -430,119 +404,6 @@ function HighlightPopover({
           {t("common.done")}
         </button>
       </div>
-    </div>
-  );
-}
-
-/* ── export menu ─────────────────────────────────────────────── */
-function ExportMenu({
-  articleId,
-  count,
-  onClose,
-  onToast,
-}: {
-  articleId: number;
-  count: number;
-  onClose: () => void;
-  onToast: (m: string) => void;
-}) {
-  const { t } = useTranslation();
-  const ref = useRef<HTMLDivElement>(null);
-  const [busy, setBusy] = useState(false);
-  const onKeyDown = useMenuKeyboard(ref);
-
-  useEffect(() => {
-    const onDown = (e: MouseEvent) => {
-      if (!ref.current?.contains(e.target as Node)) onClose();
-    };
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    const tm = window.setTimeout(() => {
-      document.addEventListener("mousedown", onDown);
-      window.addEventListener("keydown", onKey);
-    }, 0);
-    return () => {
-      window.clearTimeout(tm);
-      document.removeEventListener("mousedown", onDown);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [onClose]);
-
-  /** Run an export action, guarding against the no-highlights case. */
-  const run = async (fn: () => Promise<void>) => {
-    if (count === 0) {
-      onToast(t("highlights.exportNothing"));
-      onClose();
-      return;
-    }
-    setBusy(true);
-    try {
-      await fn();
-    } catch (e) {
-      reportError(e);
-    } finally {
-      setBusy(false);
-      onClose();
-    }
-  };
-
-  const copyMd = () =>
-    run(async () => {
-      const md = await api.exportHighlightsMarkdown(articleId);
-      await navigator.clipboard.writeText(md);
-      onToast(t("highlights.copiedMarkdown"));
-    });
-
-  const saveMd = () =>
-    run(async () => {
-      const md = await api.exportHighlightsMarkdown(articleId);
-      downloadFile(md, `highlights-${articleId}.md`, "text/markdown");
-      onToast(t("highlights.savedMarkdown"));
-    });
-
-  const toObsidian = () =>
-    run(async () => {
-      const path = await api.exportHighlightsToObsidian(articleId);
-      onToast(t("highlights.savedObsidian", { path }));
-    });
-
-  const toReadwise = () =>
-    run(async () => {
-      const n = await api.exportHighlightsToReadwise(articleId);
-      onToast(t("highlights.sentReadwise", { count: n }));
-    });
-
-  const toNotion = () =>
-    run(async () => {
-      const n = await api.exportHighlightsToNotion(articleId);
-      onToast(t("highlights.sentNotion", { count: n }));
-    });
-
-  return (
-    <div
-      ref={ref}
-      className="ctx-menu hl-export-menu"
-      role="menu"
-      aria-label={t("highlights.exportHeading", { count })}
-      onKeyDown={onKeyDown}
-    >
-      <div className="hl-export-head">
-        {t("highlights.exportHeading", { count })}
-      </div>
-      <button className="ctx-item" role="menuitem" onClick={copyMd} disabled={busy}>
-        <Icon name="copy" size={13} /> {t("highlights.copyMarkdown")}
-      </button>
-      <button className="ctx-item" role="menuitem" onClick={saveMd} disabled={busy}>
-        <Icon name="text" size={13} /> {t("highlights.saveMarkdown")}
-      </button>
-      <button className="ctx-item" role="menuitem" onClick={toObsidian} disabled={busy}>
-        <Icon name="folder" size={13} /> {t("highlights.exportObsidian")}
-      </button>
-      <button className="ctx-item" role="menuitem" onClick={toReadwise} disabled={busy}>
-        <Icon name="bookmark" size={13} /> {t("highlights.exportReadwise")}
-      </button>
-      <button className="ctx-item" role="menuitem" onClick={toNotion} disabled={busy}>
-        <Icon name="list" size={13} /> {t("highlights.exportNotion")}
-      </button>
     </div>
   );
 }

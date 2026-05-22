@@ -613,6 +613,42 @@ button { font-family: inherit; }
 .article-meta > * { white-space: nowrap; }
 .article-meta .author { color: var(--ink-2); font-weight: 500; }
 
+/* Inline original / translation toggle, shown above the body once a
+   translation exists or is streaming in. */
+.tr-toggle {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0 0 1.1em;
+}
+.tr-toggle button {
+  border: 1px solid var(--hair-strong);
+  background: var(--panel);
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--muted);
+  padding: 3px 12px;
+  cursor: pointer;
+  transition: background .12s, color .12s;
+}
+.tr-toggle button:first-of-type {
+  border-radius: 7px 0 0 7px;
+}
+.tr-toggle button:nth-of-type(2) {
+  border-radius: 0 7px 7px 0;
+  border-left: 0;
+}
+.tr-toggle button:hover { color: var(--ink-2); }
+.tr-toggle button.on {
+  background: var(--panel-2);
+  color: var(--ink);
+}
+.tr-progress {
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .article-body {
   font-family: var(--reader-font);
   /* The body shrinks by --reader-font-adjust so sans / Hyperlegible match the
@@ -1206,6 +1242,11 @@ button { font-family: inherit; }
   display: flex;
   flex-direction: column;
   min-height: 0;
+  /* Grid items default to min-width:auto and won't shrink below their content.
+     Without this, a long nowrap line (e.g. a rule-preview sample) blows the
+     1fr column past the window edge, where .settings-window's overflow:hidden
+     clips the inputs and action buttons. */
+  min-width: 0;
   position: relative;
 }
 .settings-header {

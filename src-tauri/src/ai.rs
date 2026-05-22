@@ -3,20 +3,42 @@
 //! the same `stream_chat` contract.
 
 use crate::error::{AppError, AppResult};
-use reqwest::Client;
+use reqwest::{Client, Response};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::time::Duration;
 use tauri::ipc::Channel;
+
+/// Map a non-success HTTP response to an `AppError` naming the service and
+/// carrying the response body; returns the response unchanged on success.
+async fn ensure_success(resp: Response, service: &str) -> AppResult<Response> {
+    if resp.status().is_success() {
+        return Ok(resp);
+    }
+    let status = resp.status();
+    let detail = resp.text().await.unwrap_or_default();
+    Err(AppError::other(format!("{service} error {status}: {detail}")))
+}
 
 /// Per-request cap for AI streaming. The shared HTTP client carries the
 /// feed-fetch timeout (~30s), which would truncate a long generation — so AI
 /// requests override it with a generous bound.
 const AI_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
-/// Output token cap, applied to every provider so a response stays bounded in
-/// length and cost. Summaries / Q&A / digests all fit comfortably within it.
-const MAX_TOKENS: u32 = 1024;
+/// Output token cap for summaries / Q&A / digests, applied to every provider so
+/// a response stays bounded in length and cost. These all fit comfortably within
+/// it. Translation overrides it with [`TRANSLATE_MAX_TOKENS`].
+pub const MAX_TOKENS: u32 = 1024;
+
+/// Output token cap for one translation batch. A batch's translated HTML tracks
+/// its input length (tags are echoed too), so it needs far more room than a
+/// summary. Paired with [`TRANSLATE_CHUNK_BUDGET`] so a batch fits under it.
+pub const TRANSLATE_MAX_TOKENS: u32 = 4096;
+
+/// Input character budget for one translation batch, used by
+/// `translate::chunk_blocks`. Chosen alongside [`TRANSLATE_MAX_TOKENS`] so the
+/// translated output of a full batch stays under the output cap.
+pub const TRANSLATE_CHUNK_BUDGET: usize = 3000;
 
 /// Hard cap on the SSE line buffer. A well-behaved provider delimits every
 /// event with a newline, so the buffer never holds more than a single frame.
@@ -127,10 +149,15 @@ pub async fn stream_chat(
     system: &str,
     user: &str,
     channel: &Channel<AiEvent>,
+    max_tokens: u32,
 ) -> AppResult<ChatOutcome> {
     let result = match cfg.provider {
-        Provider::Anthropic => stream_anthropic(client, cfg, system, user, channel).await,
-        Provider::OpenAi => stream_openai(client, cfg, system, user, channel).await,
+        Provider::Anthropic => {
+            stream_anthropic(client, cfg, system, user, Some(channel), max_tokens).await
+        }
+        Provider::OpenAi => {
+            stream_openai(client, cfg, system, user, Some(channel), max_tokens).await
+        }
     };
     match &result {
         Ok(_) => {
@@ -143,16 +170,37 @@ pub async fn stream_chat(
     result
 }
 
+/// Run a completion to the end and return its full text WITHOUT forwarding
+/// per-token deltas to the frontend. Translation uses this and reports progress
+/// once per batch instead of once per token — token-level IPC over a full
+/// article would flood the webview's main thread and freeze the UI.
+pub async fn complete_chat(
+    client: &Client,
+    cfg: &AiConfig,
+    system: &str,
+    user: &str,
+    max_tokens: u32,
+) -> AppResult<String> {
+    let outcome = match cfg.provider {
+        Provider::Anthropic => {
+            stream_anthropic(client, cfg, system, user, None, max_tokens).await
+        }
+        Provider::OpenAi => stream_openai(client, cfg, system, user, None, max_tokens).await,
+    }?;
+    Ok(outcome.text)
+}
+
 async fn stream_anthropic(
     client: &Client,
     cfg: &AiConfig,
     system: &str,
     user: &str,
-    channel: &Channel<AiEvent>,
+    channel: Option<&Channel<AiEvent>>,
+    max_tokens: u32,
 ) -> AppResult<ChatOutcome> {
     let body = json!({
         "model": cfg.model,
-        "max_tokens": MAX_TOKENS,
+        "max_tokens": max_tokens,
         "system": system,
         "stream": true,
         "messages": [{ "role": "user", "content": user }],
@@ -174,11 +222,12 @@ async fn stream_openai(
     cfg: &AiConfig,
     system: &str,
     user: &str,
-    channel: &Channel<AiEvent>,
+    channel: Option<&Channel<AiEvent>>,
+    max_tokens: u32,
 ) -> AppResult<ChatOutcome> {
     let body = json!({
         "model": cfg.model,
-        "max_tokens": MAX_TOKENS,
+        "max_tokens": max_tokens,
         "stream": true,
         "messages": [
             { "role": "system", "content": system },
@@ -211,7 +260,7 @@ fn handle_sse_line(
     line: &str,
     provider: Provider,
     full: &mut String,
-    channel: &Channel<AiEvent>,
+    channel: Option<&Channel<AiEvent>>,
 ) -> AppResult<LineOutcome> {
     let Some(data) = line.trim().strip_prefix("data:") else {
         return Ok(LineOutcome::Continue);
@@ -231,12 +280,15 @@ fn handle_sse_line(
     }
     if let Some(text) = extract_delta(&value, provider) {
         full.push_str(&text);
-        // A send failure means the frontend dropped the channel (the user
-        // closed the AI panel). Stop streaming instead of downloading the
-        // rest of the response into a void.
-        if channel.send(AiEvent::Delta(text)).is_err() {
-            log::debug!("AI stream channel closed; aborting early");
-            return Ok(LineOutcome::ChannelClosed);
+        // When a token channel is present, a send failure means the frontend
+        // dropped it (the user closed the AI panel). Stop streaming instead of
+        // downloading the rest of the response into a void. The silent path
+        // (translation) passes `None` and simply accumulates into `full`.
+        if let Some(ch) = channel {
+            if ch.send(AiEvent::Delta(text)).is_err() {
+                log::debug!("AI stream channel closed; aborting early");
+                return Ok(LineOutcome::ChannelClosed);
+            }
         }
     }
     Ok(LineOutcome::Continue)
@@ -245,10 +297,10 @@ fn handle_sse_line(
 /// Drive the Server-Sent-Events response, extracting text deltas per provider.
 async fn consume_sse(
     resp: reqwest::Response,
-    channel: &Channel<AiEvent>,
+    channel: Option<&Channel<AiEvent>>,
     provider: Provider,
 ) -> AppResult<ChatOutcome> {
-    let mut resp = crate::export::ensure_success(resp, "AI API").await?;
+    let mut resp = ensure_success(resp, "AI API").await?;
 
     let mut buf: Vec<u8> = Vec::new();
     let mut full = String::new();
@@ -424,7 +476,7 @@ mod tests {
         let (channel, got) = recording_channel();
         let mut full = String::new();
         let line = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n";
-        let out = handle_sse_line(line, Provider::OpenAi, &mut full, &channel).unwrap();
+        let out = handle_sse_line(line, Provider::OpenAi, &mut full, Some(&channel)).unwrap();
         assert!(matches!(out, LineOutcome::Continue));
         assert_eq!(full, "hi");
         assert_eq!(*got.lock().unwrap(), vec!["hi"]);
@@ -435,7 +487,7 @@ mod tests {
         let (channel, got) = recording_channel();
         let mut full = String::new();
         for line in [": keep-alive comment\n", "data: [DONE]\n", "\n"] {
-            handle_sse_line(line, Provider::OpenAi, &mut full, &channel).unwrap();
+            handle_sse_line(line, Provider::OpenAi, &mut full, Some(&channel)).unwrap();
         }
         assert!(full.is_empty());
         assert!(got.lock().unwrap().is_empty());
@@ -446,7 +498,7 @@ mod tests {
         let (channel, _got) = recording_channel();
         let mut full = String::new();
         let line = "data: {\"error\":{\"message\":\"rate limited\"}}\n";
-        let err = handle_sse_line(line, Provider::OpenAi, &mut full, &channel).unwrap_err();
+        let err = handle_sse_line(line, Provider::OpenAi, &mut full, Some(&channel)).unwrap_err();
         assert!(err.to_string().contains("rate limited"));
     }
 
@@ -459,7 +511,7 @@ mod tests {
         let (channel, got) = recording_channel();
         let mut full = String::new();
         let last = "data: {\"choices\":[{\"delta\":{\"content\":\"!\"}}]}";
-        handle_sse_line(last, Provider::OpenAi, &mut full, &channel).unwrap();
+        handle_sse_line(last, Provider::OpenAi, &mut full, Some(&channel)).unwrap();
         assert_eq!(full, "!");
         assert_eq!(*got.lock().unwrap(), vec!["!"]);
     }

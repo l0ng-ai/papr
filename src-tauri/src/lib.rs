@@ -6,16 +6,15 @@ mod ai;
 mod commands;
 mod db;
 mod error;
-mod export;
 mod extraction;
 mod ingestion;
 mod models;
 mod notify;
 mod opml;
 mod sanitize;
-mod share;
 mod state;
 mod sync;
+mod translate;
 mod tray;
 
 use ingestion::discovery::{self, DeepLink};
@@ -212,6 +211,7 @@ pub fn run() {
             commands::ai_summarize,
             commands::ai_ask,
             commands::ai_digest,
+            commands::ai_translate,
             commands::storage_stats,
             commands::cleanup_articles,
             commands::vacuum_db,
@@ -236,6 +236,7 @@ pub fn run() {
             commands::update_rule,
             commands::delete_rule,
             commands::preview_rule,
+            commands::apply_rule_to_existing,
             commands::add_newsletter_source,
             commands::list_newsletter_sources,
             commands::remove_newsletter_source,
@@ -245,12 +246,6 @@ pub fn run() {
             commands::update_highlight_note,
             commands::set_highlight_color,
             commands::delete_highlight,
-            commands::export_highlights_markdown,
-            commands::export_highlights_to_obsidian,
-            commands::export_highlights_to_readwise,
-            commands::export_highlights_to_notion,
-            commands::share_targets,
-            commands::send_article,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Papr");

@@ -5,6 +5,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import * as api from "../api";
 import { useUi } from "../store";
 import { usePlayer } from "../player";
+import { useTranslationJobs } from "../translation";
 import { useArticleActions } from "../hooks/articleActions";
 import { renderMarkdown } from "../lib/markdown";
 import { fullDate } from "../lib/feedMeta";
@@ -15,7 +16,7 @@ import type { ArticleDetail } from "../types";
 import Icon from "./Icon";
 import TagPicker from "./TagPicker";
 import HighlightLayer from "./HighlightLayer";
-import SendToMenu from "./SendToMenu";
+import ContextMenu, { type MenuEntry } from "./ContextMenu";
 
 interface Props {
   onToast: (msg: string) => void;
@@ -136,7 +137,7 @@ function makeLinkClickHandler(sourceUrl: string | null) {
 }
 
 export default function Reader({ onToast }: Props) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const qc = useQueryClient();
   const actions = useArticleActions(toast.error);
   const id = useUi((s) => s.selectedArticleId);
@@ -150,9 +151,13 @@ export default function Reader({ onToast }: Props) {
   const autoExtract = useUi((s) => s.prefs.autoExtract);
 
   const [scrolled, setScrolled] = useState(false);
-  const [showExtracted, setShowExtracted] = useState(true);
+  // Which body to show when an extraction exists follows the "auto-extract"
+  // setting: off (the default) shows the feed's own content and extraction is
+  // opt-in via the toolbar button; on shows the extracted full text.
+  const [showExtracted, setShowExtracted] = useState(autoExtract);
+  const [showTranslation, setShowTranslation] = useState(false);
   const [tagPick, setTagPick] = useState<{ x: number; y: number } | null>(null);
-  const [sendTo, setSendTo] = useState<{ x: number; y: number } | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
   const [heroBroken, setHeroBroken] = useState(false);
   const [progress, setProgress] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -179,10 +184,10 @@ export default function Reader({ onToast }: Props) {
 
   // Reset scroll + extraction view on article change.
   useEffect(() => {
-    setShowExtracted(true);
+    setShowExtracted(useUi.getState().prefs.autoExtract);
+    setShowTranslation(false);
     setScrolled(false);
     setTagPick(null);
-    setSendTo(null);
     setHeroBroken(false);
     setProgress(0);
     scrollMarkedRef.current = null;
@@ -208,7 +213,7 @@ export default function Reader({ onToast }: Props) {
       }
     });
     return () => watched.forEach((img) => img.removeEventListener("error", hide));
-  }, [a?.id, showExtracted, a?.extractedHtml]);
+  }, [a?.id, showExtracted, a?.extractedHtml, showTranslation, a?.translatedHtml]);
 
   // Mark as read once when an unread article is opened (if the user opted in).
   useEffect(() => {
@@ -234,6 +239,35 @@ export default function Reader({ onToast }: Props) {
     },
     onError: (e) => reportError(e),
   });
+
+  // The configured translation target, falling back to the UI language. The
+  // article's cached `translatedLang` (and any running job's `lang`) is compared
+  // against this to decide whether a translation is current for it.
+  const translateSetting = useQuery({
+    queryKey: ["setting", "translate_target_lang"],
+    queryFn: () => api.getSetting("translate_target_lang"),
+  });
+  const targetLang = translateSetting.data || i18n.language;
+
+  // Background translation jobs run independently of this view, so several
+  // articles can translate at once and switching away never interrupts one.
+  const startTranslate = useTranslationJobs((s) => s.translate);
+  const job = useTranslationJobs((s) => (id != null ? s.jobs[id] : undefined));
+
+  // When a translation finishes, refetch the article so its persisted
+  // `translatedHtml` lands in the cache — the toggle then keeps working after
+  // the in-memory job is gone (e.g. reopening the article in a later session).
+  useEffect(() => {
+    if (id == null || !job) return;
+    if (job.status === "done") {
+      qc.invalidateQueries({ queryKey: ["article", id] });
+    } else if (job.status === "error") {
+      // The translation failed (a toast already surfaced why) — drop back to the
+      // original so the view isn't stuck on an empty "translating…" state.
+      setShowTranslation(false);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, job?.status]);
 
   // With "auto-extract full text" on, a summary-only feed item is upgraded to
   // the full page the moment it's opened, so the reader never shows a two-line
@@ -385,8 +419,38 @@ export default function Reader({ onToast }: Props) {
   }
 
   const hasExtracted = !!a.extractedHtml;
-  const body =
+  const canTranslate = !!(a.extractedHtml || a.contentHtml);
+  const baseBody =
     (showExtracted && a.extractedHtml ? a.extractedHtml : a.contentHtml) || "";
+
+  // A translation is "current" for this article only when it was produced for
+  // the active target language — a stale-language copy (cache or a job for a
+  // previously chosen language) is ignored so a re-translate kicks in instead.
+  const jobForTarget = job && job.lang === targetLang ? job : undefined;
+  const translating = jobForTarget?.status === "translating";
+  const cachedValid = !!a.translatedHtml && a.translatedLang === targetLang;
+  // Prefer the live job (grows per batch) so the translation streams in; fall
+  // back to the persisted copy when the article is reopened in a later session.
+  const translatedBody =
+    jobForTarget?.html || (cachedValid ? a.translatedHtml ?? "" : "");
+  const hasTranslation = !!translatedBody;
+  // The inline original/translation toggle appears once there is something to
+  // show or a translation is being produced.
+  const showToggle = hasTranslation || translating;
+  // In the translated view: show the translation when we have any, the
+  // "translating…" placeholder while a batch is still pending, and otherwise
+  // (e.g. the job errored) fall back to the original rather than a stuck spinner.
+  const body = showTranslation
+    ? translatedBody ||
+      (translating ? `<p><em>${t("reader.translating")}</em></p>` : baseBody)
+    : baseBody;
+
+  const beginTranslate = () => {
+    if (!canTranslate) return;
+    if (!hasTranslation && !translating) startTranslate(a.id, targetLang);
+    setShowTranslation(true);
+  };
+
   const ytId = a.sourceType === "youtube" ? youtubeId(a.url) : null;
 
   return (
@@ -427,15 +491,6 @@ export default function Reader({ onToast }: Props) {
           <Icon name="tag" size={16} />
         </button>
         <button
-          className={`tb-btn ${aiOpen ? "on" : ""}`}
-          onClick={() => setAiOpen(!aiOpen)}
-          title={t("reader.tbAiSummary")}
-          aria-label={t("reader.tbAiSummary")}
-          aria-pressed={aiOpen}
-        >
-          <Icon name={aiOpen ? "sparkle-fill" : "sparkle"} size={16} />
-        </button>
-        <button
           className={`tb-btn ${hasExtracted && showExtracted ? "on" : ""} ${
             extract.isPending ? "spinning" : ""
           }`}
@@ -454,34 +509,12 @@ export default function Reader({ onToast }: Props) {
         </button>
         <button
           className="tb-btn"
-          title={t("reader.tbCopyLink")}
-          aria-label={t("reader.tbCopyLink")}
-          onClick={copyLink}
-          disabled={!a.url}
-        >
-          <Icon name="copy" size={16} />
-        </button>
-        <button
-          className="tb-btn"
           title={t("reader.tbShare")}
           aria-label={t("reader.tbShare")}
           onClick={share}
           disabled={!a.url}
         >
           <Icon name="share" size={16} />
-        </button>
-        <button
-          className={`tb-btn ${sendTo ? "on" : ""}`}
-          title={t("sendTo.title")}
-          aria-label={t("sendTo.title")}
-          aria-haspopup="menu"
-          aria-expanded={sendTo != null}
-          onClick={(e) => {
-            const r = e.currentTarget.getBoundingClientRect();
-            setSendTo((p) => (p ? null : { x: r.left, y: r.bottom + 6 }));
-          }}
-        >
-          <Icon name="send" size={16} />
         </button>
         <HighlightLayer
           // Keyed by article id so the export menu / popovers reset cleanly
@@ -490,17 +523,7 @@ export default function Reader({ onToast }: Props) {
           articleId={a.id}
           bodyRef={bodyRef}
           bodyVersion={body}
-          onToast={onToast}
         />
-        <button
-          className={`tb-btn ${focusMode ? "on" : ""}`}
-          onClick={() => setFocusMode(!focusMode)}
-          title={t("reader.tbFocusMode")}
-          aria-label={t("reader.tbFocusMode")}
-          aria-pressed={focusMode}
-        >
-          <Icon name="focus" size={16} />
-        </button>
         <div className="tb-btn spacer" />
         {a.url && (
           <button
@@ -521,7 +544,15 @@ export default function Reader({ onToast }: Props) {
         />
       </div>
 
-      <div className="reader-scroll" ref={scrollRef} onScroll={onScroll}>
+      <div
+        className="reader-scroll"
+        ref={scrollRef}
+        onScroll={onScroll}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          setCtxMenu({ x: e.clientX, y: e.clientY });
+        }}
+      >
         <article className="article reader-content" key={a.id}>
           <span className="article-feed">
             <Icon name="rss" size={13} />
@@ -624,6 +655,32 @@ export default function Reader({ onToast }: Props) {
               </div>
             ))}
 
+          {showToggle && (
+            <div className="tr-toggle" role="group" aria-label={t("reader.tbTranslate")}>
+              <button
+                className={!showTranslation ? "on" : ""}
+                aria-pressed={!showTranslation}
+                onClick={() => setShowTranslation(false)}
+              >
+                {t("reader.original")}
+              </button>
+              <button
+                className={showTranslation ? "on" : ""}
+                aria-pressed={showTranslation}
+                onClick={() => setShowTranslation(true)}
+              >
+                {t("reader.translation")}
+              </button>
+              {translating && (
+                <span className="tr-progress">
+                  {t("reader.translating")}
+                  {jobForTarget && jobForTarget.total > 0 &&
+                    ` ${jobForTarget.done}/${jobForTarget.total}`}
+                </span>
+              )}
+            </div>
+          )}
+
           <div
             className="article-body"
             ref={bodyRef}
@@ -655,13 +712,40 @@ export default function Reader({ onToast }: Props) {
         />
       )}
 
-      {sendTo && (
-        <SendToMenu
-          articleId={a.id}
-          x={sendTo.x}
-          y={sendTo.y}
-          onClose={() => setSendTo(null)}
-          onToast={onToast}
+      {ctxMenu && (
+        <ContextMenu
+          x={ctxMenu.x}
+          y={ctxMenu.y}
+          items={[
+            {
+              icon: aiOpen ? "sparkle-fill" : "sparkle",
+              label: t("reader.tbAiSummary"),
+              onClick: () => setAiOpen(!aiOpen),
+            },
+            ...(canTranslate
+              ? [
+                  {
+                    icon: "globe",
+                    label: showTranslation
+                      ? t("reader.tbShowOriginal")
+                      : t("reader.tbTranslate"),
+                    onClick: () =>
+                      showTranslation ? setShowTranslation(false) : beginTranslate(),
+                  },
+                ]
+              : []),
+            { separator: true },
+            ...(a.url
+              ? [{ icon: "copy", label: t("reader.tbCopyLink"), onClick: copyLink }]
+              : []),
+            { separator: true },
+            {
+              icon: focusMode ? "eye-off" : "focus",
+              label: t("reader.tbFocusMode"),
+              onClick: () => setFocusMode(!focusMode),
+            },
+          ] as MenuEntry[]}
+          onClose={() => setCtxMenu(null)}
         />
       )}
     </div>

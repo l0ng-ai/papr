@@ -126,6 +126,10 @@ export interface ArticleDetail {
   isStarred: boolean;
   readLater: boolean;
   aiSummary: string | null;
+  /** Cached translated body HTML, if a translation has been generated. */
+  translatedHtml: string | null;
+  /** The target language code the cached translation was produced for. */
+  translatedLang: string | null;
   enclosures: Enclosure[];
   tags: Tag[];
 }
@@ -159,21 +163,16 @@ export type ArticleQuery =
   | { kind: "folder"; value: number }
   | { kind: "tag"; value: number };
 
-/** A "Send to…" share target (mirrors commands::ShareTarget — F8). */
-export type ShareTarget = "pocket" | "instapaper" | "kindle" | "notion";
-
-/** Which share targets have complete credentials (mirrors commands::ShareTargets). */
-export interface ShareTargets {
-  pocket: boolean;
-  instapaper: boolean;
-  kindle: boolean;
-  notion: boolean;
-}
-
 export type AiEvent =
   | { type: "delta"; data: string }
   | { type: "done" }
   | { type: "error"; data: string };
+
+/** Batch-level translation progress (mirrors commands::TranslateEvent). */
+export type TranslateEvent =
+  | { type: "start"; data: { total: number } }
+  | { type: "batch"; data: { html: string; done: number } }
+  | { type: "done"; data: { html: string } };
 
 export type RefreshProgress =
   | { event: "started"; data: { total: number } }

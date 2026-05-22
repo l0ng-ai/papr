@@ -17,10 +17,9 @@ import type {
   RuleAction,
   RuleField,
   RulePreview,
-  ShareTarget,
-  ShareTargets,
   SmartCounts,
   Tag,
+  TranslateEvent,
 } from "./types";
 
 // ── folders ──
@@ -122,6 +121,18 @@ export function aiDigest(onToken: (e: AiEvent) => void): Promise<void> {
   return invoke<void>("ai_digest", { onToken: channel });
 }
 
+/** Translate the article body into the configured target language. Progress is
+ *  reported per batch over `onEvent` (start → batch* → done); the full result is
+ *  also persisted and returned via the final `done` event. */
+export function aiTranslate(
+  articleId: number,
+  onEvent: (e: TranslateEvent) => void,
+): Promise<void> {
+  const channel = new Channel<TranslateEvent>();
+  channel.onmessage = onEvent;
+  return invoke<void>("ai_translate", { articleId, onEvent: channel });
+}
+
 // ── settings ──
 export const getSetting = (key: string) =>
   invoke<string | null>("get_setting", { key });
@@ -215,6 +226,16 @@ export const previewRule = (
   field: RuleField,
   query: string,
 ) => invoke<RulePreview>("preview_rule", { feedId, field, query });
+/** Apply a rule's action to the already-stored articles it matches; returns the
+ *  number acted on. Run once after saving so the rule affects the existing
+ *  backlog. A `skip` rule deletes its matches — confirm before calling. */
+export const applyRuleToExisting = (
+  feedId: number | null,
+  field: RuleField,
+  query: string,
+  action: RuleAction,
+) =>
+  invoke<number>("apply_rule_to_existing", { feedId, field, query, action });
 
 // ── highlights / annotations (F7) ──
 export interface NewHighlight {
@@ -238,27 +259,6 @@ export const setHighlightColor = (id: number, color: string) =>
   invoke<void>("set_highlight_color", { id, color });
 export const deleteHighlight = (id: number) =>
   invoke<void>("delete_highlight", { id });
-
-// ── highlight export (F7) ──
-/** Markdown document for an article's highlights (copy / save targets). */
-export const exportHighlightsMarkdown = (articleId: number) =>
-  invoke<string>("export_highlights_markdown", { articleId });
-/** Write the Markdown note into the configured Obsidian vault folder. */
-export const exportHighlightsToObsidian = (articleId: number) =>
-  invoke<string>("export_highlights_to_obsidian", { articleId });
-/** POST the article's highlights to Readwise; returns the count sent. */
-export const exportHighlightsToReadwise = (articleId: number) =>
-  invoke<number>("export_highlights_to_readwise", { articleId });
-/** Append the article's highlights to the configured Notion page. */
-export const exportHighlightsToNotion = (articleId: number) =>
-  invoke<number>("export_highlights_to_notion", { articleId });
-
-// ── "Send to…" share integrations (F8) ──
-/** Which share targets currently have complete credentials configured. */
-export const shareTargets = () => invoke<ShareTargets>("share_targets");
-/** Send an article to a read-later / archive / note service. */
-export const sendArticle = (articleId: number, target: ShareTarget) =>
-  invoke<void>("send_article", { articleId, target });
 
 // ── newsletter sources (IMAP-polled email newsletters) ──
 export const addNewsletterSource = (input: NewsletterInput) =>

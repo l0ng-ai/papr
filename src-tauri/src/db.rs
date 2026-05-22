@@ -235,6 +235,13 @@ static MIGRATIONS: LazyLock<Migrations> = LazyLock::new(|| {
         M::up(
             "ALTER TABLE feeds ADD COLUMN custom_title INTEGER NOT NULL DEFAULT 0;",
         ),
+        // v14 — cache a translated copy of the article body. `translated_lang`
+        // records the target language the cache was produced for, so a later
+        // change to the translation-target setting is detected as a cache miss.
+        M::up(
+            "ALTER TABLE articles ADD COLUMN translated_html TEXT;
+             ALTER TABLE articles ADD COLUMN translated_lang TEXT;",
+        ),
     ])
 });
 
@@ -1058,7 +1065,8 @@ pub fn get_article(conn: &Connection, id: i64) -> AppResult<ArticleDetail> {
     let mut detail = conn.query_row(
         "SELECT a.id, a.feed_id, f.title, f.source_type, a.title, a.author, a.url,
                 a.content_html, a.extracted_html, a.image_url, a.published_at,
-                a.is_read, a.is_starred, a.read_later, a.ai_summary
+                a.is_read, a.is_starred, a.read_later, a.ai_summary,
+                a.translated_html, a.translated_lang
          FROM articles a JOIN feeds f ON f.id = a.feed_id WHERE a.id = ?1",
         params![id],
         |r| {
@@ -1078,6 +1086,8 @@ pub fn get_article(conn: &Connection, id: i64) -> AppResult<ArticleDetail> {
                 is_starred: r.get(12)?,
                 read_later: r.get(13)?,
                 ai_summary: r.get(14)?,
+                translated_html: r.get(15)?,
+                translated_lang: r.get(16)?,
                 enclosures: Vec::new(),
                 tags: Vec::new(),
             })
@@ -1148,6 +1158,16 @@ pub fn set_extracted_html(conn: &Connection, id: i64, html: &str) -> AppResult<(
 
 pub fn set_ai_summary(conn: &Connection, id: i64, summary: &str) -> AppResult<()> {
     conn.execute("UPDATE articles SET ai_summary = ?2 WHERE id = ?1", params![id, summary])?;
+    Ok(())
+}
+
+/// Cache a completed translation of an article's body, tagged with the target
+/// language it was produced for so a later language change is detected as stale.
+pub fn set_translation(conn: &Connection, id: i64, html: &str, lang: &str) -> AppResult<()> {
+    conn.execute(
+        "UPDATE articles SET translated_html = ?2, translated_lang = ?3 WHERE id = ?1",
+        params![id, html, lang],
+    )?;
     Ok(())
 }
 
@@ -1478,6 +1498,60 @@ pub fn delete_rule(conn: &Connection, id: i64) -> AppResult<()> {
     Ok(())
 }
 
+/// Build the `WHERE` fragment (and its bind values) that selects the articles a
+/// rule matches: one `unicode_lower(col) LIKE ?` per (keyword × searched
+/// column), OR-joined, optionally scoped to one feed. Columns are *unaliased*
+/// so the fragment slots straight into a bare `SELECT … FROM articles`,
+/// `UPDATE articles` or `DELETE FROM articles`. Returns `None` when the query
+/// holds no usable keywords (a no-op rule), so callers can short-circuit.
+///
+/// `preview_rule` (count + samples) and `apply_rule_to_existing` (act) share
+/// this builder so the number the preview shows is exactly the set the apply
+/// touches. LIKE wildcards in a keyword are escaped so a literal `%` / `_`
+/// can't widen the match; the column side is folded with `unicode_lower` (not
+/// SQLite's ASCII-only `LOWER`) so it matches the Unicode-aware
+/// `to_lowercase()` `rule_matches` applies at ingestion — otherwise a keyword
+/// like `café` would be counted here but its `CAFÉ` articles missed, diverging
+/// the preview/apply from live ingestion.
+fn rule_match_where(
+    field: &str,
+    query: &str,
+    feed_id: Option<i64>,
+) -> Option<(String, Vec<Value>)> {
+    let terms: Vec<String> = query
+        .split(',')
+        .map(|t| t.trim().to_lowercase())
+        .filter(|t| !t.is_empty())
+        .collect();
+    if terms.is_empty() {
+        return None;
+    }
+    let cols: &[&str] = match field {
+        "author" => &["author"],
+        "content" => &["body_text"],
+        "any" => &["title", "author", "body_text"],
+        _ => &["title"],
+    };
+    let mut ors: Vec<String> = Vec::new();
+    let mut binds: Vec<Value> = Vec::new();
+    for term in &terms {
+        let escaped = term
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        for col in cols {
+            ors.push(format!("unicode_lower(COALESCE({col},'')) LIKE ? ESCAPE '\\'"));
+            binds.push(Value::Text(format!("%{escaped}%")));
+        }
+    }
+    let mut where_sql = format!("({})", ors.join(" OR "));
+    if let Some(fid) = feed_id {
+        where_sql.push_str(" AND feed_id = ?");
+        binds.push(Value::Integer(fid));
+    }
+    Some((where_sql, binds))
+}
+
 /// Preview how a draft rule would behave: the number of *already-stored*
 /// articles its keywords match, plus a handful of recent sample titles.
 /// Lets the user sanity-check a rule before saving it.
@@ -1487,60 +1561,57 @@ pub fn preview_rule(
     field: &str,
     query: &str,
 ) -> AppResult<(i64, Vec<String>)> {
-    let terms: Vec<String> = query
-        .split(',')
-        .map(|t| t.trim().to_lowercase())
-        .filter(|t| !t.is_empty())
-        .collect();
-    if terms.is_empty() {
+    let Some((where_sql, binds)) = rule_match_where(field, query, feed_id) else {
         return Ok((0, Vec::new()));
-    }
-    let cols: &[&str] = match field {
-        "author" => &["a.author"],
-        "content" => &["a.body_text"],
-        "any" => &["a.title", "a.author", "a.body_text"],
-        _ => &["a.title"],
     };
-    // One LIKE clause per (term × column); LIKE wildcards in the term are
-    // escaped so a literal `%` or `_` keyword can't widen the match. The
-    // column side is folded with `unicode_lower` (not SQLite's ASCII-only
-    // `LOWER`) so it matches the Unicode-aware `to_lowercase()` `rule_matches`
-    // applies — otherwise a keyword like `café` would be counted here but its
-    // `CAFÉ` articles missed, diverging the preview from live ingestion.
-    let mut ors: Vec<String> = Vec::new();
-    let mut binds: Vec<Value> = Vec::new();
-    for term in &terms {
-        let escaped = term
-            .replace('\\', "\\\\")
-            .replace('%', "\\%")
-            .replace('_', "\\_");
-        for col in cols {
-            ors.push(format!(
-                "unicode_lower(COALESCE({col},'')) LIKE ? ESCAPE '\\'"
-            ));
-            binds.push(Value::Text(format!("%{escaped}%")));
-        }
-    }
-    let mut where_sql = format!("({})", ors.join(" OR "));
-    if let Some(fid) = feed_id {
-        where_sql.push_str(" AND a.feed_id = ?");
-        binds.push(Value::Integer(fid));
-    }
-
     let count: i64 = conn.query_row(
-        &format!("SELECT COUNT(*) FROM articles a WHERE {where_sql}"),
+        &format!("SELECT COUNT(*) FROM articles WHERE {where_sql}"),
         params_from_iter(binds.iter().cloned()),
         |r| r.get(0),
     )?;
     let mut stmt = conn.prepare(&format!(
-        "SELECT a.title FROM articles a WHERE {where_sql}
-         ORDER BY datetime(COALESCE(a.published_at, a.fetched_at)) DESC, a.id DESC
+        "SELECT title FROM articles WHERE {where_sql}
+         ORDER BY datetime(COALESCE(published_at, fetched_at)) DESC, id DESC
          LIMIT 5"
     ))?;
     let samples = stmt
         .query_map(params_from_iter(binds), |r| r.get(0))?
         .collect::<Result<Vec<_>, _>>()?;
     Ok((count, samples))
+}
+
+/// Apply a saved rule's action to the articles already in the store that it
+/// matches — the one-time backfill run when a rule is created or edited so it
+/// affects the existing backlog, not only articles fetched afterwards. Returns
+/// the number of articles acted on.
+///
+/// `skip` *deletes* its matches — the stored-article equivalent of dropping the
+/// article at ingestion. FK `ON DELETE CASCADE` (enclosures, highlights, tags)
+/// and the `articles_fts_ad` trigger keep dependent rows and the FTS index in
+/// sync, the same path retention cleanup relies on. `read` / `star` set the
+/// matching flag and skip rows that already carry it, so the returned count is
+/// the number of rows actually changed.
+pub fn apply_rule_to_existing(
+    conn: &Connection,
+    feed_id: Option<i64>,
+    field: &str,
+    query: &str,
+    action: &str,
+) -> AppResult<usize> {
+    let Some((where_sql, binds)) = rule_match_where(field, query, feed_id) else {
+        return Ok(0);
+    };
+    let sql = match action {
+        "skip" => format!("DELETE FROM articles WHERE {where_sql}"),
+        "read" => {
+            format!("UPDATE articles SET is_read = 1 WHERE ({where_sql}) AND is_read = 0")
+        }
+        "star" => {
+            format!("UPDATE articles SET is_starred = 1 WHERE ({where_sql}) AND is_starred = 0")
+        }
+        _ => return Ok(0),
+    };
+    Ok(conn.execute(&sql, params_from_iter(binds))?)
 }
 
 /// (total unread, starred, read-later) counts for the sidebar smart folders.
@@ -1953,6 +2024,31 @@ mod tests {
             .query_row("SELECT id FROM articles", [], |r| r.get(0))
             .unwrap();
         (conn, article_id)
+    }
+
+    #[test]
+    fn translation_round_trips_through_get_article() {
+        let (conn, id) = test_db();
+        // No translation cached on a fresh article.
+        let before = get_article(&conn, id).unwrap();
+        assert_eq!(before.translated_html, None);
+        assert_eq!(before.translated_lang, None);
+
+        set_translation(&conn, id, "<p>译文</p>", "zh").unwrap();
+
+        let after = get_article(&conn, id).unwrap();
+        assert_eq!(after.translated_html.as_deref(), Some("<p>译文</p>"));
+        assert_eq!(after.translated_lang.as_deref(), Some("zh"));
+    }
+
+    #[test]
+    fn set_translation_overwrites_a_previous_language() {
+        let (conn, id) = test_db();
+        set_translation(&conn, id, "<p>译文</p>", "zh").unwrap();
+        set_translation(&conn, id, "<p>translation</p>", "en").unwrap();
+        let after = get_article(&conn, id).unwrap();
+        assert_eq!(after.translated_html.as_deref(), Some("<p>translation</p>"));
+        assert_eq!(after.translated_lang.as_deref(), Some("en"));
     }
 
     /// Compact `NewHighlight` builder for the highlight tests.
@@ -2518,6 +2614,122 @@ mod tests {
             !upsert_article(&conn, feed_id, &fresh, false, &rules).unwrap(),
             "ingestion must skip the article the `café` preview counted"
         );
+    }
+
+    // ── apply_rule_to_existing (retroactive backfill on save) ─────────
+
+    fn seed(conn: &Connection, feed_id: i64, guid: &str, title: &str) {
+        let a = NewArticle {
+            guid: guid.into(),
+            url: Some(format!("https://example.com/{guid}")),
+            title: title.into(),
+            author: None,
+            summary: None,
+            content_html: None,
+            body_text: "body".into(),
+            image_url: None,
+            published_at: None,
+            enclosures: Vec::new(),
+        };
+        upsert_article(conn, feed_id, &a, false, &[]).unwrap();
+    }
+
+    #[test]
+    fn apply_rule_to_existing_stars_matching_backlog_idempotently() {
+        // The bug this guards: saving a `star` rule did nothing to articles
+        // already stored — only `upsert_article` ran the rule, and that fires
+        // only on freshly fetched articles. `apply_rule_to_existing` backfills
+        // the matches when the rule is saved.
+        let (conn, _aid) = test_db();
+        let feed_id: i64 = conn
+            .query_row("SELECT feed_id FROM articles LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        seed(&conn, feed_id, "j1", "Learning Java today");
+        seed(&conn, feed_id, "j2", "JavaScript tips");
+        seed(&conn, feed_id, "p1", "Rust ownership");
+
+        let n = apply_rule_to_existing(&conn, None, "title", "java", "star").unwrap();
+        assert_eq!(n, 2, "both Java/JavaScript titles get starred");
+        let starred: i64 = conn
+            .query_row("SELECT COUNT(*) FROM articles WHERE is_starred = 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(starred, 2);
+
+        // Re-running counts only rows it actually changes — already-starred rows
+        // are excluded, so a second save reports 0.
+        let again = apply_rule_to_existing(&conn, None, "title", "java", "star").unwrap();
+        assert_eq!(again, 0);
+    }
+
+    #[test]
+    fn apply_rule_to_existing_skip_deletes_matches_keeping_fts_in_sync() {
+        let (conn, _aid) = test_db();
+        let feed_id: i64 = conn
+            .query_row("SELECT feed_id FROM articles LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        seed(&conn, feed_id, "a1", "Sponsored junk");
+        seed(&conn, feed_id, "a2", "more Sponsored stuff");
+        seed(&conn, feed_id, "a3", "real content");
+
+        // The preview count is exactly the set the skip apply deletes — they
+        // share `rule_match_where`, so the user is never surprised.
+        let (preview, _) = preview_rule(&conn, None, "title", "sponsored").unwrap();
+        assert_eq!(preview, 2);
+        let n = apply_rule_to_existing(&conn, None, "title", "sponsored", "skip").unwrap();
+        assert_eq!(n, 2);
+
+        let remaining: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM articles WHERE title LIKE '%Sponsored%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining, 0, "matching articles are deleted");
+
+        // The `articles_fts_ad` trigger drops the FTS rows with the articles, so
+        // the index never goes stale.
+        let arts: i64 = conn
+            .query_row("SELECT COUNT(*) FROM articles", [], |r| r.get(0))
+            .unwrap();
+        let fts: i64 = conn
+            .query_row("SELECT COUNT(*) FROM articles_fts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(arts, fts, "FTS index stays in sync after a skip-rule delete");
+    }
+
+    #[test]
+    fn apply_rule_to_existing_scopes_to_one_feed() {
+        let (conn, _aid) = test_db();
+        let feed_a: i64 = conn
+            .query_row("SELECT feed_id FROM articles LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        let feed_b = insert_feed(
+            &conn,
+            "https://example.com/b.xml",
+            None,
+            "Feed B",
+            None,
+            SourceType::Rss,
+            None,
+        )
+        .unwrap();
+        seed(&conn, feed_a, "x1", "Deals everywhere");
+        seed(&conn, feed_b, "x2", "Deals galore");
+
+        // Scoped to feed B only: feed A's match is left untouched.
+        let n = apply_rule_to_existing(&conn, Some(feed_b), "title", "deals", "star").unwrap();
+        assert_eq!(n, 1);
+        let starred_in_a: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM articles WHERE is_starred = 1 AND feed_id = ?1",
+                params![feed_a],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(starred_in_a, 0, "a feed-scoped rule must not touch other feeds");
     }
 
     // ── mark_all_read sync queueing ──────────────────────────────────

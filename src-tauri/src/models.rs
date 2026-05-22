@@ -136,6 +136,10 @@ pub struct ArticleDetail {
     pub is_starred: bool,
     pub read_later: bool,
     pub ai_summary: Option<String>,
+    /// Cached translated body HTML, if a translation has been generated.
+    pub translated_html: Option<String>,
+    /// The target language code the cached translation was produced for.
+    pub translated_lang: Option<String>,
     pub enclosures: Vec<Enclosure>,
     /// Tags currently attached to this article.
     pub tags: Vec<Tag>,

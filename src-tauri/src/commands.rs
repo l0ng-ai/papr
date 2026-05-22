@@ -4,19 +4,17 @@
 use crate::ai::{self, AiConfig, AiEvent};
 use crate::db::{self};
 use crate::error::{AppError, AppResult};
-use crate::export::{self, ExportArticle};
 use crate::extraction;
-use crate::share::{self, KindleConfig, ShareArticle};
 use crate::ingestion::discovery::{self, DiscoveryResult};
 use crate::ingestion::newsletter::{self, NewsletterConfig};
 use crate::ingestion::sources::{self, Normalized};
 use crate::ingestion::{fetch, parse, scheduler};
 use crate::models::*;
 use crate::opml;
+use crate::sanitize;
 use crate::state::AppState;
+use crate::translate;
 use serde::{Deserialize, Serialize};
-use std::fs;
-use std::path::PathBuf;
 use tauri::{ipc::Channel, AppHandle, Emitter, Manager, State};
 use url::Url;
 
@@ -494,6 +492,19 @@ fn response_language(conn: &rusqlite::Connection) -> &'static str {
     }
 }
 
+/// The article-translation target language code: the dedicated
+/// `translate_target_lang` setting, falling back to the UI `language`, then
+/// English. Stored as a code (`en` / `zh` / `ja`); `translate::language_name`
+/// maps it to the name used in the prompt.
+fn translate_target_lang(conn: &rusqlite::Connection) -> String {
+    db::get_setting(conn, "translate_target_lang")
+        .ok()
+        .flatten()
+        .or_else(|| db::get_setting(conn, "language").ok().flatten())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "en".to_string())
+}
+
 /// Stream an AI summary of one article; the full summary is also persisted.
 #[tauri::command]
 pub async fn ai_summarize(
@@ -531,7 +542,7 @@ pub async fn ai_summarize(
     let user = format!("Title: {title}\n\n{}", truncate(&body, 8000));
 
     let http = state.http();
-    let outcome = ai::stream_chat(&http, &cfg, &system, &user, &on_token).await?;
+    let outcome = ai::stream_chat(&http, &cfg, &system, &user, &on_token, ai::MAX_TOKENS).await?;
     // Persist only a summary that streamed to completion. If the user closed
     // the AI panel mid-stream the channel was dropped and `outcome.text` holds
     // just a truncated fragment — caching that would make the next open show a
@@ -584,7 +595,7 @@ pub async fn ai_ask(
     };
 
     let http = state.http();
-    ai::stream_chat(&http, &cfg, &system, &user, &on_token).await?;
+    ai::stream_chat(&http, &cfg, &system, &user, &on_token, ai::MAX_TOKENS).await?;
     Ok(())
 }
 
@@ -620,7 +631,81 @@ pub async fn ai_digest(
     let user = format!("Recent articles from my feeds:\n\n{corpus}");
 
     let http = state.http();
-    ai::stream_chat(&http, &cfg, &system, &user, &on_token).await?;
+    ai::stream_chat(&http, &cfg, &system, &user, &on_token, ai::MAX_TOKENS).await?;
+    Ok(())
+}
+
+/// Progress events streamed to the frontend during a translation. Reported once
+/// per batch (a group of whole blocks), never per token: token-level IPC across
+/// a full article would flood the webview's main thread and freeze the UI.
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase", tag = "type", content = "data")]
+pub enum TranslateEvent {
+    /// The number of batches the body was split into, sent before any batch.
+    Start { total: usize },
+    /// One freshly translated, sanitized batch of HTML, plus how many batches
+    /// have completed so far.
+    Batch { html: String, done: usize },
+    /// The full sanitized translation, sent once on completion.
+    Done { html: String },
+}
+
+/// Translate one article's body into the configured target language, reporting
+/// progress per batch over `on_event`. The body is split into batches of whole
+/// blocks (so long articles and the per-request token cap are both handled) and
+/// translated batch by batch with the HTML structure preserved. The reassembled,
+/// sanitized result is cached on the article row and reused on the next open.
+///
+/// The work runs to completion independently of the reader view, so the frontend
+/// can start several translations at once and switch articles without
+/// interrupting any of them.
+#[tauri::command]
+pub async fn ai_translate(
+    state: State<'_, AppState>,
+    article_id: i64,
+    on_event: Channel<TranslateEvent>,
+) -> AppResult<()> {
+    let (source_html, cfg, target) = {
+        let conn = state.read().await;
+        let detail = db::get_article(&conn, article_id)?;
+        // Translate the richest body available: the extracted full text when the
+        // user has run extraction, otherwise the feed's own HTML.
+        let source = detail
+            .extracted_html
+            .filter(|s| !s.trim().is_empty())
+            .or(detail.content_html)
+            .unwrap_or_default();
+        (source, load_ai_config(&conn)?, translate_target_lang(&conn))
+    };
+    if source_html.trim().is_empty() {
+        return Err(AppError::code("noArticleBody"));
+    }
+
+    let batches = translate::chunk_blocks(&source_html, ai::TRANSLATE_CHUNK_BUDGET);
+    let total = batches.len();
+    let _ = on_event.send(TranslateEvent::Start { total });
+
+    let system = translate::translate_system_prompt(translate::language_name(&target));
+    let http = state.http();
+    let mut full = String::new();
+    for (i, batch) in batches.iter().enumerate() {
+        let text = ai::complete_chat(&http, &cfg, &system, batch, ai::TRANSLATE_MAX_TOKENS).await?;
+        // The model output is untrusted, so each batch passes through the same
+        // sanitizer as feed HTML before it reaches the webview or the database.
+        // Source URLs are already absolute (sanitized at ingestion), so no base
+        // is needed.
+        let clean = sanitize::sanitize(translate::strip_code_fence(&text).trim(), None);
+        full.push_str(&clean);
+        full.push('\n');
+        let _ = on_event.send(TranslateEvent::Batch { html: clean, done: i + 1 });
+    }
+
+    let final_html = full.trim().to_string();
+    if !final_html.is_empty() {
+        let conn = state.db.lock().await;
+        db::set_translation(&conn, article_id, &final_html, &target)?;
+    }
+    let _ = on_event.send(TranslateEvent::Done { html: final_html });
     Ok(())
 }
 
@@ -859,6 +944,25 @@ pub async fn update_rule(
 pub async fn delete_rule(state: State<'_, AppState>, id: i64) -> AppResult<()> {
     let conn = state.db.lock().await;
     db::delete_rule(&conn, id)
+}
+
+/// Apply a rule's action to the already-stored articles it matches and return
+/// how many were acted on. The frontend calls this right after saving a rule so
+/// an enabled rule affects the existing backlog, not just future articles. A
+/// `skip` rule deletes its matches, so the UI confirms before invoking this.
+#[tauri::command]
+pub async fn apply_rule_to_existing(
+    state: State<'_, AppState>,
+    feed_id: Option<i64>,
+    field: String,
+    query: String,
+    action: String,
+) -> AppResult<usize> {
+    if query.trim().is_empty() {
+        return Err(AppError::code("emptyRuleQuery"));
+    }
+    let conn = state.db.lock().await;
+    db::apply_rule_to_existing(&conn, feed_id, &field, query.trim(), &action)
 }
 
 /// Persist a reordered tag list (ids in the new display order).
@@ -1121,432 +1225,4 @@ pub async fn set_highlight_color(
 pub async fn delete_highlight(state: State<'_, AppState>, id: i64) -> AppResult<()> {
     let conn = state.db.lock().await;
     db::delete_highlight(&conn, id)
-}
-
-// ─────────────────────────── highlight export (F7) ───────────────────────────
-
-/// Read a required, non-empty setting, returning the localisable `missing`
-/// error code when the key is absent or holds only whitespace.
-fn require_setting(
-    conn: &rusqlite::Connection,
-    key: &str,
-    missing: &'static str,
-) -> AppResult<String> {
-    db::get_setting(conn, key)?
-        .filter(|v| !v.trim().is_empty())
-        .ok_or_else(|| AppError::code(missing))
-}
-
-/// Gather an article and its highlights from the database for export.
-fn load_for_export(
-    conn: &rusqlite::Connection,
-    article_id: i64,
-) -> AppResult<(ExportArticle, Vec<Highlight>)> {
-    let detail = db::get_article(conn, article_id)?;
-    let article = ExportArticle {
-        title: detail.title,
-        url: detail.url,
-        author: detail.author,
-        feed_title: detail.feed_title,
-        published_at: detail.published_at,
-    };
-    let highlights = db::list_highlights(conn, article_id)?;
-    Ok((article, highlights))
-}
-
-/// Render an article's highlights as a Markdown document — used for both
-/// copy-to-clipboard (frontend) and save-to-file.
-#[tauri::command]
-pub async fn export_highlights_markdown(
-    state: State<'_, AppState>,
-    article_id: i64,
-) -> AppResult<String> {
-    let conn = state.read().await;
-    let (article, highlights) = load_for_export(&conn, article_id)?;
-    Ok(export::build_markdown(&article, &highlights))
-}
-
-/// Derive a filesystem-safe `.md` note name from an article title, falling
-/// back to a stable `highlights-<id>.md` when the title yields an empty stem.
-fn obsidian_note_filename(title: &str, article_id: i64) -> String {
-    export::safe_filename(title, ".md", &format!("highlights-{article_id}.md"))
-}
-
-/// Write an article's highlights as a Markdown file into the user-configured
-/// Obsidian vault folder (the `obsidian_vault` setting). Returns the path
-/// written. Uses `std::fs` directly — no file-dialog plugin is bundled.
-#[tauri::command]
-pub async fn export_highlights_to_obsidian(
-    state: State<'_, AppState>,
-    article_id: i64,
-) -> AppResult<String> {
-    let (markdown, vault, title) = {
-        let conn = state.read().await;
-        let (article, highlights) = load_for_export(&conn, article_id)?;
-        let vault = require_setting(&conn, "obsidian_vault", "noObsidianVault")?;
-        let markdown = export::build_markdown(&article, &highlights);
-        (markdown, vault, article.title)
-    };
-    let name = obsidian_note_filename(&title, article_id);
-    let dir = PathBuf::from(vault.trim());
-    fs::create_dir_all(&dir)
-        .map_err(|e| AppError::other(format!("create vault folder: {e}")))?;
-    let path = dir.join(name);
-    fs::write(&path, markdown)
-        .map_err(|e| AppError::other(format!("write note: {e}")))?;
-    Ok(path.to_string_lossy().into_owned())
-}
-
-/// Push an article's highlights to Readwise. The access token is read from
-/// the `readwise_token` setting.
-#[tauri::command]
-pub async fn export_highlights_to_readwise(
-    state: State<'_, AppState>,
-    article_id: i64,
-) -> AppResult<usize> {
-    let (article, highlights, token) = {
-        let conn = state.read().await;
-        let (article, highlights) = load_for_export(&conn, article_id)?;
-        let token = require_setting(&conn, "readwise_token", "noReadwiseToken")?;
-        (article, highlights, token)
-    };
-    if highlights.is_empty() {
-        return Err(AppError::code("noHighlights"));
-    }
-    let count = highlights.len();
-    let http = state.http();
-    export::post_to_readwise(&http, token.trim(), &article, &highlights).await?;
-    Ok(count)
-}
-
-/// Append an article's highlights to a Notion page. The integration token and
-/// target page id are read from the `notion_token` / `notion_page` settings.
-#[tauri::command]
-pub async fn export_highlights_to_notion(
-    state: State<'_, AppState>,
-    article_id: i64,
-) -> AppResult<usize> {
-    let (article, highlights, token, page) = {
-        let conn = state.read().await;
-        let (article, highlights) = load_for_export(&conn, article_id)?;
-        let token = require_setting(&conn, "notion_token", "noNotionToken")?;
-        let page = require_setting(&conn, "notion_page", "noNotionPage")?;
-        (article, highlights, token, page)
-    };
-    if highlights.is_empty() {
-        return Err(AppError::code("noHighlights"));
-    }
-    let count = highlights.len();
-    let http = state.http();
-    export::post_to_notion(&http, token.trim(), page.trim(), &article, &highlights).await?;
-    Ok(count)
-}
-
-// ─────────────────────────── "Send to…" share (F8) ───────────────────────────
-
-/// The four "Send to…" targets. Mirrored by the `ShareTarget` union in
-/// `src/types.ts`.
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ShareTarget {
-    Pocket,
-    Instapaper,
-    Kindle,
-    Notion,
-}
-
-/// Strip HTML tags from a body, collapsing each block element to a newline so
-/// the plain text keeps paragraph breaks. Good enough for a Notion page body.
-fn html_to_text(html: &str) -> String {
-    let mut out = String::with_capacity(html.len());
-    let mut in_tag = false;
-    // Lower-cased tag name accumulated while inside `<...>`.
-    let mut tag = String::new();
-    for c in html.chars() {
-        match c {
-            '<' => {
-                in_tag = true;
-                tag.clear();
-            }
-            '>' => {
-                in_tag = false;
-                // Block-level tags become a line break.
-                let name = tag.trim_start_matches('/');
-                if matches!(
-                    name.split([' ', '\t', '\n']).next().unwrap_or(""),
-                    "p" | "br" | "div" | "li" | "h1" | "h2" | "h3" | "h4" | "h5"
-                        | "h6" | "tr" | "blockquote" | "section" | "article"
-                ) {
-                    out.push('\n');
-                }
-            }
-            _ if in_tag => tag.push(c.to_ascii_lowercase()),
-            _ => out.push(c),
-        }
-    }
-    // Decode the handful of entities a sanitized body can carry. `&amp;` is
-    // decoded *last*, after every other entity: doing it first would
-    // double-decode an escaped entity — a body that literally shows the text
-    // `&lt;` is encoded by `sanitize` as `&amp;lt;`, and an `&amp;`-first pass
-    // would turn that into `&lt;` and then `<`, corrupting the visible text.
-    out.replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&nbsp;", " ")
-        .replace("&amp;", "&")
-}
-
-/// Load an article from the database into a `ShareArticle`. The body prefers
-/// the extracted full text, falling back to the feed-supplied content.
-fn load_for_share(
-    conn: &rusqlite::Connection,
-    article_id: i64,
-) -> AppResult<ShareArticle> {
-    let detail = db::get_article(conn, article_id)?;
-    let body_html = detail
-        .extracted_html
-        .filter(|h| !h.trim().is_empty())
-        .or(detail.content_html)
-        .unwrap_or_default();
-    Ok(ShareArticle {
-        title: detail.title,
-        url: detail.url,
-        author: detail.author,
-        feed_title: detail.feed_title,
-        published_at: detail.published_at,
-        body_html,
-    })
-}
-
-/// Which "Send to…" targets currently have complete credentials configured.
-/// The UI uses this to only show usable targets.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ShareTargets {
-    pocket: bool,
-    instapaper: bool,
-    kindle: bool,
-    notion: bool,
-}
-
-/// Report which share targets are configured (have all required settings).
-#[tauri::command]
-pub async fn share_targets(state: State<'_, AppState>) -> AppResult<ShareTargets> {
-    let conn = state.read().await;
-    let set = |key: &str| -> bool {
-        db::get_setting(&conn, key)
-            .ok()
-            .flatten()
-            .map(|v| !v.trim().is_empty())
-            .unwrap_or(false)
-    };
-    Ok(ShareTargets {
-        pocket: set("pocket_consumer_key") && set("pocket_access_token"),
-        instapaper: set("instapaper_username") && set("instapaper_password"),
-        kindle: set("kindle_smtp_host")
-            && set("kindle_smtp_username")
-            && set("kindle_smtp_password")
-            && set("kindle_address"),
-        notion: set("notion_token") && set("notion_page"),
-    })
-}
-
-/// Send one article to a read-later / archive / note service (feature F8).
-/// Loads the article, builds the target-specific payload, and performs the
-/// network or SMTP call. Returns an `AppError` with a localisable code when
-/// the chosen target is not configured.
-#[tauri::command]
-pub async fn send_article(
-    state: State<'_, AppState>,
-    article_id: i64,
-    target: ShareTarget,
-) -> AppResult<()> {
-    match target {
-        ShareTarget::Pocket => {
-            let (article, key, token) = {
-                let conn = state.read().await;
-                let article = load_for_share(&conn, article_id)?;
-                let key = require_setting(&conn, "pocket_consumer_key", "noPocketConfig")?;
-                let token =
-                    require_setting(&conn, "pocket_access_token", "noPocketConfig")?;
-                (article, key, token)
-            };
-            let http = state.http();
-            share::post_to_pocket(&http, key.trim(), token.trim(), &article).await
-        }
-        ShareTarget::Instapaper => {
-            let (article, user, pass) = {
-                let conn = state.read().await;
-                let article = load_for_share(&conn, article_id)?;
-                let user =
-                    require_setting(&conn, "instapaper_username", "noInstapaperConfig")?;
-                let pass =
-                    require_setting(&conn, "instapaper_password", "noInstapaperConfig")?;
-                (article, user, pass)
-            };
-            let http = state.http();
-            share::post_to_instapaper(&http, user.trim(), pass.trim(), &article, None).await
-        }
-        ShareTarget::Kindle => {
-            let (article, cfg) = {
-                let conn = state.read().await;
-                let article = load_for_share(&conn, article_id)?;
-                let cfg = KindleConfig::new(
-                    db::get_setting(&conn, "kindle_smtp_host")?,
-                    db::get_setting(&conn, "kindle_smtp_port")?,
-                    db::get_setting(&conn, "kindle_smtp_username")?,
-                    db::get_setting(&conn, "kindle_smtp_password")?,
-                    db::get_setting(&conn, "kindle_from_address")?,
-                    db::get_setting(&conn, "kindle_address")?,
-                )?;
-                (article, cfg)
-            };
-            // `lettre`'s SMTP transport is blocking — run it off the async pool.
-            tokio::task::spawn_blocking(move || share::send_to_kindle(&cfg, &article))
-                .await
-                .map_err(|e| AppError::other(format!("kindle send task: {e}")))?
-        }
-        ShareTarget::Notion => {
-            let (export_article, body_text, token, page) = {
-                let conn = state.read().await;
-                let article = load_for_share(&conn, article_id)?;
-                let body_text = html_to_text(&article.body_html);
-                let export_article = ExportArticle {
-                    title: article.title,
-                    url: article.url,
-                    author: article.author,
-                    feed_title: article.feed_title,
-                    published_at: article.published_at,
-                };
-                let token = require_setting(&conn, "notion_token", "noNotionToken")?;
-                let page = require_setting(&conn, "notion_page", "noNotionPage")?;
-                (export_article, body_text, token, page)
-            };
-            let http = state.http();
-            export::post_article_to_notion(
-                &http,
-                token.trim(),
-                page.trim(),
-                &export_article,
-                &body_text,
-            )
-            .await
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{html_to_text, obsidian_note_filename};
-
-    #[test]
-    fn obsidian_filename_replaces_reserved_chars() {
-        assert_eq!(
-            obsidian_note_filename("a/b:c*d?", 1),
-            "a-b-c-d-.md"
-        );
-    }
-
-    #[test]
-    fn obsidian_filename_falls_back_for_empty_or_dotted_title() {
-        // Whitespace-only, and titles that would yield a hidden / odd file.
-        assert_eq!(obsidian_note_filename("   ", 7), "highlights-7.md");
-        assert_eq!(obsidian_note_filename(".", 7), "highlights-7.md");
-        assert_eq!(obsidian_note_filename("..", 7), "highlights-7.md");
-    }
-
-    #[test]
-    fn obsidian_filename_strips_leading_dot() {
-        // A leading dot would make the note a hidden file in the vault.
-        assert_eq!(obsidian_note_filename(".hidden", 1), "hidden.md");
-    }
-
-    #[test]
-    fn obsidian_filename_truncates_to_byte_limit() {
-        // A title longer than the 255-byte component cap must not produce a
-        // filename that fails `fs::write` with ENAMETOOLONG.
-        let long = "a".repeat(400);
-        let name = obsidian_note_filename(&long, 1);
-        assert!(name.len() <= 255, "filename {} bytes", name.len());
-        assert!(name.ends_with(".md"));
-    }
-
-    #[test]
-    fn obsidian_filename_truncates_on_char_boundary() {
-        // CJL characters are 3 bytes each — truncation must not split one.
-        let long = "界".repeat(200); // 600 bytes
-        let name = obsidian_note_filename(&long, 1);
-        assert!(name.len() <= 255);
-        assert!(name.ends_with(".md"));
-        // The stem (sans ".md") must still be valid UTF-8 whole characters.
-        let stem = name.strip_suffix(".md").unwrap();
-        assert!(stem.chars().all(|c| c == '界'));
-    }
-
-    #[test]
-    fn obsidian_filename_keeps_ordinary_title() {
-        assert_eq!(
-            obsidian_note_filename("My Article Title", 1),
-            "My Article Title.md"
-        );
-    }
-
-    #[test]
-    fn html_to_text_strips_tags() {
-        assert_eq!(html_to_text("<p>hello</p>").trim(), "hello");
-        assert_eq!(html_to_text("plain").trim(), "plain");
-    }
-
-    #[test]
-    fn html_to_text_block_tags_become_newlines() {
-        let t = html_to_text("<p>one</p><p>two</p>");
-        let lines: Vec<&str> = t.split('\n').filter(|l| !l.trim().is_empty()).collect();
-        assert_eq!(lines, vec!["one", "two"]);
-        assert_eq!(html_to_text("a<br>b").replace('\n', "|"), "a|b");
-    }
-
-    #[test]
-    fn html_to_text_inline_tags_kept_inline() {
-        assert_eq!(
-            html_to_text("<p>a <strong>bold</strong> word</p>").trim(),
-            "a bold word"
-        );
-    }
-
-    #[test]
-    fn html_to_text_decodes_entities() {
-        assert_eq!(
-            html_to_text("<p>tom &amp; jerry &lt;3 &quot;x&quot;</p>").trim(),
-            "tom & jerry <3 \"x\""
-        );
-    }
-
-    #[test]
-    fn html_to_text_does_not_double_decode_escaped_entities() {
-        // `sanitize` encodes a body that literally shows the text `&lt;` as
-        // `&amp;lt;`. Decoding `&amp;` before `&lt;` would turn that into
-        // `&lt;` and then `<`, corrupting the visible text. `&amp;` must be
-        // decoded last so each entity is decoded exactly once.
-        assert_eq!(
-            html_to_text("<p>write &amp;lt;br&amp;gt; for a break</p>").trim(),
-            "write &lt;br&gt; for a break"
-        );
-        // `&amp;amp;` is the escaped form of the literal text `&amp;`.
-        assert_eq!(html_to_text("<p>&amp;amp;</p>").trim(), "&amp;");
-    }
-
-    #[test]
-    fn html_to_text_empty_input() {
-        assert_eq!(html_to_text("").trim(), "");
-        assert_eq!(html_to_text("<p></p>").trim(), "");
-    }
-
-    #[test]
-    fn html_to_text_handles_attributes_in_tags() {
-        // A tag carrying attributes is still recognised as block-level.
-        let t = html_to_text("<p class=\"x\">first</p><div id=\"y\">second</div>");
-        let lines: Vec<&str> = t.split('\n').filter(|l| !l.trim().is_empty()).collect();
-        assert_eq!(lines, vec!["first", "second"]);
-    }
 }
