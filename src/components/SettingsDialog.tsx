@@ -1889,11 +1889,19 @@ function RuleEditor({
     if (willApply && action === "skip") {
       setBusy(true);
       const feedId = scope === "" ? null : Number(scope);
-      const p = await api.previewRule(feedId, field, q).catch(() => null);
-      setBusy(false);
-      if (p && p.count > 0) {
-        setPendingDelete(p.count);
+      try {
+        const p = await api.previewRule(feedId, field, q);
+        if (p.count > 0) {
+          setPendingDelete(p.count);
+          return;
+        }
+      } catch (e) {
+        // Never fall through to the destructive backfill when we couldn't
+        // confirm how many articles it would delete.
+        reportError(e);
         return;
+      } finally {
+        setBusy(false);
       }
     }
     await persist();
