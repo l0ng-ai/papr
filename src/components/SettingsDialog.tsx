@@ -1758,11 +1758,7 @@ function FiltersSection({
               rule={r}
               feeds={feeds}
               onCancel={() => setEditing(null)}
-              onSaved={() => {
-                setEditing(null);
-                refresh();
-                onToast(t("settings.filters.saved"));
-              }}
+              onSaved={afterSaved}
               onToast={onToast}
             />
           ) : (
