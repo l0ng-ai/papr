@@ -23,9 +23,9 @@ const STARRED_TAG: &str = "user/-/state/com.google/starred";
 const READING_LIST: &str = "user/-/state/com.google/reading-list";
 
 /// Which GReader-compatible backend the user is connected to. The wire
-/// protocol is identical; only the API root path under the server URL
-/// differs (FreshRSS mounts it at `/api/greader.php`, Miniflux at
-/// `/greader`).
+/// protocol is identical; only where the API root sits under the server URL
+/// differs (FreshRSS mounts it at `/api/greader.php`, Miniflux serves it at
+/// the server root).
 #[derive(Clone, Copy)]
 enum Provider {
     FreshRss,
@@ -34,11 +34,13 @@ enum Provider {
 
 impl Provider {
     /// Path segment to append to the user-supplied server URL to reach the
-    /// GReader API root.
+    /// GReader API root. Miniflux serves `/accounts/ClientLogin` and
+    /// `/reader/api/0/...` straight off the server root, so its suffix is
+    /// empty.
     fn path_suffix(self) -> &'static str {
         match self {
             Provider::FreshRss => "/api/greader.php",
-            Provider::Miniflux => "/greader",
+            Provider::Miniflux => "",
         }
     }
 
