@@ -496,14 +496,23 @@ fn truncate(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
 }
 
-/// A system-prompt directive so AI output matches the UI language rather than
-/// defaulting to whatever language the source article happens to be in.
-fn response_language(conn: &rusqlite::Connection) -> &'static str {
-    match db::get_setting(conn, "language").ok().flatten().as_deref() {
-        Some("zh") => "\n\nAlways write your response in Simplified Chinese.",
-        Some("ja") => "\n\nAlways write your response in Japanese.",
-        _ => "\n\nAlways write your response in English.",
-    }
+/// A system-prompt directive so AI output (summaries, Q&A, the digest) is written
+/// in a chosen language rather than defaulting to whatever language the source
+/// article happens to be in. Reads the dedicated `ai_response_lang` setting,
+/// falling back to the UI `language`, then English; the legacy UI value `zh` is
+/// normalised to `zh-Hans`. The code is mapped to an English language name via
+/// `translate_llm::language_name`, so AI output and translation share one
+/// language set.
+fn response_language(conn: &rusqlite::Connection) -> String {
+    let raw = db::get_setting(conn, "ai_response_lang")
+        .ok()
+        .flatten()
+        .or_else(|| db::get_setting(conn, "language").ok().flatten())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "en".to_string());
+    let code = if raw == "zh" { "zh-Hans" } else { raw.as_str() };
+    let name = translate_llm::language_name(code);
+    format!("\n\nAlways write your response in {name}.")
 }
 
 /// The default article-translation target language: the dedicated

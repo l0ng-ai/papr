@@ -1530,11 +1530,13 @@ function DangerZone({ onToast }: { onToast: (m: string) => void }) {
 
 /** Real AI provider configuration — backing the AI summary feature. */
 function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [provider, setProvider] = useState<"anthropic" | "openai">("anthropic");
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
+  // Empty = not yet set; the Select then falls back to the UI language.
+  const [responseLang, setResponseLang] = useState("");
   const savedKey = useRef("");
   const savedModel = useRef("");
   const savedBaseUrl = useRef("");
@@ -1545,8 +1547,9 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
       api.getSetting("ai_api_key"),
       api.getSetting("ai_model"),
       api.getSetting("ai_base_url"),
+      api.getSetting("ai_response_lang"),
     ])
-      .then(([p, k, m, b]) => {
+      .then(([p, k, m, b, rl]) => {
         if (p === "openai" || p === "anthropic") setProvider(p);
         if (k) {
           setApiKey(k);
@@ -1560,6 +1563,7 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
           setBaseUrl(b);
           savedBaseUrl.current = b;
         }
+        if (rl) setResponseLang(rl);
       })
       .catch(() => {});
   }, []);
@@ -1680,6 +1684,26 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
               savedBaseUrl.current = trimmed;
               save("ai_base_url", trimmed, t("settings.advanced.aiBaseUrlLabel"));
             }
+          }}
+        />
+      </Row>
+      <Row
+        label={t("settings.advanced.responseLang")}
+        desc={t("settings.advanced.responseLangDesc")}
+      >
+        <Select
+          value={responseLang || normalizeTargetLang(i18n.language)}
+          options={TRANSLATE_LANGUAGES.map((l) => ({
+            value: l.code,
+            label: l.label,
+          }))}
+          onChange={(v) => {
+            setResponseLang(v);
+            save(
+              "ai_response_lang",
+              v,
+              t("settings.advanced.responseLangLabel"),
+            );
           }}
         />
       </Row>
