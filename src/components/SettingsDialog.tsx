@@ -8,6 +8,10 @@ import { useUi, READER_BOUNDS } from "../store";
 import { useArticleActions } from "../hooks/articleActions";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { LANGUAGES, setLanguage, type Language } from "../i18n";
+import {
+  TRANSLATE_LANGUAGES,
+  normalizeTargetLang,
+} from "../translateLanguages";
 import { feedHost } from "../lib/feedMeta";
 import { modKey, modCombo } from "../lib/platform";
 import { reportError } from "../toast";
@@ -1220,6 +1224,7 @@ function AdvancedSection({ onToast }: { onToast: (m: string) => void }) {
   return (
     <>
       <AiSettingsGroup onToast={onToast} />
+      <TranslationSettingsGroup onToast={onToast} />
       <StorageGroup onToast={onToast} />
       <NetworkGroup onToast={onToast} />
       <div className="settings-group">
@@ -1526,13 +1531,12 @@ function DangerZone({ onToast }: { onToast: (m: string) => void }) {
 /** Real AI provider configuration — backing the AI summary feature. */
 function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
   const { t, i18n } = useTranslation();
-  const qc = useQueryClient();
   const [provider, setProvider] = useState<"anthropic" | "openai">("anthropic");
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   // Empty = not yet set; the Select then falls back to the UI language.
-  const [translateLang, setTranslateLang] = useState("");
+  const [responseLang, setResponseLang] = useState("");
   const savedKey = useRef("");
   const savedModel = useRef("");
   const savedBaseUrl = useRef("");
@@ -1543,9 +1547,9 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
       api.getSetting("ai_api_key"),
       api.getSetting("ai_model"),
       api.getSetting("ai_base_url"),
-      api.getSetting("translate_target_lang"),
+      api.getSetting("ai_response_lang"),
     ])
-      .then(([p, k, m, b, tl]) => {
+      .then(([p, k, m, b, rl]) => {
         if (p === "openai" || p === "anthropic") setProvider(p);
         if (k) {
           setApiKey(k);
@@ -1559,7 +1563,7 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
           setBaseUrl(b);
           savedBaseUrl.current = b;
         }
-        if (tl) setTranslateLang(tl);
+        if (rl) setResponseLang(rl);
       })
       .catch(() => {});
   }, []);
@@ -1684,19 +1688,267 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
         />
       </Row>
       <Row
+        label={t("settings.advanced.responseLang")}
+        desc={t("settings.advanced.responseLangDesc")}
+      >
+        <Select
+          value={responseLang || normalizeTargetLang(i18n.language)}
+          options={TRANSLATE_LANGUAGES.map((l) => ({
+            value: l.code,
+            label: l.label,
+          }))}
+          onChange={(v) => {
+            setResponseLang(v);
+            save(
+              "ai_response_lang",
+              v,
+              t("settings.advanced.responseLangLabel"),
+            );
+          }}
+        />
+      </Row>
+    </div>
+  );
+}
+
+/** Translation engine configuration — backing article translation. Distinct
+ *  from the AI/LLM config above: translation defaults to a dedicated
+ *  machine-translation API (DeepL / Google / a compatible endpoint) with the
+ *  user's own key, but can instead reuse the cloud LLM configured above
+ *  ("llm"), plus a default target language. */
+function TranslationSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
+  const { t, i18n } = useTranslation();
+  const qc = useQueryClient();
+  const [provider, setProvider] = useState<
+    "deepl" | "google" | "compatible" | "youdao" | "llm"
+  >("deepl");
+  const [apiKey, setApiKey] = useState("");
+  const [apiSecret, setApiSecret] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  // Empty = not yet set; the Select then falls back to the UI language.
+  const [targetLang, setTargetLang] = useState("");
+  const savedKey = useRef("");
+  const savedSecret = useRef("");
+  const savedBaseUrl = useRef("");
+  // The LLM engine reuses the AI-summary model config above, so the dedicated
+  // MT key / Base URL fields don't apply to it.
+  const isLlm = provider === "llm";
+  // Youdao is signature-authed: it needs a second credential (appSecret).
+  const isYoudao = provider === "youdao";
+
+  useEffect(() => {
+    Promise.all([
+      api.getSetting("translate_provider"),
+      api.getSetting("translate_api_key"),
+      api.getSetting("translate_api_secret"),
+      api.getSetting("translate_base_url"),
+      api.getSetting("translate_target_lang"),
+    ])
+      .then(([p, k, s, b, tl]) => {
+        if (
+          p === "deepl" ||
+          p === "google" ||
+          p === "compatible" ||
+          p === "youdao" ||
+          p === "llm"
+        )
+          setProvider(p);
+        if (k) {
+          setApiKey(k);
+          savedKey.current = k;
+        }
+        if (s) {
+          setApiSecret(s);
+          savedSecret.current = s;
+        }
+        if (b) {
+          setBaseUrl(b);
+          savedBaseUrl.current = b;
+        }
+        if (tl) setTargetLang(tl);
+      })
+      .catch(() => {});
+  }, []);
+
+  const save = (key: string, value: string, label: string) => {
+    api
+      .setSetting(key, value)
+      .then(() => onToast(t("settings.advanced.aiSaved", { label })))
+      .catch((e) => reportError(e));
+  };
+
+  // A compatible endpoint has no official host, so its base URL is required;
+  // the others default to their own and accept an override.
+  const baseUrlPlaceholder =
+    provider === "google"
+      ? "https://translation.googleapis.com"
+      : provider === "compatible"
+        ? "https://libretranslate.example"
+        : provider === "youdao"
+          ? "https://openapi.youdao.com"
+          : "https://api-free.deepl.com";
+
+  return (
+    <div className="settings-group">
+      <h3 className="settings-group-title">
+        {t("settings.advanced.translateTitle")}
+      </h3>
+      <Row
+        label={t("settings.advanced.translateProvider")}
+        desc={t("settings.advanced.translateProviderDesc")}
+      >
+        <Select
+          value={provider}
+          options={[
+            { value: "deepl", label: "DeepL" },
+            { value: "google", label: "Google" },
+            {
+              value: "compatible",
+              label: t("settings.advanced.translateProviderCompatible"),
+            },
+            {
+              value: "youdao",
+              label: t("settings.advanced.translateProviderYoudao"),
+            },
+            {
+              value: "llm",
+              label: t("settings.advanced.translateProviderLlm"),
+            },
+          ]}
+          onChange={(v) => {
+            setProvider(v);
+            // The base URL is provider-specific; clear it so each provider
+            // falls back to its own default (or, for compatible, prompts for
+            // the required endpoint) rather than reusing the previous host.
+            setBaseUrl("");
+            savedBaseUrl.current = "";
+            Promise.all([
+              api.setSetting("translate_provider", v),
+              api.setSetting("translate_base_url", ""),
+            ])
+              .then(() =>
+                onToast(
+                  t("settings.advanced.aiSaved", {
+                    label: t("settings.advanced.translateProviderLabel"),
+                  }),
+                ),
+              )
+              .catch((e) => reportError(e));
+          }}
+        />
+      </Row>
+      {isLlm ? (
+        // The LLM engine has no dedicated key of its own — it reuses the AI
+        // model configured in the "AI summary" group above. Point the user there
+        // instead of showing inapplicable key / Base URL fields.
+        <p className="settings-row-desc settings-note">
+          {t("settings.advanced.translateLlmNote")}
+        </p>
+      ) : (
+        <>
+          <Row
+            label={
+              isYoudao
+                ? t("settings.advanced.translateAppKey")
+                : t("settings.advanced.translateApiKey")
+            }
+            desc={t("settings.advanced.translateApiKeyDesc")}
+          >
+            <input
+              className="s-text-input"
+              type="password"
+              value={apiKey}
+              placeholder="…"
+              onChange={(e) => setApiKey(e.target.value)}
+              onBlur={() => {
+                const trimmed = apiKey.trim();
+                if (trimmed !== apiKey) setApiKey(trimmed);
+                if (trimmed !== savedKey.current) {
+                  savedKey.current = trimmed;
+                  save(
+                    "translate_api_key",
+                    trimmed,
+                    t("settings.advanced.translateApiKeyLabel"),
+                  );
+                }
+              }}
+            />
+          </Row>
+          {isYoudao && (
+            <Row
+              label={t("settings.advanced.translateAppSecret")}
+              desc={t("settings.advanced.translateAppSecretDesc")}
+            >
+              <input
+                className="s-text-input"
+                type="password"
+                value={apiSecret}
+                placeholder="…"
+                onChange={(e) => setApiSecret(e.target.value)}
+                onBlur={() => {
+                  const trimmed = apiSecret.trim();
+                  if (trimmed !== apiSecret) setApiSecret(trimmed);
+                  if (trimmed !== savedSecret.current) {
+                    savedSecret.current = trimmed;
+                    save(
+                      "translate_api_secret",
+                      trimmed,
+                      t("settings.advanced.translateAppSecretLabel"),
+                    );
+                  }
+                }}
+              />
+            </Row>
+          )}
+          <Row
+            label={t("settings.advanced.translateBaseUrl")}
+            desc={t("settings.advanced.translateBaseUrlDesc")}
+          >
+            <input
+              className="s-text-input"
+              type="text"
+              value={baseUrl}
+              placeholder={baseUrlPlaceholder}
+              onChange={(e) => setBaseUrl(e.target.value)}
+              onBlur={() => {
+                const trimmed = baseUrl.trim();
+                if (trimmed !== baseUrl) setBaseUrl(trimmed);
+                if (trimmed !== savedBaseUrl.current) {
+                  savedBaseUrl.current = trimmed;
+                  save(
+                    "translate_base_url",
+                    trimmed,
+                    t("settings.advanced.translateBaseUrlLabel"),
+                  );
+                }
+              }}
+            />
+          </Row>
+        </>
+      )}
+      <Row
         label={t("settings.advanced.translateLang")}
         desc={t("settings.advanced.translateLangDesc")}
       >
         <Select
-          value={translateLang || i18n.language}
-          options={LANGUAGES.map((l) => ({ value: l.code, label: l.label }))}
+          value={targetLang || normalizeTargetLang(i18n.language)}
+          options={TRANSLATE_LANGUAGES.map((l) => ({
+            value: l.code,
+            label: l.label,
+          }))}
           onChange={(v) => {
-            setTranslateLang(v);
-            save("translate_target_lang", v, t("settings.advanced.translateLangLabel"));
+            setTargetLang(v);
+            save(
+              "translate_target_lang",
+              v,
+              t("settings.advanced.translateLangLabel"),
+            );
             // The reader caches this setting to decide whether a stored
             // translation is still current — refresh it so a language change
             // takes effect immediately.
-            qc.invalidateQueries({ queryKey: ["setting", "translate_target_lang"] });
+            qc.invalidateQueries({
+              queryKey: ["setting", "translate_target_lang"],
+            });
           }}
         />
       </Row>

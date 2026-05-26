@@ -14,6 +14,8 @@ use crate::opml;
 use crate::sanitize;
 use crate::state::AppState;
 use crate::translate;
+use crate::translate_api::{self, TranslateConfig};
+use crate::translate_llm;
 use serde::{Deserialize, Serialize};
 use tauri::{ipc::Channel, AppHandle, Emitter, Manager, State};
 use url::Url;
@@ -477,32 +479,60 @@ fn load_ai_config(conn: &rusqlite::Connection) -> AppResult<AiConfig> {
     )
 }
 
+/// Load the dedicated translation-provider configuration from the settings
+/// table. Independent of the AI/LLM config: article translation now runs through
+/// a machine-translation API (DeepL / Google / a compatible endpoint).
+fn load_translate_config(conn: &rusqlite::Connection) -> AppResult<TranslateConfig> {
+    TranslateConfig::new(
+        db::get_setting(conn, "translate_provider")?,
+        db::get_setting(conn, "translate_api_key")?,
+        db::get_setting(conn, "translate_api_secret")?,
+        db::get_setting(conn, "translate_base_url")?,
+    )
+}
+
 /// Truncate to at most `max` characters without splitting a UTF-8 boundary.
 fn truncate(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
 }
 
-/// A system-prompt directive so AI output matches the UI language rather than
-/// defaulting to whatever language the source article happens to be in.
-fn response_language(conn: &rusqlite::Connection) -> &'static str {
-    match db::get_setting(conn, "language").ok().flatten().as_deref() {
-        Some("zh") => "\n\nAlways write your response in Simplified Chinese.",
-        Some("ja") => "\n\nAlways write your response in Japanese.",
-        _ => "\n\nAlways write your response in English.",
-    }
-}
-
-/// The article-translation target language code: the dedicated
-/// `translate_target_lang` setting, falling back to the UI `language`, then
-/// English. Stored as a code (`en` / `zh` / `ja`); `translate::language_name`
-/// maps it to the name used in the prompt.
-fn translate_target_lang(conn: &rusqlite::Connection) -> String {
-    db::get_setting(conn, "translate_target_lang")
+/// A system-prompt directive so AI output (summaries, Q&A, the digest) is written
+/// in a chosen language rather than defaulting to whatever language the source
+/// article happens to be in. Reads the dedicated `ai_response_lang` setting,
+/// falling back to the UI `language`, then English; the legacy UI value `zh` is
+/// normalised to `zh-Hans`. The code is mapped to an English language name via
+/// `translate_llm::language_name`, so AI output and translation share one
+/// language set.
+fn response_language(conn: &rusqlite::Connection) -> String {
+    let raw = db::get_setting(conn, "ai_response_lang")
         .ok()
         .flatten()
         .or_else(|| db::get_setting(conn, "language").ok().flatten())
         .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "en".to_string())
+        .unwrap_or_else(|| "en".to_string());
+    let code = if raw == "zh" { "zh-Hans" } else { raw.as_str() };
+    let name = translate_llm::language_name(code);
+    format!("\n\nAlways write your response in {name}.")
+}
+
+/// The default article-translation target language: the dedicated
+/// `translate_target_lang` setting, falling back to the UI `language`, then
+/// English. Stored as an app language code (`en` / `ja` / `zh-Hans` / `fr` …)
+/// that `translate_api::provider_lang_code` maps to each provider's own code.
+/// The legacy UI `language` value `zh` is normalised to `zh-Hans` so a stored
+/// or inherited code is always one the new language list recognises.
+fn translate_target_lang(conn: &rusqlite::Connection) -> String {
+    let raw = db::get_setting(conn, "translate_target_lang")
+        .ok()
+        .flatten()
+        .or_else(|| db::get_setting(conn, "language").ok().flatten())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "en".to_string());
+    if raw == "zh" {
+        "zh-Hans".to_string()
+    } else {
+        raw
+    }
 }
 
 /// Stream an AI summary of one article; the full summary is also persisted.
@@ -636,8 +666,8 @@ pub async fn ai_digest(
 }
 
 /// Progress events streamed to the frontend during a translation. Reported once
-/// per batch (a group of whole blocks), never per token: token-level IPC across
-/// a full article would flood the webview's main thread and freeze the UI.
+/// per batch (a group of whole blocks) as each provider round-trip returns, so a
+/// long article streams in section by section instead of appearing all at once.
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase", tag = "type", content = "data")]
 pub enum TranslateEvent {
@@ -650,22 +680,43 @@ pub enum TranslateEvent {
     Done { html: String },
 }
 
-/// Translate one article's body into the configured target language, reporting
-/// progress per batch over `on_event`. The body is split into batches of whole
-/// blocks (so long articles and the per-request token cap are both handled) and
-/// translated batch by batch with the HTML structure preserved. The reassembled,
-/// sanitized result is cached on the article row and reused on the next open.
+/// Translate one article's body into a target language via the configured
+/// machine-translation provider, reporting progress per batch over `on_event`.
+/// The body is split into batches of whole blocks (so a long article fits the
+/// provider's per-request size limit) and translated batch by batch with the
+/// HTML structure preserved by the provider's native tag handling. The
+/// reassembled, sanitized result is cached on the article row and reused on the
+/// next open.
+///
+/// `target_lang` overrides the default for this one call — the reader passes it
+/// when the user picks a language inline (Chrome-style), so a single article can
+/// be re-translated into another language without changing the global default.
+/// When omitted, the `translate_target_lang` setting is used.
+///
+/// The engine is chosen by the `translate_provider` setting: a dedicated MT API
+/// (DeepL / Google / a compatible endpoint) by default, or `"llm"` to translate
+/// with the same cloud model that powers summaries. Both engines preserve the
+/// HTML structure and report progress per batch, so the rest of the flow is
+/// identical.
 ///
 /// The work runs to completion independently of the reader view, so the frontend
 /// can start several translations at once and switch articles without
 /// interrupting any of them.
 #[tauri::command]
-pub async fn ai_translate(
+pub async fn translate_article(
     state: State<'_, AppState>,
     article_id: i64,
+    target_lang: Option<String>,
     on_event: Channel<TranslateEvent>,
 ) -> AppResult<()> {
-    let (source_html, cfg, target) = {
+    // The chosen engine carries its own resolved config; an MT batch fits a
+    // larger budget than the token-bound LLM path, so the budget travels with it.
+    enum Engine {
+        Mt(TranslateConfig),
+        Llm(AiConfig),
+    }
+
+    let (source_html, engine, budget, target) = {
         let conn = state.read().await;
         let detail = db::get_article(&conn, article_id)?;
         // Translate the richest body available: the extracted full text when the
@@ -675,26 +726,45 @@ pub async fn ai_translate(
             .filter(|s| !s.trim().is_empty())
             .or(detail.content_html)
             .unwrap_or_default();
-        (source, load_ai_config(&conn)?, translate_target_lang(&conn))
+        let target = target_lang
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| translate_target_lang(&conn));
+        let is_llm =
+            db::get_setting(&conn, "translate_provider").ok().flatten().as_deref() == Some("llm");
+        let (engine, budget) = if is_llm {
+            (
+                Engine::Llm(load_ai_config(&conn)?),
+                ai::TRANSLATE_CHUNK_BUDGET,
+            )
+        } else {
+            (
+                Engine::Mt(load_translate_config(&conn)?),
+                translate_api::TRANSLATE_CHUNK_BUDGET,
+            )
+        };
+        (source, engine, budget, target)
     };
     if source_html.trim().is_empty() {
         return Err(AppError::code("noArticleBody"));
     }
 
-    let batches = translate::chunk_blocks(&source_html, ai::TRANSLATE_CHUNK_BUDGET);
+    let batches = translate::chunk_blocks(&source_html, budget);
     let total = batches.len();
     let _ = on_event.send(TranslateEvent::Start { total });
 
-    let system = translate::translate_system_prompt(translate::language_name(&target));
     let http = state.http();
     let mut full = String::new();
     for (i, batch) in batches.iter().enumerate() {
-        let text = ai::complete_chat(&http, &cfg, &system, batch, ai::TRANSLATE_MAX_TOKENS).await?;
-        // The model output is untrusted, so each batch passes through the same
-        // sanitizer as feed HTML before it reaches the webview or the database.
-        // Source URLs are already absolute (sanitized at ingestion), so no base
-        // is needed.
-        let clean = sanitize::sanitize(translate::strip_code_fence(&text).trim(), None);
+        let text = match &engine {
+            Engine::Mt(cfg) => translate_api::translate_html(&http, cfg, batch, &target).await?,
+            Engine::Llm(cfg) => translate_llm::translate_html(&http, cfg, batch, &target).await?,
+        };
+        // The engine's output is untrusted, so each batch passes through the
+        // same sanitizer as feed HTML before it reaches the webview or the
+        // database. Source URLs are already absolute (sanitized at ingestion),
+        // so no base is needed.
+        let clean = sanitize::sanitize(text.trim(), None);
         full.push_str(&clean);
         full.push('\n');
         let _ = on_event.send(TranslateEvent::Batch { html: clean, done: i + 1 });

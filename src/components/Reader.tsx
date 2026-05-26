@@ -6,6 +6,10 @@ import * as api from "../api";
 import { useUi } from "../store";
 import { usePlayer } from "../player";
 import { useTranslationJobs } from "../translation";
+import {
+  TRANSLATE_LANGUAGES,
+  normalizeTargetLang,
+} from "../translateLanguages";
 import { useArticleActions } from "../hooks/articleActions";
 import { renderMarkdown } from "../lib/markdown";
 import { fullDate } from "../lib/feedMeta";
@@ -156,6 +160,10 @@ export default function Reader({ onToast }: Props) {
   // opt-in via the toolbar button; on shows the extracted full text.
   const [showExtracted, setShowExtracted] = useState(autoExtract);
   const [showTranslation, setShowTranslation] = useState(false);
+  // A per-article target language override, set by the inline (Chrome-style)
+  // language switcher. Null = use the configured default. Reset on article
+  // change so each article opens at the default target.
+  const [activeLang, setActiveLang] = useState<string | null>(null);
   const [tagPick, setTagPick] = useState<{ x: number; y: number } | null>(null);
   const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
   const [heroBroken, setHeroBroken] = useState(false);
@@ -186,6 +194,7 @@ export default function Reader({ onToast }: Props) {
   useEffect(() => {
     setShowExtracted(useUi.getState().prefs.autoExtract);
     setShowTranslation(false);
+    setActiveLang(null);
     setScrolled(false);
     setTagPick(null);
     setHeroBroken(false);
@@ -240,14 +249,16 @@ export default function Reader({ onToast }: Props) {
     onError: (e) => reportError(e),
   });
 
-  // The configured translation target, falling back to the UI language. The
+  // The configured default translation target, falling back to the UI language.
+  // The inline switcher's `activeLang` overrides it for this article. The
   // article's cached `translatedLang` (and any running job's `lang`) is compared
-  // against this to decide whether a translation is current for it.
+  // against the effective target to decide whether a translation is current.
   const translateSetting = useQuery({
     queryKey: ["setting", "translate_target_lang"],
     queryFn: () => api.getSetting("translate_target_lang"),
   });
-  const targetLang = translateSetting.data || i18n.language;
+  const defaultLang = normalizeTargetLang(translateSetting.data || i18n.language);
+  const targetLang = activeLang ?? defaultLang;
 
   // Background translation jobs run independently of this view, so several
   // articles can translate at once and switching away never interrupts one.
@@ -449,6 +460,18 @@ export default function Reader({ onToast }: Props) {
     if (!canTranslate) return;
     if (!hasTranslation && !translating) startTranslate(a.id, targetLang);
     setShowTranslation(true);
+  };
+
+  // Switch the target language for this article (Chrome-style). Translates into
+  // the new language unless that copy is already cached or in flight, then shows
+  // it. The override resets when the article changes.
+  const changeLang = (lang: string) => {
+    if (!canTranslate || lang === targetLang) return;
+    setActiveLang(lang);
+    setShowTranslation(true);
+    const cacheHit = !!a.translatedHtml && a.translatedLang === lang;
+    const jobHit = !!job && job.lang === lang && job.status !== "error";
+    if (!cacheHit && !jobHit) startTranslate(a.id, lang);
   };
 
   const ytId = a.sourceType === "youtube" ? youtubeId(a.url) : null;
@@ -671,6 +694,19 @@ export default function Reader({ onToast }: Props) {
               >
                 {t("reader.translation")}
               </button>
+              <select
+                className="tr-lang"
+                value={targetLang}
+                aria-label={t("reader.translateTo")}
+                title={t("reader.translateTo")}
+                onChange={(e) => changeLang(e.target.value)}
+              >
+                {TRANSLATE_LANGUAGES.map((l) => (
+                  <option key={l.code} value={l.code}>
+                    {l.label}
+                  </option>
+                ))}
+              </select>
               {translating && (
                 <span className="tr-progress">
                   {t("reader.translating")}

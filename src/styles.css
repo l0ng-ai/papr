@@ -644,6 +644,19 @@ button { font-family: inherit; }
   background: var(--panel-2);
   color: var(--ink);
 }
+/* The inline (Chrome-style) target-language picker. */
+.tr-lang {
+  border: 1px solid var(--hair-strong);
+  border-radius: 7px;
+  background: var(--panel);
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--muted);
+  padding: 3px 8px;
+  cursor: pointer;
+  transition: background .12s, color .12s;
+}
+.tr-lang:hover { color: var(--ink-2); }
 .tr-progress {
   font-size: 12px;
   color: var(--muted);
@@ -1327,6 +1340,11 @@ button { font-family: inherit; }
   font-size: 12px;
   color: var(--muted);
   line-height: 1.45;
+}
+/* A standalone note inside a settings group (not paired with a control), e.g.
+   the hint shown when translation falls back to the AI model config. */
+.settings-note {
+  margin: 2px 0 4px;
 }
 .settings-row-control {
   flex-shrink: 0;

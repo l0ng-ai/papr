@@ -53,7 +53,7 @@ export const useTranslationJobs = create<TranslationState>((set, get) => {
       }));
 
       api
-        .aiTranslate(articleId, (e) => {
+        .translateArticle(articleId, lang, (e) => {
           if (e.type === "start") {
             patch(articleId, (j) => ({ ...j, total: e.data.total }));
           } else if (e.type === "batch") {

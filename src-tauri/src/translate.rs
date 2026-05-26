@@ -1,8 +1,9 @@
-//! Full-text article translation. Splits an article body into batches of whole
-//! top-level blocks, each translated by the cloud LLM (`ai::stream_chat`) with
-//! the HTML structure preserved, then reassembled. The pure helpers here —
-//! block chunking, prompt building, code-fence stripping — carry the logic worth
-//! testing; the streaming/persistence glue lives in `commands::ai_translate`.
+//! Article-body chunking for translation. Splits a body into batches of whole
+//! top-level blocks so a long article fits within a translation provider's
+//! per-request size limit, while whole elements (and their tags) are never split
+//! across batches. The actual translation — sending each batch to the chosen
+//! MT API and reassembling the result — lives in `translate_api` and
+//! `commands::translate_article`.
 
 use scraper::node::Node;
 use scraper::{ElementRef, Html};
@@ -12,30 +13,6 @@ use scraper::{ElementRef, Html};
 /// shape) is unwrapped so its children can be batched rather than translated as
 /// one oversized block. Unwrapping is repeated for nested wrappers.
 const UNWRAP_TAGS: &[&str] = &["div", "article", "section", "main"];
-
-/// The human-readable name for a UI/target language code, as used in the
-/// translation instruction. Anything unrecognised falls back to English.
-pub fn language_name(code: &str) -> &'static str {
-    match code {
-        "zh" => "Simplified Chinese",
-        "ja" => "Japanese",
-        _ => "English",
-    }
-}
-
-/// Build the system prompt instructing the model to translate one batch of HTML
-/// into `target` while leaving the markup intact.
-pub fn translate_system_prompt(target: &str) -> String {
-    format!(
-        "You are a professional translator. Translate the text content of the \
-         HTML fragment into {target}.\n\n\
-         Rules:\n\
-         - Preserve every HTML tag, attribute, and the overall structure exactly.\n\
-         - Translate only human-readable text; do not translate code or URLs.\n\
-         - Keep images, links, and all other markup intact.\n\
-         - Output only the translated HTML fragment: no preamble, no code fences."
-    )
-}
 
 /// Split source body HTML into batches of whole top-level blocks, each at most
 /// `budget` bytes where possible. Whole elements are never split across batches;
@@ -98,23 +75,6 @@ pub fn chunk_blocks(html: &str, budget: usize) -> Vec<String> {
         batches.push(cur);
     }
     batches
-}
-
-/// Strip a surrounding ```/```html markdown code fence a model may wrap its HTML
-/// output in, returning the inner content trimmed. Unfenced input is returned
-/// trimmed but otherwise unchanged.
-pub fn strip_code_fence(s: &str) -> String {
-    let trimmed = s.trim();
-    if let Some(rest) = trimmed.strip_prefix("```") {
-        let rest = rest.strip_suffix("```").unwrap_or(rest);
-        // Drop the opening fence's optional language tag line (`html`, ``, …).
-        let inner = match rest.find('\n') {
-            Some(i) => &rest[i + 1..],
-            None => rest,
-        };
-        return inner.trim().to_string();
-    }
-    trimmed.to_string()
 }
 
 #[cfg(test)]
@@ -182,49 +142,5 @@ mod tests {
     #[test]
     fn bare_text_is_a_single_batch() {
         assert_eq!(chunk_blocks("just text", 1000), vec!["just text"]);
-    }
-
-    // ── translate_system_prompt ─────────────────────────────────────────
-
-    #[test]
-    fn prompt_names_the_target_language() {
-        let p = translate_system_prompt("Simplified Chinese");
-        assert!(p.contains("Simplified Chinese"), "missing language: {p}");
-    }
-
-    #[test]
-    fn prompt_demands_html_be_preserved() {
-        let p = translate_system_prompt("Japanese");
-        let lower = p.to_lowercase();
-        assert!(lower.contains("html"), "no HTML mention: {p}");
-        assert!(lower.contains("preserve") || lower.contains("keep"), "no preserve directive: {p}");
-    }
-
-    // ── strip_code_fence ────────────────────────────────────────────────
-
-    #[test]
-    fn strips_language_tagged_fence() {
-        assert_eq!(strip_code_fence("```html\n<p>x</p>\n```"), "<p>x</p>");
-    }
-
-    #[test]
-    fn strips_bare_fence() {
-        assert_eq!(strip_code_fence("```\n<p>x</p>\n```"), "<p>x</p>");
-    }
-
-    #[test]
-    fn leaves_unfenced_content_untouched() {
-        assert_eq!(strip_code_fence("<p>x</p>"), "<p>x</p>");
-        assert_eq!(strip_code_fence("  <p>x</p>  "), "<p>x</p>");
-    }
-
-    // ── language_name ───────────────────────────────────────────────────
-
-    #[test]
-    fn language_name_maps_codes_with_english_fallback() {
-        assert_eq!(language_name("zh"), "Simplified Chinese");
-        assert_eq!(language_name("ja"), "Japanese");
-        assert_eq!(language_name("en"), "English");
-        assert_eq!(language_name("xx"), "English");
     }
 }

@@ -27,17 +27,19 @@ const AI_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Output token cap for summaries / Q&A / digests, applied to every provider so
 /// a response stays bounded in length and cost. These all fit comfortably within
-/// it. Translation overrides it with [`TRANSLATE_MAX_TOKENS`].
+/// it. The optional LLM translation engine overrides it with
+/// [`TRANSLATE_MAX_TOKENS`].
 pub const MAX_TOKENS: u32 = 1024;
 
-/// Output token cap for one translation batch. A batch's translated HTML tracks
-/// its input length (tags are echoed too), so it needs far more room than a
-/// summary. Paired with [`TRANSLATE_CHUNK_BUDGET`] so a batch fits under it.
+/// Output token cap for one LLM-translated batch. A batch's translated HTML
+/// tracks its input length (tags are echoed too), so it needs far more room than
+/// a summary. Paired with [`TRANSLATE_CHUNK_BUDGET`] so a batch fits under it.
 pub const TRANSLATE_MAX_TOKENS: u32 = 4096;
 
-/// Input character budget for one translation batch, used by
-/// `translate::chunk_blocks`. Chosen alongside [`TRANSLATE_MAX_TOKENS`] so the
-/// translated output of a full batch stays under the output cap.
+/// Input character budget for one LLM-translated batch, used by
+/// `translate::chunk_blocks`. Smaller than the dedicated-MT budget because the
+/// LLM path is token-bound: it is chosen alongside [`TRANSLATE_MAX_TOKENS`] so
+/// the translated output of a full batch stays under the output cap.
 pub const TRANSLATE_CHUNK_BUDGET: usize = 3000;
 
 /// Hard cap on the SSE line buffer. A well-behaved provider delimits every
@@ -171,9 +173,9 @@ pub async fn stream_chat(
 }
 
 /// Run a completion to the end and return its full text WITHOUT forwarding
-/// per-token deltas to the frontend. Translation uses this and reports progress
-/// once per batch instead of once per token — token-level IPC over a full
-/// article would flood the webview's main thread and freeze the UI.
+/// per-token deltas to the frontend. The LLM translation engine uses this and
+/// reports progress once per batch instead of once per token — token-level IPC
+/// over a full article would flood the webview's main thread and freeze the UI.
 pub async fn complete_chat(
     client: &Client,
     cfg: &AiConfig,
