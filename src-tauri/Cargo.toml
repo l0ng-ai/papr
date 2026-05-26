@@ -66,6 +66,11 @@ chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
 thiserror = "2"
 log = "0.4"
+# Youdao (网易有道) translation auth: the request is signed with
+# sha256(appKey + input + salt + curtime + appSecret), hex-encoded. Both crates
+# are already in the tree transitively.
+sha2 = "0.10"
+hex = "0.4"
 
 [profile.release]
 codegen-units = 1

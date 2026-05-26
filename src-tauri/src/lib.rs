@@ -15,6 +15,8 @@ mod sanitize;
 mod state;
 mod sync;
 mod translate;
+mod translate_api;
+mod translate_llm;
 mod tray;
 
 use ingestion::discovery::{self, DeepLink};
@@ -211,7 +213,7 @@ pub fn run() {
             commands::ai_summarize,
             commands::ai_ask,
             commands::ai_digest,
-            commands::ai_translate,
+            commands::translate_article,
             commands::storage_stats,
             commands::cleanup_articles,
             commands::vacuum_db,

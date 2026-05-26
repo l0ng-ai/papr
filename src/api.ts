@@ -121,16 +121,23 @@ export function aiDigest(onToken: (e: AiEvent) => void): Promise<void> {
   return invoke<void>("ai_digest", { onToken: channel });
 }
 
-/** Translate the article body into the configured target language. Progress is
- *  reported per batch over `onEvent` (start → batch* → done); the full result is
- *  also persisted and returned via the final `done` event. */
-export function aiTranslate(
+/** Translate the article body via the configured translation provider. Progress
+ *  is reported per batch over `onEvent` (start → batch* → done); the full result
+ *  is also persisted and returned via the final `done` event. `targetLang`
+ *  overrides the default target for this one call (the reader passes it for an
+ *  inline, Chrome-style language switch); omit it to use the configured default. */
+export function translateArticle(
   articleId: number,
+  targetLang: string | null,
   onEvent: (e: TranslateEvent) => void,
 ): Promise<void> {
   const channel = new Channel<TranslateEvent>();
   channel.onmessage = onEvent;
-  return invoke<void>("ai_translate", { articleId, onEvent: channel });
+  return invoke<void>("translate_article", {
+    articleId,
+    targetLang: targetLang || null,
+    onEvent: channel,
+  });
 }
 
 // ── settings ──
