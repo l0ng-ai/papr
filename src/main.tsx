@@ -23,25 +23,13 @@ document.documentElement.dataset.platform = isMac ? "mac" : "other";
 
 // Suppress the webview's default context menu — its "Reload / Back / Inspect"
 // entries belong to a browser, not a finished app. Editable surfaces still get
-// the native menu so paste / select-all / spellcheck stay available.
-//
-// Two reader cases also keep the native menu, because there the webview offers
-// genuinely useful, content-only entries (no Reload/Back/Inspect): a right-click
-// on an article image (Save Image / Copy Image / Copy Image Address) and a
-// right-click over a text selection (Copy / Look Up / Translate). Everywhere
-// else the app's own context menu takes over.
+// the native menu so paste / select-all / spellcheck stay available. The reader
+// supplies its own context menu (copy / save image / …) in ContextMenu.tsx.
 window.addEventListener("contextmenu", (e) => {
   const t = e.target as HTMLElement | null;
   if (t?.closest("input, textarea, [contenteditable=''], [contenteditable='true']")) return;
-  if (t?.closest(".reader-content") && (t.closest("img") || hasSelection())) return;
   e.preventDefault();
 });
-
-/** Whether the user currently has a non-collapsed text selection. */
-function hasSelection(): boolean {
-  const sel = window.getSelection();
-  return !!sel && !sel.isCollapsed && sel.toString().trim().length > 0;
-}
 
 const queryClient = new QueryClient({
   defaultOptions: {

@@ -158,6 +158,12 @@
   "reader": {
     "fullTextExtracted": "已提取全文",
     "linkCopied": "链接已复制",
+    "ctxCopy": "复制",
+    "ctxSaveImage": "保存图片",
+    "ctxCopyImageAddress": "复制图片地址",
+    "textCopied": "已复制",
+    "imageAddressCopied": "图片地址已复制",
+    "imageSaveFailed": "图片保存失败",
     "loadError": "无法加载这篇文章",
     "emptySelectArticle": "选择一篇文章开始阅读",
     "emptyHintPrefix": "按",

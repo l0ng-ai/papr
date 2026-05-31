@@ -8,6 +8,7 @@ import { usePlayer } from "../player";
 import { useTranslationJobs } from "../translation";
 import { useArticleActions } from "../hooks/articleActions";
 import { renderMarkdown } from "../lib/markdown";
+import { downloadBlob, imageFilename } from "../lib/download";
 import { fullDate } from "../lib/feedMeta";
 import { isMac } from "../lib/platform";
 import { reportError, toast } from "../toast";
@@ -157,7 +158,14 @@ export default function Reader({ onToast }: Props) {
   const [showExtracted, setShowExtracted] = useState(autoExtract);
   const [showTranslation, setShowTranslation] = useState(false);
   const [tagPick, setTagPick] = useState<{ x: number; y: number } | null>(null);
-  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
+  const [ctxMenu, setCtxMenu] = useState<{
+    x: number;
+    y: number;
+    // Set when the right-click landed on an article image / over a text
+    // selection, so the menu can offer image- and copy-specific actions.
+    imageUrl?: string;
+    selection?: string;
+  } | null>(null);
   const [heroBroken, setHeroBroken] = useState(false);
   const [progress, setProgress] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -331,6 +339,21 @@ export default function Reader({ onToast }: Props) {
   const copyLink = () => {
     if (!a?.url) return;
     navigator.clipboard.writeText(a.url).then(() => onToast(t("reader.linkCopied")), () => {});
+  };
+  const copyText = (text: string, toastKey: string) => {
+    navigator.clipboard.writeText(text).then(() => onToast(t(toastKey)), () => {});
+  };
+  // Save a feed image to disk. The bytes are fetched in Rust (not the webview)
+  // so the request carries no Referer — the same hotlink workaround that lets
+  // these images render at all (see sanitize.rs). The download itself reuses
+  // the app's blob-anchor mechanism.
+  const saveImage = async (url: string) => {
+    try {
+      const buf = await api.fetchImage(url);
+      downloadBlob(new Blob([buf]), imageFilename(url));
+    } catch {
+      toast.error(t("reader.imageSaveFailed"));
+    }
   };
   const share = () => {
     if (!a?.url) return;
@@ -549,16 +572,20 @@ export default function Reader({ onToast }: Props) {
         ref={scrollRef}
         onScroll={onScroll}
         onContextMenu={(e) => {
-          // Defer to the webview's native menu over an image or a text
-          // selection, so Copy / Save Image / Copy Image Address are available
-          // (see the global handler in main.tsx). Our menu serves everywhere
-          // else in the reader.
-          const target = e.target as HTMLElement;
-          const sel = window.getSelection();
-          const hasSelection = !!sel && !sel.isCollapsed && sel.toString().trim().length > 0;
-          if (target.closest("img") || hasSelection) return;
           e.preventDefault();
-          setCtxMenu({ x: e.clientX, y: e.clientY });
+          // Capture what the click landed on so the menu can add image- and
+          // selection-specific actions (the native menu is suppressed app-wide;
+          // see main.tsx).
+          const img = (e.target as HTMLElement).closest("img");
+          const sel = window.getSelection();
+          const selection =
+            sel && !sel.isCollapsed ? sel.toString().trim() : "";
+          setCtxMenu({
+            x: e.clientX,
+            y: e.clientY,
+            imageUrl: (img as HTMLImageElement | null)?.currentSrc || img?.getAttribute("src") || undefined,
+            selection: selection || undefined,
+          });
         }}
       >
         <article className="article reader-content" key={a.id}>
@@ -729,6 +756,33 @@ export default function Reader({ onToast }: Props) {
           x={ctxMenu.x}
           y={ctxMenu.y}
           items={[
+            ...(ctxMenu.selection
+              ? [
+                  {
+                    icon: "copy" as const,
+                    label: t("reader.ctxCopy"),
+                    onClick: () => copyText(ctxMenu.selection!, "reader.textCopied"),
+                  },
+                ]
+              : []),
+            ...(ctxMenu.imageUrl
+              ? [
+                  {
+                    icon: "arrow-down" as const,
+                    label: t("reader.ctxSaveImage"),
+                    onClick: () => saveImage(ctxMenu.imageUrl!),
+                  },
+                  {
+                    icon: "copy" as const,
+                    label: t("reader.ctxCopyImageAddress"),
+                    onClick: () =>
+                      copyText(ctxMenu.imageUrl!, "reader.imageAddressCopied"),
+                  },
+                ]
+              : []),
+            ...(ctxMenu.selection || ctxMenu.imageUrl
+              ? [{ separator: true as const }]
+              : []),
             {
               icon: aiOpen ? "sparkle-fill" : "sparkle",
               label: t("reader.tbAiSummary"),

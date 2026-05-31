@@ -158,6 +158,12 @@
   "reader": {
     "fullTextExtracted": "Full text extracted",
     "linkCopied": "Link copied",
+    "ctxCopy": "Copy",
+    "ctxSaveImage": "Save image",
+    "ctxCopyImageAddress": "Copy image address",
+    "textCopied": "Copied",
+    "imageAddressCopied": "Image address copied",
+    "imageSaveFailed": "Couldn't save the image",
     "loadError": "Couldn't load this article",
     "emptySelectArticle": "Select an article to start reading",
     "emptyHintPrefix": "Press",
