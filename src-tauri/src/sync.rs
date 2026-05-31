@@ -146,6 +146,35 @@ struct SubList {
 struct Sub {
     url: Option<String>,
     title: Option<String>,
+    #[serde(default)]
+    categories: Vec<SubCat>,
+}
+/// A GReader category ("label") a subscription belongs to. FreshRSS/Miniflux
+/// folders surface here; we map the first named one onto a local folder.
+#[derive(Deserialize)]
+struct SubCat {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    label: Option<String>,
+}
+impl SubCat {
+    /// Human folder name for this category. Prefer the explicit `label`,
+    /// otherwise derive it from the `user/-/label/NAME` id. `None` for an
+    /// unnamed category, so it is skipped rather than creating a blank folder.
+    fn folder_name(&self) -> Option<String> {
+        self.label
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .or_else(|| {
+                self.id
+                    .rsplit_once("/label/")
+                    .map(|(_, n)| n.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            })
+    }
 }
 
 #[derive(Deserialize)]
@@ -338,13 +367,33 @@ pub async fn sync_now(app: &AppHandle) -> AppResult<usize> {
         let state = app.state::<AppState>();
         let conn = state.db.lock().await;
         for sub in subs.subscriptions {
+            // Resolve the server-side folder (GReader "label") before moving
+            // `url` out of `sub`, mapping it onto a local folder by name.
+            let folder_id = sub
+                .categories
+                .iter()
+                .find_map(SubCat::folder_name)
+                .map(|name| db::folder_id_by_name(&conn, &name))
+                .transpose()?;
             let Some(feed_url) = sub.url.filter(|u| !u.is_empty()) else {
                 continue;
             };
-            if db::find_feed_by_url(&conn, &feed_url)?.is_none() {
-                let title = sub.title.unwrap_or_else(|| feed_url.clone());
-                let st = parse::detect_source_type(&feed_url);
-                let _ = db::insert_feed(&conn, &feed_url, None, &title, None, st, None);
+            match db::find_feed_by_url(&conn, &feed_url)? {
+                None => {
+                    let title = sub.title.unwrap_or_else(|| feed_url.clone());
+                    let st = parse::detect_source_type(&feed_url);
+                    let _ = db::insert_feed(&conn, &feed_url, None, &title, None, st, folder_id);
+                }
+                // Reconcile the folder for a feed we already track, but only
+                // when it isn't filed locally yet — don't yank a feed the user
+                // has organised by hand back into the server's folder.
+                Some(id) => {
+                    if let Some(folder_id) = folder_id {
+                        if db::feed_folder_id(&conn, id)?.is_none() {
+                            db::move_feed(&conn, id, Some(folder_id))?;
+                        }
+                    }
+                }
             }
         }
     }
@@ -388,4 +437,40 @@ pub async fn sync_now(app: &AppHandle) -> AppResult<usize> {
         }
     }
     Ok(reconciled)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cat(id: &str, label: Option<&str>) -> SubCat {
+        SubCat {
+            id: id.to_string(),
+            label: label.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn folder_name_prefers_label() {
+        assert_eq!(
+            cat("user/-/label/Tech", Some("Tech")).folder_name().as_deref(),
+            Some("Tech")
+        );
+    }
+
+    #[test]
+    fn folder_name_falls_back_to_label_id() {
+        // Some servers omit the human label; derive it from the id instead.
+        assert_eq!(
+            cat("user/-/label/科技", None).folder_name().as_deref(),
+            Some("科技")
+        );
+    }
+
+    #[test]
+    fn folder_name_skips_unnamed_categories() {
+        // A state tag (not a label) or a blank label is not a folder.
+        assert_eq!(cat("user/-/state/com.google/read", None).folder_name(), None);
+        assert_eq!(cat("", Some("   ")).folder_name(), None);
+    }
 }

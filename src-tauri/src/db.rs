@@ -617,6 +617,19 @@ pub fn move_feed(conn: &Connection, id: i64, folder_id: Option<i64>) -> AppResul
     Ok(())
 }
 
+/// The folder a feed currently sits in, if any. Used by sync to tell an
+/// already-filed feed (leave it) from an unfiled one (adopt the server folder).
+pub fn feed_folder_id(conn: &Connection, id: i64) -> AppResult<Option<i64>> {
+    Ok(conn
+        .query_row(
+            "SELECT folder_id FROM feeds WHERE id = ?1",
+            params![id],
+            |r| r.get::<_, Option<i64>>(0),
+        )
+        .optional()?
+        .flatten())
+}
+
 /// Set a feed's display title to a user-chosen value. `custom_title` is also
 /// raised so a later refresh's `update_feed_meta` does not revert the rename
 /// back to the feed document's own `<title>`.
