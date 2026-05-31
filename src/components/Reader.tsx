@@ -549,6 +549,14 @@ export default function Reader({ onToast }: Props) {
         ref={scrollRef}
         onScroll={onScroll}
         onContextMenu={(e) => {
+          // Defer to the webview's native menu over an image or a text
+          // selection, so Copy / Save Image / Copy Image Address are available
+          // (see the global handler in main.tsx). Our menu serves everywhere
+          // else in the reader.
+          const target = e.target as HTMLElement;
+          const sel = window.getSelection();
+          const hasSelection = !!sel && !sel.isCollapsed && sel.toString().trim().length > 0;
+          if (target.closest("img") || hasSelection) return;
           e.preventDefault();
           setCtxMenu({ x: e.clientX, y: e.clientY });
         }}
