@@ -31,6 +31,12 @@ export const renameFolder = (id: number, name: string) =>
 export const deleteFolder = (id: number) =>
   invoke<void>("delete_folder", { id });
 
+// ── images ──
+/** Fetch an image's raw bytes via the backend (no Referer, to defeat hotlink
+ *  protection) for the reader's "Save image" action. Returns the bytes. */
+export const fetchImage = (url: string) =>
+  invoke<ArrayBuffer>("fetch_image", { url });
+
 // ── feeds ──
 export const listFeeds = () => invoke<Feed[]>("list_feeds");
 export const addFeed = (url: string, folderId: number | null) =>

@@ -394,6 +394,47 @@ pub async fn extract_fulltext(state: State<'_, AppState>, article_id: i64) -> Ap
     Ok(extracted)
 }
 
+// ─────────────────────────── image download ───────────────────────────
+
+/// A mainstream browser User-Agent. Some image hosts gate on it in addition to
+/// the `Referer`; sending a browser UA (and no Referer) mirrors what the webview
+/// itself does when it renders the image, so a save succeeds wherever the inline
+/// render did.
+const IMAGE_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
+    AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15";
+
+/// Upper bound on a saved image, so a hostile or mistyped URL can't balloon
+/// memory. Well above any real article image.
+const MAX_IMAGE_BYTES: u64 = 25 * 1024 * 1024;
+
+/// Fetch a feed image's bytes for the reader's "Save image" action.
+///
+/// Done in Rust rather than via the webview so the request can omit the
+/// `Referer` that hotlink-protected hosts (notably `*.sinaimg.cn` behind
+/// 喷嚏图卦) reject — the same workaround that lets these images render at all
+/// (see `sanitize`). The frontend wraps the returned bytes in a download.
+#[tauri::command]
+pub async fn fetch_image(state: State<'_, AppState>, url: String) -> AppResult<tauri::ipc::Response> {
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err(AppError::code("badImageUrl"));
+    }
+    let http = state.http();
+    let resp = http
+        .get(&url)
+        .header("User-Agent", IMAGE_UA)
+        .send()
+        .await?
+        .error_for_status()?;
+    if resp.content_length().is_some_and(|n| n > MAX_IMAGE_BYTES) {
+        return Err(AppError::code("imageTooLarge"));
+    }
+    let bytes = resp.bytes().await?;
+    if bytes.len() as u64 > MAX_IMAGE_BYTES {
+        return Err(AppError::code("imageTooLarge"));
+    }
+    Ok(tauri::ipc::Response::new(bytes.to_vec()))
+}
+
 // ─────────────────────────── OPML ───────────────────────────
 
 #[tauri::command]

@@ -158,6 +158,12 @@
   "reader": {
     "fullTextExtracted": "全文を抽出しました",
     "linkCopied": "リンクをコピーしました",
+    "ctxCopy": "コピー",
+    "ctxSaveImage": "画像を保存",
+    "ctxCopyImageAddress": "画像アドレスをコピー",
+    "textCopied": "コピーしました",
+    "imageAddressCopied": "画像アドレスをコピーしました",
+    "imageSaveFailed": "画像を保存できませんでした",
     "loadError": "この記事を読み込めませんでした",
     "emptySelectArticle": "記事を選択して読み始める",
     "emptyHintPrefix": "押す",
