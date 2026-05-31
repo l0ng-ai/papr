@@ -14,7 +14,16 @@ pub fn sanitize(html: &str, base: Option<&str>) -> String {
     let mut builder = Builder::default();
     builder
         .link_rel(Some("noopener noreferrer nofollow"))
-        .add_generic_attributes(["loading"]);
+        .add_generic_attributes(["loading"])
+        // Load every feed image without a `Referer`. Common image hosts —
+        // notably Sina's `*.sinaimg.cn` CDN, which backs 喷嚏图卦 and many
+        // Weibo-sourced feeds — hotlink-protect by Referer: a request carrying
+        // the reader's own origin is 403'd, while one with no Referer is
+        // served. Without this the image silently fails to load (and the
+        // reader then hides the broken `<img>`), so the article looks
+        // text-only. Forcing the attribute on every `<img>` also overrides any
+        // weaker policy the feed shipped.
+        .set_tag_attribute_value("img", "referrerpolicy", "no-referrer");
 
     let parsed_base = base.and_then(|b| Url::parse(b).ok());
     if let Some(b) = parsed_base {
@@ -212,6 +221,29 @@ mod tests {
     fn first_image_falls_through_relative_to_next_absolute() {
         let html = r#"<img src="/rel.png"><img src="https://ex.com/real.jpg">"#;
         assert_eq!(first_image(html).as_deref(), Some("https://ex.com/real.jpg"));
+    }
+
+    #[test]
+    fn sanitize_marks_images_no_referrer() {
+        // Hotlink-protected hosts (e.g. *.sinaimg.cn behind 喷嚏图卦) 403 a
+        // request that carries the reader's origin as Referer; `no-referrer`
+        // is what makes the image load.
+        let out = sanitize(r#"<img src="https://wx1.sinaimg.cn/large/a.jpg">"#, None);
+        assert!(
+            out.contains(r#"referrerpolicy="no-referrer""#),
+            "img missing no-referrer policy: {out}"
+        );
+    }
+
+    #[test]
+    fn sanitize_overrides_weaker_image_referrer_policy() {
+        // A feed shipping its own (Referer-leaking) policy must not win.
+        let out = sanitize(
+            r#"<img src="https://wx1.sinaimg.cn/large/a.jpg" referrerpolicy="origin">"#,
+            None,
+        );
+        assert!(out.contains(r#"referrerpolicy="no-referrer""#), "{out}");
+        assert!(!out.contains(r#"referrerpolicy="origin""#), "{out}");
     }
 
     #[test]

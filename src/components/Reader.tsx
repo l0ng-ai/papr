@@ -614,6 +614,10 @@ export default function Reader({ onToast }: Props) {
               <img
                 src={a.imageUrl}
                 alt=""
+                // No Referer, for the same hotlink-protection reason feed-body
+                // images are sanitized this way (e.g. *.sinaimg.cn 403s a
+                // request carrying our origin). See `sanitize`.
+                referrerPolicy="no-referrer"
                 onError={() => setHeroBroken(true)}
               />
             )
