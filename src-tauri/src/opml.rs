@@ -13,13 +13,60 @@ pub struct ImportedFeed {
 }
 
 /// Parse an OPML document into a flat list of feeds with their folder names.
+///
+/// The document is run through [`tidy`] first: real-world OPML exports (Readwise
+/// Reader and many others) routinely emit bare `&` characters inside feed URLs
+/// (`?type=etoc&feed=rss`) and titles (`Cell Death & Disease`) rather than the
+/// well-formed `&amp;`. The `opml` crate's strict XML parser rejects the *entire*
+/// document on the first such `&`, so without this step a single stray ampersand
+/// anywhere silently fails the whole import.
 pub fn parse(content: &str) -> AppResult<Vec<ImportedFeed>> {
-    let doc = OPML::from_str(content).map_err(|e| AppError::Opml(e.to_string()))?;
+    let doc = OPML::from_str(&tidy(content)).map_err(|e| AppError::Opml(e.to_string()))?;
     let mut feeds = Vec::new();
     for outline in &doc.body.outlines {
         collect(outline, None, &mut feeds);
     }
     Ok(feeds)
+}
+
+/// Escape bare `&` — those not already opening a valid XML entity — into `&amp;`,
+/// so an otherwise non-well-formed real-world OPML file parses instead of being
+/// rejected wholesale. A `&` that already begins a valid entity is left as-is, so
+/// a correctly-escaped file round-trips unchanged (no `&amp;` → `&amp;amp;`).
+fn tidy(content: &str) -> String {
+    let mut out = String::with_capacity(content.len() + 32);
+    for (idx, c) in content.char_indices() {
+        if c == '&' && !starts_valid_entity(&content[idx + 1..]) {
+            out.push_str("&amp;");
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Does `rest` (the text immediately following a `&`) begin a valid XML entity
+/// reference — a named entity (`amp;`/`lt;`/`gt;`/`quot;`/`apos;`) or a numeric
+/// one (`#123;` / `#x1F;`)? Used by [`tidy`] to leave already-escaped `&` alone.
+fn starts_valid_entity(rest: &str) -> bool {
+    for name in ["amp;", "lt;", "gt;", "quot;", "apos;"] {
+        if rest.starts_with(name) {
+            return true;
+        }
+    }
+    if let Some(after) = rest.strip_prefix('#') {
+        let (body, hex) = match after.strip_prefix(['x', 'X']) {
+            Some(b) => (b, true),
+            None => (after, false),
+        };
+        if let Some(semi) = body.find(';') {
+            return semi > 0
+                && body[..semi]
+                    .chars()
+                    .all(|c| if hex { c.is_ascii_hexdigit() } else { c.is_ascii_digit() });
+        }
+    }
+    false
 }
 
 /// The human-facing label of an outline: its `text` attribute, falling back to
@@ -220,5 +267,35 @@ mod tests {
     #[test]
     fn parse_rejects_malformed_document() {
         assert!(parse("not opml at all").is_err());
+    }
+
+    #[test]
+    fn bare_ampersands_are_tolerated() {
+        // Real-world exports emit raw `&` in URLs and titles instead of `&amp;`.
+        // A single one used to fail the whole document; the import must now
+        // survive, with the `&` preserved in the decoded value.
+        let xml = r#"<opml version="1.0"><head/><body>
+            <outline title="Cell Death & Disease" type="rss"
+                     xmlUrl="https://www.science.org/action/showFeed?type=etoc&feed=rss&jc=stm"/>
+        </body></opml>"#;
+        let feeds = parse(xml).expect("a bare & must not fail the parse");
+        assert_eq!(feeds.len(), 1);
+        assert_eq!(feeds[0].title, "Cell Death & Disease");
+        assert_eq!(
+            feeds[0].feed_url,
+            "https://www.science.org/action/showFeed?type=etoc&feed=rss&jc=stm"
+        );
+    }
+
+    #[test]
+    fn already_escaped_entities_round_trip() {
+        // A correctly-escaped file must be left untouched: `&amp;` stays a single
+        // `&` rather than being double-escaped into `&amp;amp;`.
+        let xml = r#"<opml version="1.0"><head/><body>
+            <outline title="Tom &amp; Jerry &#39;90" xmlUrl="https://x.example/f?a=1&amp;b=2"/>
+        </body></opml>"#;
+        let feeds = parse(xml).expect("parse");
+        assert_eq!(feeds[0].title, "Tom & Jerry '90");
+        assert_eq!(feeds[0].feed_url, "https://x.example/f?a=1&b=2");
     }
 }
