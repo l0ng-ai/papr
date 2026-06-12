@@ -407,32 +407,71 @@ const IMAGE_UA: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
 /// memory. Well above any real article image.
 const MAX_IMAGE_BYTES: u64 = 25 * 1024 * 1024;
 
-/// Fetch a feed image's bytes for the reader's "Save image" action.
+/// The `Referer` values to try, in order, when fetching an image. Hotlink
+/// protection cuts both ways: blacklist hosts (`*.sinaimg.cn`) 403 a foreign
+/// Referer but serve a bare request, while others (`cdnfile.sspai.com`) 403 a
+/// bare request and demand a Referer be present; strict whitelist CDNs accept
+/// only their own site — which the article URL satisfies. No single value
+/// works everywhere, so the fetch walks this chain until one succeeds.
+fn referer_candidates(image_url: &str, page_url: Option<&str>) -> Vec<Option<String>> {
+    let mut out = vec![None];
+    if let Ok(u) = Url::parse(image_url) {
+        let origin = u.origin().ascii_serialization();
+        if origin != "null" {
+            out.push(Some(format!("{origin}/")));
+        }
+    }
+    if let Some(p) = page_url {
+        if (p.starts_with("http://") || p.starts_with("https://")) && Url::parse(p).is_ok() {
+            let candidate = Some(p.to_string());
+            if !out.contains(&candidate) {
+                out.push(candidate);
+            }
+        }
+    }
+    out
+}
+
+/// Fetch a feed image's bytes — for the reader's "Save image" action and as
+/// the retry path for images the webview itself failed to load.
 ///
-/// Done in Rust rather than via the webview so the request can omit the
-/// `Referer` that hotlink-protected hosts (notably `*.sinaimg.cn` behind
-/// 喷嚏图卦) reject — the same workaround that lets these images render at all
-/// (see `sanitize`). The frontend wraps the returned bytes in a download.
+/// Done in Rust rather than via the webview so the request's `Referer` can be
+/// controlled: it walks [`referer_candidates`] (none → image origin → article
+/// URL) until the host serves the image, which covers both blacklist- and
+/// whitelist-style hotlink protection. `page_url` is the article's link, used
+/// as the final candidate. Transport errors abort the chain — a different
+/// Referer can't fix an unreachable host — only HTTP status errors advance it.
 #[tauri::command]
-pub async fn fetch_image(state: State<'_, AppState>, url: String) -> AppResult<tauri::ipc::Response> {
+pub async fn fetch_image(
+    state: State<'_, AppState>,
+    url: String,
+    page_url: Option<String>,
+) -> AppResult<tauri::ipc::Response> {
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return Err(AppError::code("badImageUrl"));
     }
     let http = state.http();
-    let resp = http
-        .get(&url)
-        .header("User-Agent", IMAGE_UA)
-        .send()
-        .await?
-        .error_for_status()?;
-    if resp.content_length().is_some_and(|n| n > MAX_IMAGE_BYTES) {
-        return Err(AppError::code("imageTooLarge"));
+    let mut last_err = AppError::code("badImageUrl");
+    for referer in referer_candidates(&url, page_url.as_deref()) {
+        let mut req = http.get(&url).header("User-Agent", IMAGE_UA);
+        if let Some(r) = &referer {
+            req = req.header("Referer", r.as_str());
+        }
+        match req.send().await?.error_for_status() {
+            Err(e) => last_err = e.into(),
+            Ok(resp) => {
+                if resp.content_length().is_some_and(|n| n > MAX_IMAGE_BYTES) {
+                    return Err(AppError::code("imageTooLarge"));
+                }
+                let bytes = resp.bytes().await?;
+                if bytes.len() as u64 > MAX_IMAGE_BYTES {
+                    return Err(AppError::code("imageTooLarge"));
+                }
+                return Ok(tauri::ipc::Response::new(bytes.to_vec()));
+            }
+        }
     }
-    let bytes = resp.bytes().await?;
-    if bytes.len() as u64 > MAX_IMAGE_BYTES {
-        return Err(AppError::code("imageTooLarge"));
-    }
-    Ok(tauri::ipc::Response::new(bytes.to_vec()))
+    Err(last_err)
 }
 
 // ─────────────────────────── OPML ───────────────────────────
@@ -1276,4 +1315,52 @@ pub async fn set_highlight_color(
 pub async fn delete_highlight(state: State<'_, AppState>, id: i64) -> AppResult<()> {
     let conn = state.db.lock().await;
     db::delete_highlight(&conn, id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- referer_candidates: the Referer fallback chain for image fetches. ---
+
+    #[test]
+    fn referer_candidates_tries_bare_then_origin_then_page() {
+        // Order matters: no Referer defeats blacklist-style protection
+        // (*.sinaimg.cn), the image's own origin satisfies hosts that demand a
+        // Referer be present (cdnfile.sspai.com), and the article URL is what
+        // a strict whitelist CDN expects.
+        let got = referer_candidates(
+            "https://cdnfile.sspai.com/2025/a.png?imageMogr2/thumbnail",
+            Some("https://sspai.com/post/110992"),
+        );
+        assert_eq!(
+            got,
+            vec![
+                None,
+                Some("https://cdnfile.sspai.com/".to_string()),
+                Some("https://sspai.com/post/110992".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn referer_candidates_without_page_url() {
+        let got = referer_candidates("https://wx1.sinaimg.cn/large/a.jpg", None);
+        assert_eq!(got, vec![None, Some("https://wx1.sinaimg.cn/".to_string())]);
+    }
+
+    #[test]
+    fn referer_candidates_skips_non_http_page_url() {
+        // A feed can ship anything as the article link; only an http(s) URL
+        // is a plausible Referer.
+        let got = referer_candidates("https://ex.com/a.png", Some("mailto:editor@ex.com"));
+        assert_eq!(got, vec![None, Some("https://ex.com/".to_string())]);
+    }
+
+    #[test]
+    fn referer_candidates_dedupes_page_equal_to_origin() {
+        // Article link identical to the image origin would be a wasted retry.
+        let got = referer_candidates("https://ex.com/a.png", Some("https://ex.com/"));
+        assert_eq!(got, vec![None, Some("https://ex.com/".to_string())]);
+    }
 }

@@ -167,6 +167,16 @@ export default function Reader({ onToast }: Props) {
     selection?: string;
   } | null>(null);
   const [heroBroken, setHeroBroken] = useState(false);
+  // blob: URL of a hero image recovered through the backend after the webview
+  // failed to load it directly (see the body-image retry effect below).
+  const [heroBlob, setHeroBlob] = useState<string | null>(null);
+  // Release the previous hero blob whenever it's replaced or cleared, and on
+  // unmount — object URLs otherwise live until the page does.
+  useEffect(() => {
+    return () => {
+      if (heroBlob) URL.revokeObjectURL(heroBlob);
+    };
+  }, [heroBlob]);
   const [progress, setProgress] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -197,31 +207,61 @@ export default function Reader({ onToast }: Props) {
     setScrolled(false);
     setTagPick(null);
     setHeroBroken(false);
+    setHeroBlob(null);
     setProgress(0);
     scrollMarkedRef.current = null;
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
   }, [id]);
 
-  // Hide article-body images that fail to load — a broken-image icon in the
-  // middle of an article is just noise. Runs whenever the body changes
-  // (article switch, extract toggle, extraction finishing).
+  // Recover article-body images the webview fails to load, then hide the
+  // stragglers. The webview sends no Referer (see sanitize.rs) — right for
+  // blacklist-style hotlink protection (*.sinaimg.cn) but fatal on hosts that
+  // *require* one (cdnfile.sspai.com 403s a bare request), and the webview
+  // can't vary the value per host. So a failed image gets one retry through
+  // the backend, which walks Referer fallbacks (fetch_image) and returns the
+  // bytes; the <img> is swapped to a blob: URL, with the original kept in
+  // data-papr-src for the context-menu actions. Images the backend can't
+  // recover are hidden — a broken-image icon mid-article is just noise. Runs
+  // whenever the body changes (article switch, extract toggle, extraction
+  // finishing).
   useEffect(() => {
     const el = bodyRef.current;
     if (!el) return;
-    const hide = (e: Event) => {
-      (e.currentTarget as HTMLElement).style.display = "none";
+    const pageUrl = a?.url;
+    const blobs: string[] = [];
+    let alive = true;
+    const recover = async (img: HTMLImageElement) => {
+      const src = img.getAttribute("src") || "";
+      if (img.dataset.paprRetried || !/^https?:\/\//.test(src)) {
+        img.style.display = "none";
+        return;
+      }
+      img.dataset.paprRetried = "1";
+      try {
+        const buf = await api.fetchImage(src, pageUrl);
+        if (!alive) return;
+        const blob = URL.createObjectURL(new Blob([buf]));
+        blobs.push(blob);
+        img.dataset.paprSrc = src;
+        img.src = blob;
+      } catch {
+        img.style.display = "none";
+      }
     };
+    const onError = (e: Event) => void recover(e.currentTarget as HTMLImageElement);
     const watched: HTMLImageElement[] = [];
     el.querySelectorAll("img").forEach((img) => {
-      if (img.complete && img.naturalWidth === 0) {
-        img.style.display = "none";
-      } else {
-        img.addEventListener("error", hide);
-        watched.push(img);
-      }
+      img.addEventListener("error", onError);
+      watched.push(img);
+      // Already failed before this effect attached its listener.
+      if (img.complete && img.naturalWidth === 0) void recover(img);
     });
-    return () => watched.forEach((img) => img.removeEventListener("error", hide));
-  }, [a?.id, showExtracted, a?.extractedHtml, showTranslation, a?.translatedHtml]);
+    return () => {
+      alive = false;
+      watched.forEach((img) => img.removeEventListener("error", onError));
+      blobs.forEach((b) => URL.revokeObjectURL(b));
+    };
+  }, [a?.id, a?.url, showExtracted, a?.extractedHtml, showTranslation, a?.translatedHtml]);
 
   // Mark as read once when an unread article is opened (if the user opted in).
   useEffect(() => {
@@ -344,12 +384,12 @@ export default function Reader({ onToast }: Props) {
     navigator.clipboard.writeText(text).then(() => onToast(t(toastKey)), () => {});
   };
   // Save a feed image to disk. The bytes are fetched in Rust (not the webview)
-  // so the request carries no Referer — the same hotlink workaround that lets
-  // these images render at all (see sanitize.rs). The download itself reuses
-  // the app's blob-anchor mechanism.
+  // so the request's Referer can walk the same hotlink-protection fallbacks
+  // that let these images render at all (see fetch_image). The download itself
+  // reuses the app's blob-anchor mechanism.
   const saveImage = async (url: string) => {
     try {
-      const buf = await api.fetchImage(url);
+      const buf = await api.fetchImage(url, a?.url);
       downloadBlob(new Blob([buf]), imageFilename(url));
     } catch {
       toast.error(t("reader.imageSaveFailed"));
@@ -576,14 +616,16 @@ export default function Reader({ onToast }: Props) {
           // Capture what the click landed on so the menu can add image- and
           // selection-specific actions (the native menu is suppressed app-wide;
           // see main.tsx).
-          const img = (e.target as HTMLElement).closest("img");
+          const img = (e.target as HTMLElement).closest("img") as HTMLImageElement | null;
           const sel = window.getSelection();
           const selection =
             sel && !sel.isCollapsed ? sel.toString().trim() : "";
           setCtxMenu({
             x: e.clientX,
             y: e.clientY,
-            imageUrl: (img as HTMLImageElement | null)?.currentSrc || img?.getAttribute("src") || undefined,
+            // data-papr-src holds the real address when the image was
+            // recovered through the backend and src is a blob: URL.
+            imageUrl: img?.dataset.paprSrc || img?.currentSrc || img?.getAttribute("src") || undefined,
             selection: selection || undefined,
           });
         }}
@@ -647,13 +689,37 @@ export default function Reader({ onToast }: Props) {
             // feeds that repeat their lead image don't show it twice.
             !body.includes(a.imageUrl) && (
               <img
-                src={a.imageUrl}
+                src={heroBlob ?? a.imageUrl}
                 alt=""
+                // The original URL when src is a recovered blob:, so the
+                // context-menu copy/save actions see a real address.
+                data-papr-src={heroBlob ? a.imageUrl : undefined}
                 // No Referer, for the same hotlink-protection reason feed-body
                 // images are sanitized this way (e.g. *.sinaimg.cn 403s a
                 // request carrying our origin). See `sanitize`.
                 referrerPolicy="no-referrer"
-                onError={() => setHeroBroken(true)}
+                // Same recovery as body images: hosts that *require* a Referer
+                // (cdnfile.sspai.com) 403 the direct load, so retry through
+                // the backend's Referer-fallback fetch before giving up.
+                onError={() => {
+                  // A failing blob: means the recovered bytes weren't a
+                  // renderable image — don't loop, give up.
+                  if (heroBlob) {
+                    setHeroBroken(true);
+                    return;
+                  }
+                  const articleId = a.id;
+                  api
+                    .fetchImage(a.imageUrl!, a.url)
+                    .then((buf) => {
+                      if (useUi.getState().selectedArticleId !== articleId) return;
+                      setHeroBlob(URL.createObjectURL(new Blob([buf])));
+                    })
+                    .catch(() => {
+                      if (useUi.getState().selectedArticleId !== articleId) return;
+                      setHeroBroken(true);
+                    });
+                }}
               />
             )
           )}

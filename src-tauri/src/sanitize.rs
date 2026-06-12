@@ -22,7 +22,9 @@ pub fn sanitize(html: &str, base: Option<&str>) -> String {
         // served. Without this the image silently fails to load (and the
         // reader then hides the broken `<img>`), so the article looks
         // text-only. Forcing the attribute on every `<img>` also overrides any
-        // weaker policy the feed shipped.
+        // weaker policy the feed shipped. Hosts that instead *require* a
+        // Referer (e.g. `cdnfile.sspai.com`) are covered by the reader's
+        // retry-through-backend path — see `commands::fetch_image`.
         .set_tag_attribute_value("img", "referrerpolicy", "no-referrer");
 
     let parsed_base = base.and_then(|b| Url::parse(b).ok());

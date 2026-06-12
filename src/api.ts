@@ -32,10 +32,13 @@ export const deleteFolder = (id: number) =>
   invoke<void>("delete_folder", { id });
 
 // ── images ──
-/** Fetch an image's raw bytes via the backend (no Referer, to defeat hotlink
- *  protection) for the reader's "Save image" action. Returns the bytes. */
-export const fetchImage = (url: string) =>
-  invoke<ArrayBuffer>("fetch_image", { url });
+/** Fetch an image's raw bytes via the backend, which walks Referer fallbacks
+ *  (none → image origin → article URL) until the host serves it — hotlink
+ *  protection demands different Referers on different hosts. Used by the
+ *  reader's "Save image" action and to retry images the webview itself failed
+ *  to load. `pageUrl` is the embedding article's link. */
+export const fetchImage = (url: string, pageUrl?: string | null) =>
+  invoke<ArrayBuffer>("fetch_image", { url, pageUrl: pageUrl ?? null });
 
 // ── feeds ──
 export const listFeeds = () => invoke<Feed[]>("list_feeds");
