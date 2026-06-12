@@ -22,9 +22,20 @@ pub struct ImportedFeed {
 /// anywhere silently fails the whole import.
 pub fn parse(content: &str) -> AppResult<Vec<ImportedFeed>> {
     let doc = OPML::from_str(&tidy(content)).map_err(|e| AppError::Opml(e.to_string()))?;
+    // Real-world OPML exports routinely repeat the same feed URL across
+    // folders (NetNewsWire dumps its "Today" group, "All Articles", and
+    // "Unread" views from the same source). Deduplicate by `xml_url` and
+    // keep the first occurrence (preserves the user's original folder).
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut feeds = Vec::new();
+    let mut collect_into: Vec<ImportedFeed> = Vec::new();
     for outline in &doc.body.outlines {
-        collect(outline, None, &mut feeds);
+        collect(outline, None, &mut collect_into);
+    }
+    for feed in collect_into {
+        if seen.insert(feed.feed_url.clone()) {
+            feeds.push(feed);
+        }
     }
     Ok(feeds)
 }
@@ -298,4 +309,23 @@ mod tests {
         assert_eq!(feeds[0].title, "Tom & Jerry '90");
         assert_eq!(feeds[0].feed_url, "https://x.example/f?a=1&b=2");
     }
+
+    #[test]
+    fn duplicate_feed_url_is_collapsed() {
+        // NetNewsWire-style OPML exports repeat the same feed across
+        // multiple folder views ("Today", "All Articles", "Unread").
+        // The importer must collapse them by xml_url and keep the
+        // first occurrence (preserving the user's original folder).
+        let xml = r#"<opml version="1.0"><head/><body>
+            <outline title="Today" xmlUrl="https://x.example/feed"/>
+            <outline title="All Articles" xmlUrl="https://x.example/feed"/>
+            <outline title="Other" xmlUrl="https://y.example/feed"/>
+        </body></opml>"#;
+        let feeds = parse(xml).expect("parse");
+        assert_eq!(feeds.len(), 2);
+        assert_eq!(feeds[0].feed_url, "https://x.example/feed");
+        assert_eq!(feeds[0].title, "Today");
+        assert_eq!(feeds[1].feed_url, "https://y.example/feed");
+    }
+
 }
