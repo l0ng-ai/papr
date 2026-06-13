@@ -55,6 +55,9 @@ pub struct Feed {
     pub last_fetched_at: Option<String>,
     pub fetch_error: Option<String>,
     pub unread_count: i64,
+    /// Per-feed refresh interval in minutes. `None` follows the global
+    /// `refresh_interval_min` setting; the `525_600` sentinel means "never".
+    pub refresh_interval_min: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

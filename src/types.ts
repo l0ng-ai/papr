@@ -58,6 +58,9 @@ export interface Feed {
   lastFetchedAt: string | null;
   fetchError: string | null;
   unreadCount: number;
+  /** Per-feed refresh interval in minutes. `null` follows the global
+   *  setting; the `525600` sentinel means "never". */
+  refreshIntervalMin: number | null;
 }
 
 export interface Enclosure {

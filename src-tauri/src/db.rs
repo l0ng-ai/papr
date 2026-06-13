@@ -242,6 +242,9 @@ static MIGRATIONS: LazyLock<Migrations> = LazyLock::new(|| {
             "ALTER TABLE articles ADD COLUMN translated_html TEXT;
              ALTER TABLE articles ADD COLUMN translated_lang TEXT;",
         ),
+        // v15 — per-feed refresh interval (minutes). NULL follows the global
+        // `refresh_interval_min` setting; the 525_600 sentinel means "never".
+        M::up("ALTER TABLE feeds ADD COLUMN refresh_interval_min INTEGER;"),
     ])
 });
 
@@ -458,7 +461,8 @@ pub fn list_feeds(conn: &Connection) -> AppResult<Vec<Feed>> {
     let mut stmt = conn.prepare(
         "SELECT f.id, f.feed_url, f.site_url, f.title, f.description, f.favicon_url,
                 f.folder_id, f.source_type, f.last_fetched_at, f.fetch_error,
-                (SELECT COUNT(*) FROM articles a WHERE a.feed_id = f.id AND a.is_read = 0)
+                (SELECT COUNT(*) FROM articles a WHERE a.feed_id = f.id AND a.is_read = 0),
+                f.refresh_interval_min
          FROM feeds f ORDER BY f.title COLLATE NOCASE",
     )?;
     let rows = stmt
@@ -475,6 +479,7 @@ pub fn list_feeds(conn: &Connection) -> AppResult<Vec<Feed>> {
                 last_fetched_at: r.get(8)?,
                 fetch_error: r.get(9)?,
                 unread_count: r.get(10)?,
+                refresh_interval_min: r.get(11)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -497,6 +502,51 @@ pub fn feeds_to_refresh(conn: &Connection) -> AppResult<Vec<FeedToRefresh>> {
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
+}
+
+/// The "never auto-refresh" sentinel (minutes ≈ one year). The Settings panel
+/// writes it as the global interval when auto-refresh is switched off, and a
+/// per-feed interval can carry it to opt one feed out of automatic refresh.
+pub const REFRESH_OFF_MINUTES: i64 = 525_600;
+
+/// Non-newsletter feeds that are *due* for a fetch: their effective interval —
+/// the per-feed `refresh_interval_min`, or `global_min` when unset — has
+/// elapsed since `last_fetched_at` (a never-fetched feed is always due). Feeds
+/// whose effective interval is the "off" sentinel are excluded entirely. Used
+/// by the background scheduler; the manual refresh still fetches every feed via
+/// `feeds_to_refresh`.
+pub fn feeds_due_for_refresh(
+    conn: &Connection,
+    global_min: i64,
+) -> AppResult<Vec<FeedToRefresh>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, feed_url, etag, last_modified FROM feeds
+         WHERE source_type != 'newsletter'
+           AND COALESCE(refresh_interval_min, ?1) < ?2
+           AND ( last_fetched_at IS NULL
+                 OR (julianday('now') - julianday(last_fetched_at)) * 1440.0
+                    >= COALESCE(refresh_interval_min, ?1) )",
+    )?;
+    let rows = stmt
+        .query_map(params![global_min, REFRESH_OFF_MINUTES], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Set (or clear) a feed's per-feed refresh interval. `None` reverts the feed
+/// to the global interval; `Some(REFRESH_OFF_MINUTES)` opts it out entirely.
+pub fn set_feed_refresh_interval(
+    conn: &Connection,
+    id: i64,
+    minutes: Option<i64>,
+) -> AppResult<()> {
+    conn.execute(
+        "UPDATE feeds SET refresh_interval_min = ?2 WHERE id = ?1",
+        params![id, minutes],
+    )?;
+    Ok(())
 }
 
 /// Refresh a feed's metadata from its parsed document. A `None` *or empty*
@@ -736,6 +786,39 @@ pub fn newsletter_sources_to_poll(
     )?;
     let rows = stmt
         .query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                NewsletterConfig {
+                    host: r.get::<_, String>(1)?,
+                    port: r.get::<_, i64>(2)? as u16,
+                    username: r.get::<_, String>(3)?,
+                    password: r.get::<_, String>(4)?,
+                    folder: r.get::<_, String>(5)?,
+                },
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// `(feed_id, IMAP config)` for newsletter sources that are *due* to be polled,
+/// applying the same per-feed/global interval logic as `feeds_due_for_refresh`.
+/// Used by the background scheduler; the manual refresh polls every mailbox.
+pub fn newsletter_sources_due_to_poll(
+    conn: &Connection,
+    global_min: i64,
+) -> AppResult<Vec<(i64, crate::ingestion::newsletter::NewsletterConfig)>> {
+    use crate::ingestion::newsletter::NewsletterConfig;
+    let mut stmt = conn.prepare(
+        "SELECT s.feed_id, s.host, s.port, s.username, s.password, s.folder
+         FROM newsletter_sources s JOIN feeds f ON f.id = s.feed_id
+         WHERE COALESCE(f.refresh_interval_min, ?1) < ?2
+           AND ( f.last_fetched_at IS NULL
+                 OR (julianday('now') - julianday(f.last_fetched_at)) * 1440.0
+                    >= COALESCE(f.refresh_interval_min, ?1) )",
+    )?;
+    let rows = stmt
+        .query_map(params![global_min, REFRESH_OFF_MINUTES], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
                 NewsletterConfig {
@@ -2050,6 +2133,49 @@ mod tests {
             .query_row("SELECT id FROM articles", [], |r| r.get(0))
             .unwrap();
         (conn, article_id)
+    }
+
+    #[test]
+    fn due_logic_respects_per_feed_and_global_intervals() {
+        let (conn, _) = test_db();
+        let feed_id: i64 = conn
+            .query_row("SELECT id FROM feeds", [], |r| r.get(0))
+            .unwrap();
+        let global = 30;
+
+        // Never fetched → always due, whatever the interval.
+        assert!(feeds_due_for_refresh(&conn, global)
+            .unwrap()
+            .iter()
+            .any(|(id, ..)| *id == feed_id));
+
+        // Just fetched → not due under the 30-minute global interval.
+        set_feed_fetch_state(&conn, feed_id, None, None, None).unwrap();
+        assert!(
+            feeds_due_for_refresh(&conn, global).unwrap().is_empty(),
+            "a just-fetched feed should not be due"
+        );
+
+        // Backdate the fetch 20 minutes: still under the 30-minute global…
+        conn.execute(
+            "UPDATE feeds SET last_fetched_at = datetime('now', '-20 minutes') WHERE id = ?1",
+            params![feed_id],
+        )
+        .unwrap();
+        assert!(feeds_due_for_refresh(&conn, global).unwrap().is_empty());
+
+        // …but a 15-minute per-feed override makes it due.
+        set_feed_refresh_interval(&conn, feed_id, Some(15)).unwrap();
+        assert!(!feeds_due_for_refresh(&conn, global).unwrap().is_empty());
+
+        // The "off" sentinel opts the feed out entirely, even when overdue.
+        set_feed_refresh_interval(&conn, feed_id, Some(REFRESH_OFF_MINUTES)).unwrap();
+        assert!(feeds_due_for_refresh(&conn, global).unwrap().is_empty());
+
+        // Clearing the override returns the feed to the global interval: with
+        // the 20-minute-old fetch and a 5-minute global, it is due again.
+        set_feed_refresh_interval(&conn, feed_id, None).unwrap();
+        assert!(!feeds_due_for_refresh(&conn, 5).unwrap().is_empty());
     }
 
     #[test]

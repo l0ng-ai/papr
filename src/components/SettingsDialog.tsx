@@ -779,6 +779,29 @@ function SubscriptionsSection({
     (f) => !search || f.title.toLowerCase().includes(search.toLowerCase()),
   );
 
+  // Per-feed refresh interval. "default" ⇒ null (follow the global setting),
+  // "off" ⇒ the 525600-minute sentinel, otherwise the literal minute count.
+  const REFRESH_OFF = 525600;
+  const intervalOptions = [
+    { value: "default", label: t("settings.subscriptions.refreshDefault") },
+    { value: "15", label: t("settings.subscriptions.refresh15m") },
+    { value: "30", label: t("settings.subscriptions.refresh30m") },
+    { value: "60", label: t("settings.subscriptions.refresh1h") },
+    { value: "360", label: t("settings.subscriptions.refresh6h") },
+    { value: "720", label: t("settings.subscriptions.refresh12h") },
+    { value: "1440", label: t("settings.subscriptions.refresh1d") },
+    { value: "off", label: t("settings.subscriptions.refreshOff") },
+  ];
+  const intervalValue = (m: number | null) =>
+    m == null ? "default" : m >= REFRESH_OFF ? "off" : String(m);
+  const updateInterval = (f: Feed, v: string) => {
+    const minutes = v === "default" ? null : v === "off" ? REFRESH_OFF : Number(v);
+    api
+      .setFeedRefreshInterval(f.id, minutes)
+      .then(() => qc.invalidateQueries({ queryKey: ["feeds"] }))
+      .catch((e) => reportError(e));
+  };
+
   const exportOpml = async () => {
     try {
       const xml = await api.exportOpml();
@@ -881,6 +904,12 @@ function SubscriptionsSection({
               <span className="name">{f.title}</span>
               <span className="url">{feedHost(f)}</span>
               <div className="actions">
+                <Select
+                  value={intervalValue(f.refreshIntervalMin)}
+                  options={intervalOptions}
+                  onChange={(v) => updateInterval(f, v)}
+                  aria-label={t("settings.subscriptions.refreshInterval")}
+                />
                 <button
                   className="icon-btn"
                   title={t("settings.subscriptions.unsubscribe")}

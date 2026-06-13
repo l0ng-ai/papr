@@ -86,13 +86,25 @@ async fn fetch_one(
     }
 }
 
-/// Refresh every feed (bounded concurrency). Streams per-feed progress over
-/// `progress` when provided, emits `feeds-updated`, fires a notification,
-/// runs retention cleanup, syncs to FreshRSS, and returns the new-article count.
+/// Which feeds a refresh run should touch.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum RefreshScope {
+    /// Every feed and newsletter — the manual refresh and OPML import.
+    All,
+    /// Only sources whose per-feed (or global) interval has elapsed — the
+    /// background scheduler. An empty due-set skips the whole pipeline.
+    Due,
+}
+
+/// Refresh feeds (bounded concurrency) selected by `scope`. Streams per-feed
+/// progress over `progress` when provided, emits `feeds-updated`, fires a
+/// notification, runs retention cleanup, syncs to FreshRSS, and returns the
+/// new-article count.
 pub async fn refresh_all(
     app: &AppHandle,
     progress: Option<Channel<RefreshProgress>>,
     wait_if_busy: bool,
+    scope: RefreshScope,
 ) -> AppResult<usize> {
     let state = app.state::<AppState>();
 
@@ -116,15 +128,45 @@ pub async fn refresh_all(
         }
     };
 
-    let (feeds, concurrency, dedup, rules) = {
+    let (feeds, newsletters, concurrency, dedup, rules) = {
         let conn = state.db.lock().await;
-        let feeds = db::feeds_to_refresh(&conn)?;
+        // The global default interval for feeds without a per-feed override.
+        // Matches `refresh_interval_minutes`' parsing, in i64 for the DB query.
+        let global_min = db::get_setting(&conn, "refresh_interval_min")
+            .ok()
+            .flatten()
+            .and_then(|v| v.parse::<i64>().ok())
+            .filter(|m| *m >= 5)
+            .map(|m| m.min(db::REFRESH_OFF_MINUTES))
+            .unwrap_or(30);
+        let (feeds, newsletters) = match scope {
+            RefreshScope::All => (
+                db::feeds_to_refresh(&conn)?,
+                db::newsletter_sources_to_poll(&conn).unwrap_or_default(),
+            ),
+            RefreshScope::Due => (
+                db::feeds_due_for_refresh(&conn, global_min)?,
+                db::newsletter_sources_due_to_poll(&conn, global_min).unwrap_or_default(),
+            ),
+        };
         let concurrency =
             db::setting_parsed::<i64>(&conn, "net_concurrency", 6).clamp(1, 16) as usize;
         let dedup = db::setting_flag(&conn, "dedup_enabled", false);
         let rules = db::active_rules(&conn).unwrap_or_default();
-        (feeds, concurrency, dedup, rules)
+        (feeds, newsletters, concurrency, dedup, rules)
     };
+
+    // Background scheduler with nothing due this cycle: bow out before any of
+    // the heavier tail (sync, retention, notifications) so an idle tick is
+    // genuinely idle. The manual refresh (scope All) always runs the pipeline.
+    if scope == RefreshScope::Due && feeds.is_empty() && newsletters.is_empty() {
+        if let Some(p) = &progress {
+            let _ = p.send(RefreshProgress::Started { total: 0 });
+            let _ = p.send(RefreshProgress::Finished { new_articles: 0 });
+        }
+        return Ok(0);
+    }
+
     if let Some(p) = &progress {
         let _ = p.send(RefreshProgress::Started { total: feeds.len() });
     }
@@ -219,7 +261,7 @@ pub async fn refresh_all(
 
     // Newsletter sources: poll each configured IMAP mailbox and ingest any
     // new messages as articles, alongside the RSS refresh above.
-    total_new += poll_newsletters(app, dedup, &rules).await;
+    total_new += poll_newsletters(app, newsletters, dedup, &rules).await;
 
     // Retention: drop old read articles when a finite window is configured.
     // The DELETE scans the whole table, so throttle it to once per day rather
@@ -279,14 +321,11 @@ pub async fn refresh_all(
 /// the RSS path has.
 async fn poll_newsletters(
     app: &AppHandle,
+    sources: Vec<(i64, newsletter::NewsletterConfig)>,
     dedup: bool,
     rules: &[crate::models::Rule],
 ) -> usize {
     let state = app.state::<AppState>();
-    let sources = {
-        let conn = state.db.lock().await;
-        db::newsletter_sources_to_poll(&conn).unwrap_or_default()
-    };
     if sources.is_empty() {
         return 0;
     }
@@ -357,33 +396,14 @@ async fn poll_newsletters(
     total_new
 }
 
-/// Read the refresh interval (minutes) from settings, defaulting to 30.
-///
-/// Clamped to `[5, 525_600]` (5 minutes … one year — the "auto-refresh off"
-/// sentinel the Settings panel writes): the lower bound matches the slider
-/// minimum, the upper one keeps `mins * 60` well clear of `u64` overflow even
-/// if a corrupt out-of-range value is stored.
-async fn refresh_interval_minutes(app: &AppHandle) -> u64 {
-    let state = app.state::<AppState>();
-    let conn = state.db.lock().await;
-    db::get_setting(&conn, "refresh_interval_min")
-        .ok()
-        .flatten()
-        .and_then(|v| v.parse::<u64>().ok())
-        .filter(|m| *m >= 5)
-        .map(|m| m.min(525_600))
-        .unwrap_or(30)
-}
-
-/// Longest single `sleep` the scheduler will take between two wake-ups. The
-/// configured interval can be hours (or the ~1-year "off" sentinel), but
-/// sleeping that whole span in one call freezes the *next* refresh on the
-/// interval that was current when the sleep began: shortening the interval —
-/// or toggling auto-refresh back on — would not take effect until the old,
-/// possibly year-long, sleep finally elapsed. So the wait is sliced: the loop
-/// re-reads the interval at most this often and refreshes as soon as enough
-/// total time has accumulated, making an interval change land within one slice.
-const SCHEDULER_SLICE: Duration = Duration::from_secs(60);
+/// How often the background loop wakes to look for *due* feeds. Each tick is a
+/// cheap indexed query (and an early return when nothing is due), so a short,
+/// fixed cadence keeps per-feed intervals honoured to within one tick — far
+/// simpler than re-deriving a sleep target from the shortest configured
+/// interval, and it makes an interval change (per-feed or global) land on the
+/// very next tick. A feed whose effective interval is the "off" sentinel is
+/// never due, so idle ticks stay idle.
+const SCHEDULER_TICK: Duration = Duration::from_secs(60);
 
 /// Spawn the background refresh loop. The app must stay resident (tray) for
 /// this to run — macOS does not execute the process after the app is quit.
@@ -391,90 +411,10 @@ pub fn spawn_scheduler(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_secs(8)).await;
         loop {
-            if let Err(e) = refresh_all(&app, None, false).await {
+            if let Err(e) = refresh_all(&app, None, false, RefreshScope::Due).await {
                 log::warn!("scheduled refresh failed: {e}");
             }
-            // Wait for the configured interval, but in short slices so a
-            // changed interval is picked up promptly instead of only after
-            // the previous (stale) interval's full sleep would have ended.
-            let mut waited = Duration::ZERO;
-            loop {
-                let target = Duration::from_secs(refresh_interval_minutes(&app).await * 60);
-                if waited >= target {
-                    break;
-                }
-                let slice = (target - waited).min(SCHEDULER_SLICE);
-                tokio::time::sleep(slice).await;
-                waited += slice;
-            }
+            tokio::time::sleep(SCHEDULER_TICK).await;
         }
     });
-}
-
-#[cfg(test)]
-mod tests {
-    use super::SCHEDULER_SLICE;
-    use std::time::Duration;
-
-    /// Mirror of the sliced-wait loop in `spawn_scheduler`: returns how long
-    /// the scheduler actually sleeps when the interval reported on each slice
-    /// boundary is given by `interval_at`. Pure, so the wait policy is
-    /// testable without the Tauri runtime or a real clock.
-    fn waited_until_due(interval_at: impl Fn(Duration) -> Duration) -> Duration {
-        let mut waited = Duration::ZERO;
-        loop {
-            let target = interval_at(waited);
-            if waited >= target {
-                return waited;
-            }
-            let slice = (target - waited).min(SCHEDULER_SLICE);
-            waited += slice;
-        }
-    }
-
-    #[test]
-    fn waits_the_full_interval_when_it_is_stable() {
-        // A steady 30-minute interval is honoured exactly.
-        let thirty_min = Duration::from_secs(30 * 60);
-        assert_eq!(waited_until_due(|_| thirty_min), thirty_min);
-    }
-
-    #[test]
-    fn a_shortened_interval_is_picked_up_within_one_slice() {
-        // The loop starts waiting on a 2-hour interval, then the interval is
-        // cut to 5 minutes. The refresh must fire shortly after 5 minutes —
-        // not hours later — so the wait lands within one slice of the new
-        // interval, never on the stale 2-hour figure.
-        let five_min = Duration::from_secs(5 * 60);
-        let two_hours = Duration::from_secs(2 * 60 * 60);
-        let waited = waited_until_due(|elapsed| {
-            if elapsed >= five_min {
-                five_min
-            } else {
-                two_hours
-            }
-        });
-        assert!(waited >= five_min, "fired before the new interval: {waited:?}");
-        assert!(
-            waited < five_min + SCHEDULER_SLICE,
-            "stale interval delayed the refresh: {waited:?}",
-        );
-    }
-
-    #[test]
-    fn re_enabling_after_the_off_sentinel_does_not_strand_for_a_year() {
-        // Auto-refresh is off (the ~1-year sentinel), then re-enabled to 15
-        // minutes mid-wait. The refresh must still fire near 15 minutes.
-        let fifteen_min = Duration::from_secs(15 * 60);
-        let one_year = Duration::from_secs(525_600 * 60);
-        let waited = waited_until_due(|elapsed| {
-            if elapsed >= fifteen_min {
-                fifteen_min
-            } else {
-                one_year
-            }
-        });
-        assert!(waited >= fifteen_min);
-        assert!(waited < fifteen_min + SCHEDULER_SLICE);
-    }
 }

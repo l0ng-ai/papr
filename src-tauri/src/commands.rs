@@ -196,6 +196,7 @@ pub async fn add_feed(
         last_fetched_at,
         fetch_error: None,
         unread_count: unread,
+        refresh_interval_min: None,
     })
 }
 
@@ -263,6 +264,19 @@ pub async fn move_feed(
     db::move_feed(&conn, id, folder_id)
 }
 
+/// Set a feed's per-feed refresh interval. `None` reverts it to the global
+/// interval; `Some(525600)` (the "off" sentinel) opts the feed out of
+/// automatic refresh. The change is honoured on the scheduler's next tick.
+#[tauri::command]
+pub async fn set_feed_refresh_interval(
+    state: State<'_, AppState>,
+    id: i64,
+    minutes: Option<i64>,
+) -> AppResult<()> {
+    let conn = state.db.lock().await;
+    db::set_feed_refresh_interval(&conn, id, minutes)
+}
+
 #[tauri::command]
 pub async fn rename_feed(state: State<'_, AppState>, id: i64, title: String) -> AppResult<()> {
     // `db::rename_feed` trims and rejects an empty title — the one chokepoint.
@@ -276,7 +290,7 @@ pub async fn refresh_feeds(
     app: AppHandle,
     on_progress: Channel<RefreshProgress>,
 ) -> AppResult<usize> {
-    scheduler::refresh_all(&app, Some(on_progress), false).await
+    scheduler::refresh_all(&app, Some(on_progress), false, scheduler::RefreshScope::All).await
 }
 
 // ─────────────────────────── articles ───────────────────────────
@@ -532,7 +546,8 @@ pub async fn import_opml(app: AppHandle, content: String) -> AppResult<usize> {
     // skipping and leaving the imported feeds empty until the next tick.
     let app2 = app.clone();
     tauri::async_runtime::spawn(async move {
-        let _ = scheduler::refresh_all(&app2, None, true).await;
+        let _ =
+            scheduler::refresh_all(&app2, None, true, scheduler::RefreshScope::All).await;
     });
     Ok(count)
 }
@@ -1223,6 +1238,7 @@ pub async fn add_newsletter_source(
         last_fetched_at,
         fetch_error: None,
         unread_count: unread,
+        refresh_interval_min: None,
     })
 }
 

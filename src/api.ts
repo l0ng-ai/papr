@@ -56,6 +56,10 @@ export const moveFeed = (id: number, folderId: number | null) =>
   invoke<void>("move_feed", { id, folderId });
 export const renameFeed = (id: number, title: string) =>
   invoke<void>("rename_feed", { id, title });
+/** Set a feed's refresh interval (minutes). `null` follows the global
+ *  setting; `525600` opts the feed out of automatic refresh. */
+export const setFeedRefreshInterval = (id: number, minutes: number | null) =>
+  invoke<void>("set_feed_refresh_interval", { id, minutes });
 
 /** Refresh all feeds, reporting progress through the supplied callback. */
 export function refreshFeeds(
