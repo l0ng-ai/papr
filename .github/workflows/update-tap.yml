@@ -41,7 +41,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: l0ng-ai/homebrew-papr
-          token: ${{ secrets.TAP_PUSH_TOKEN }}
+          ssh-key: ${{ secrets.TAP_DEPLOY_KEY }}
           path: tap
 
       - name: Patch the cask
