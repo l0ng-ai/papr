@@ -1,0 +1,75 @@
+name: Update Homebrew tap
+
+# When a GitHub Release is published, bump the cask in the l0ng-ai/homebrew-papr
+# tap to the new version + per-arch sha256 so `brew upgrade --cask papr` picks it
+# up. Runs on `published` (not the draft that release.yml first creates) because
+# a draft release's asset URLs 404 for anonymous downloads — we need the public
+# assets to hash them. `workflow_dispatch` allows re-running against any tag.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to sync to the tap (e.g. v0.7.0)"
+        required: true
+
+jobs:
+  update-tap:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve tag / version
+        id: v
+        run: |
+          TAG="${{ github.event.release.tag_name || github.event.inputs.tag }}"
+          if [ -z "$TAG" ]; then echo "no tag resolved" >&2; exit 1; fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download dmgs and hash them
+        id: sha
+        run: |
+          V="${{ steps.v.outputs.version }}"
+          BASE="https://github.com/${{ github.repository }}/releases/download/${{ steps.v.outputs.tag }}"
+          curl -fSL --retry 3 -o arm.dmg "$BASE/Papr_${V}_aarch64.dmg"
+          curl -fSL --retry 3 -o x64.dmg "$BASE/Papr_${V}_x64.dmg"
+          echo "arm=$(sha256sum arm.dmg | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "x64=$(sha256sum x64.dmg | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: Check out tap
+        uses: actions/checkout@v4
+        with:
+          repository: l0ng-ai/homebrew-papr
+          token: ${{ secrets.TAP_PUSH_TOKEN }}
+          path: tap
+
+      - name: Patch the cask
+        run: |
+          V="${{ steps.v.outputs.version }}"
+          ARM="${{ steps.sha.outputs.arm }}"
+          X64="${{ steps.sha.outputs.x64 }}"
+          f=tap/Casks/papr.rb
+          # Replace only the quoted contents, preserving each line's alignment.
+          sed -i -E "s|(version \")[^\"]*|\1${V}|" "$f"
+          sed -i -E "s|(sha256 arm: +\")[^\"]*|\1${ARM}|" "$f"
+          sed -i -E "s|(intel: +\")[^\"]*|\1${X64}|" "$f"
+          echo "----- patched cask -----"
+          cat "$f"
+          # Fail loudly if any field didn't land, rather than pushing a stale cask.
+          grep -q "version \"${V}\"" "$f"
+          grep -q "\"${ARM}\"" "$f"
+          grep -q "\"${X64}\"" "$f"
+
+      - name: Commit and push
+        run: |
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/papr.rb
+          if git diff --cached --quiet; then
+            echo "cask already up to date — nothing to push"
+            exit 0
+          fi
+          git commit -m "papr ${{ steps.v.outputs.version }}"
+          git push
