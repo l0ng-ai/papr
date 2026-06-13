@@ -41,6 +41,7 @@
     "loadError": "このエピソードを再生できませんでした"
   },
   "smart": {
+    "home": "ホーム",
     "all": "すべての記事",
     "unread": "未読",
     "starred": "スター付き",
@@ -556,6 +557,16 @@
       "pink": "ピンク",
       "purple": "パープル"
     }
+  },
+  "dailyReport": {
+    "title": "デイリーレポート",
+    "empty": "この日のレポートはありません。",
+    "generating": "レポートを生成中…",
+    "error": "レポートを生成できませんでした。AI 設定を確認してください。",
+    "refresh": "再生成",
+    "generate": "レポートを生成",
+    "calendar": "履歴",
+    "noReports": "まだレポートがありません。"
   },
   "update": {
     "available": "アップデートがあります — v{{version}}",

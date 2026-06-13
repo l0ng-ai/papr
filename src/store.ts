@@ -11,7 +11,7 @@ export type Theme = "light" | "dark";
 export type Accent = "clay" | "pine" | "indigo" | "ink";
 export type Density = "compact" | "cozy" | "spacious";
 export type ViewMode = "list" | "card";
-export type StartupView = "all" | "unread" | "starred" | "last";
+export type StartupView = "all" | "unread" | "starred" | "home" | "last";
 export type ReaderFont = "serif" | "sans" | "hyperlegible";
 
 /** Reader title/body typeface options. `stack` feeds the `--reader-font` CSS
@@ -170,8 +170,8 @@ function loadPrefs(): Prefs {
     autoExtract: ls.bool("pref.autoExtract", false),
     startupView: ls.oneOf<StartupView>(
       "pref.startupView",
-      ["all", "unread", "starred", "last"],
-      "unread",
+      ["all", "unread", "starred", "home", "last"],
+      "home",
     ),
     hideReadOnStartup: ls.bool("pref.hideReadOnStartup", false),
   };

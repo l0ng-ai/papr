@@ -27,8 +27,12 @@ const AI_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Output token cap for summaries / Q&A / digests, applied to every provider so
 /// a response stays bounded in length and cost. These all fit comfortably within
-/// it. Translation overrides it with [`TRANSLATE_MAX_TOKENS`].
+/// it. Translation and daily reports override with their own constants.
 pub const MAX_TOKENS: u32 = 1024;
+
+/// Output token cap for the AI daily report. Needs more room than a single
+/// summary because it synthesises an entire day's worth of headlines into
+pub const DAILY_REPORT_MAX_TOKENS: u32 = 4096;
 
 /// Output token cap for one translation batch. A batch's translated HTML tracks
 /// its input length (tags are echoed too), so it needs far more room than a

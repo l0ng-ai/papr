@@ -1611,7 +1611,6 @@ button { font-family: inherit; }
   color: var(--muted);
   margin-bottom: 14px;
 }
-.s-about .about-update { margin-bottom: 30px; }
 .s-about .credits {
   font-size: 12px;
   color: var(--muted);
@@ -2474,3 +2473,266 @@ button { font-family: inherit; }
 }
 .hl-export-menu .ctx-item:disabled,
 .send-to-menu .ctx-item:disabled { opacity: 0.5; cursor: default; }
+
+/* ===== Daily Report (HOME page) ===== */
+
+.daily-report {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--panel);
+  overflow: hidden;
+  grid-column: 2 / 4;
+}
+
+.dr-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--hair);
+  flex-shrink: 0;
+}
+
+.dr-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.dr-header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.dr-date {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.dr-refresh {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.dr-refresh:hover { background: var(--hover); color: var(--ink); }
+.dr-refresh:disabled { opacity: 0.4; cursor: default; }
+
+.dr-body {
+  flex: 1;
+  padding: 20px;
+  overflow-y: auto;
+}
+
+.dr-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  height: 100%;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.dr-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 14px;
+  padding: 20px 0;
+}
+
+.dr-error {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  color: var(--danger);
+  font-size: 14px;
+  padding: 20px 0;
+}
+
+.dr-prose {
+  font-size: 14px;
+  line-height: 1.7;
+  color: var(--ink-2);
+}
+.dr-prose h1, .dr-prose h2, .dr-prose h3,
+.dr-prose h4, .dr-prose h5, .dr-prose h6 {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+  margin: 20px 0 8px;
+}
+.dr-prose h1:first-child, .dr-prose h2:first-child,
+.dr-prose h3:first-child {
+  margin-top: 0;
+}
+.dr-prose p { margin: 0 0 12px; }
+.dr-prose ul, .dr-prose ol { margin: 0 0 12px; padding-left: 20px; }
+.dr-prose li { margin-bottom: 4px; }
+.dr-prose a {
+  color: var(--accent);
+  text-decoration: none;
+}
+.dr-prose a:hover { text-decoration: underline; }
+.dr-prose blockquote {
+  margin: 0 0 12px;
+  padding: 4px 12px;
+  border-left: 3px solid var(--hair-strong);
+  color: var(--muted);
+}
+
+/* ── Sidebar calendar (HOME page) ── */
+
+.sb-calendar {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--hair);
+}
+
+.sb-cal-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 2px 6px;
+}
+.sb-cal-arrow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.sb-cal-arrow:hover { background: var(--hover); color: var(--ink); }
+.sb-cal-month {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.sb-cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 1px 0;
+}
+.sb-cal-weekdays { padding-bottom: 4px; }
+
+.sb-cal-wd {
+  text-align: center;
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 1px 0;
+}
+
+.sb-cal-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  font-size: 11px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+  user-select: none;
+}
+.sb-cal-cell.empty { cursor: default; }
+
+.sb-cal-cell.has-report {
+  color: var(--ink);
+  font-weight: 500;
+}
+.sb-cal-cell.has-report:hover { background: var(--hover); }
+
+.sb-cal-cell.no-report {
+  color: var(--muted);
+  opacity: 0.5;
+}
+.sb-cal-cell.no-report:hover { background: var(--hover); opacity: 0.8; }
+
+.sb-cal-cell.selected {
+  background: var(--accent-bg, rgba(194,133,98,0.15));
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.sb-cal-cell.today:not(.selected) {
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.sb-cal-cell.future {
+  color: var(--muted);
+  opacity: 0.25;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* ── Daily Report content ── */
+
+.dr-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.dr-content-body {
+  flex: 1;
+  padding: 20px 28px;
+  overflow-y: auto;
+}
+
+.dr-cal-empty {
+  padding: 20px 16px;
+  font-size: 13px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.dr-retry {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border: 1px solid var(--hair-strong);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-2);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s;
+}
+.dr-retry:hover { background: var(--hover); border-color: var(--muted); }
+
+/* Blinking cursor shown at the end of prose while AI is still streaming. */
+.dr-prose.streaming::after {
+  content: "▍";
+  display: inline;
+  animation: blink 0.8s step-end infinite;
+  color: var(--accent);
+}
+@keyframes blink { 50% { opacity: 0; } }
+

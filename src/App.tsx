@@ -8,11 +8,11 @@ import * as api from "./api";
 import { useUi, READER_FONTS } from "./store";
 import { useArticleActions } from "./hooks/articleActions";
 import { readCurrentItems } from "./lib/currentList";
-import { checkForUpdates } from "./lib/updater";
 import { useToasts, toast as toastApi, reportError } from "./toast";
 import type { ArticleQuery, ArticleSummary, Feed } from "./types";
 import Sidebar from "./components/Sidebar";
 import ArticleList from "./components/ArticleList";
+import DailyReport from "./components/DailyReport";
 import Reader from "./components/Reader";
 import CommandPalette, { type CommandAction } from "./components/CommandPalette";
 import SettingsDialog from "./components/SettingsDialog";
@@ -46,6 +46,7 @@ export default function App() {
   const readerWidth = useUi((s) => s.readerWidth);
   const reduceMotion = useUi((s) => s.prefs.reduceMotion);
   const focusMode = useUi((s) => s.focusMode);
+  const query = useUi((s) => s.query);
 
   const activeToast = useToasts((s) => s.current);
   const dismissToast = useToasts((s) => s.dismiss);
@@ -104,6 +105,7 @@ export default function App() {
       unread: t("smart.unread"),
       starred: t("smart.starred"),
       readLater: t("smart.readLater"),
+      home: t("smart.home"),
     };
     if (startupView !== "last" && labels[startupView]) {
       useUi
@@ -201,16 +203,6 @@ export default function App() {
     return () => {
       un.then((f) => f());
     };
-  }, []);
-
-  // ── Auto-update: one quiet check shortly after launch ──
-  // Delayed so it doesn't compete with the first feed refresh for bandwidth;
-  // `silent` keeps a missing release feed (or a dev build) from raising noise.
-  useEffect(() => {
-    const id = window.setTimeout(() => {
-      void checkForUpdates({ silent: true });
-    }, 4000);
-    return () => window.clearTimeout(id);
   }, []);
 
   // A ref — not the `refreshing` state — is the concurrency guard: it must be
@@ -436,8 +428,14 @@ export default function App() {
             refreshing={refreshing}
             onToast={showToast}
           />
-          <ArticleList onToast={showToast} />
-          <Reader onToast={showToast} />
+          {query.kind === "home" ? (
+            <DailyReport />
+          ) : (
+            <>
+              <ArticleList onToast={showToast} />
+              <Reader onToast={showToast} />
+            </>
+          )}
         </div>
         <PlayerBar />
       </div>

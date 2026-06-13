@@ -715,6 +715,85 @@ pub async fn ai_digest(
     Ok(())
 }
 
+/// Stream an AI daily report that synthesises articles for a given date.
+/// On successful completion the report is persisted to the `daily_reports` table.
+/// `date` is `YYYY-MM-DD`; defaults to today when empty.
+#[tauri::command]
+pub async fn ai_daily_report(
+    state: State<'_, AppState>,
+    on_token: Channel<AiEvent>,
+    date: String,
+) -> AppResult<()> {
+    let report_date = if date.is_empty() {
+        chrono::Local::now().format("%Y-%m-%d").to_string()
+    } else {
+        date.clone()
+    };
+
+    let (cfg, articles, lang) = {
+        let conn = state.read().await;
+        (
+            load_ai_config(&conn)?,
+            db::daily_report_source(&conn, &report_date)?,
+            response_language(&conn),
+        )
+    };
+    if articles.is_empty() {
+        return Err(AppError::code("noArticles"));
+    }
+
+    let mut corpus = String::new();
+    for (_id, title, feed) in &articles {
+        corpus.push_str(&format!("[{feed}] {title}\n"));
+    }
+
+    let system = format!(
+        "You are the user's expert personal news editor. Your task is to synthesize today's RSS feed articles into a concise, highly skimmable daily briefing.\n\n\
+         Rules:\n\
+         1. Thematic Grouping: Categorize related articles under clear, short markdown headers (e.g., ## Technology, ## Global News). Create a \"Miscellaneous\" or \"Other Notable News\" section for isolated items.\n\
+         2. Deduplication: If multiple articles cover the exact same event, merge them into a single crisp summary point, and list all relevant source names together.\n\
+         3. Formatting: Use bullet points for each news item. Keep descriptions to 1-2 sentences. Lead with the most impactful news at the top of each section.\n\
+         4. Sourcing: Always explicitly append the source name(s) at the end of each point in brackets, e.g., [Source A, Source B].\n\
+         5. Strict Output: Output ONLY the requested briefing. No conversational filler, no greetings, no preamble, and no concluding remarks.{lang}"
+    );
+    let user = format!("Articles from my feeds on {report_date}:\n\n{corpus}");
+
+    let http = state.http();
+    let outcome = ai::stream_chat(&http, &cfg, &system, &user, &on_token, ai::DAILY_REPORT_MAX_TOKENS).await?;
+
+    // Persist the completed report so it survives app restarts.
+    if outcome.completed {
+        let conn = state.db.lock().await;
+        let _ = db::save_daily_report(&conn, &report_date, &outcome.text);
+    }
+    Ok(())
+}
+
+/// Return today's articles as `ArticleSummary` rows for the Daily Report's
+/// clickable article list.
+#[tauri::command]
+pub async fn today_articles(state: State<'_, AppState>) -> AppResult<Vec<ArticleSummary>> {
+    let conn = state.read().await;
+    db::today_articles(&conn)
+}
+
+/// Fetch a previously saved daily report by date (`YYYY-MM-DD`).
+#[tauri::command]
+pub async fn get_daily_report(
+    state: State<'_, AppState>,
+    date: String,
+) -> AppResult<Option<String>> {
+    let conn = state.read().await;
+    db::get_daily_report(&conn, &date)
+}
+
+/// List all dates that have a saved daily report, newest first.
+#[tauri::command]
+pub async fn list_daily_report_dates(state: State<'_, AppState>) -> AppResult<Vec<String>> {
+    let conn = state.read().await;
+    db::list_daily_report_dates(&conn)
+}
+
 /// Progress events streamed to the frontend during a translation. Reported once
 /// per batch (a group of whole blocks), never per token: token-level IPC across
 /// a full article would flood the webview's main thread and freeze the UI.

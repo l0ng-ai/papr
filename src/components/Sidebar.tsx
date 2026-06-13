@@ -1,8 +1,9 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as api from "../api";
 import { useUi } from "../store";
+import { useCal } from "../calStore";
 import { useArticleActions } from "../hooks/articleActions";
 import { withUndo, reportError } from "../toast";
 import { isMac, modCombo } from "../lib/platform";
@@ -48,6 +49,28 @@ type Prompt = {
   onSubmit: (v: string) => void;
 };
 
+// ── calendar helpers ──
+
+function daysOfMonth(year: number, month: number): string[] {
+  const last = new Date(year, month + 1, 0).getDate();
+  const out: string[] = [];
+  for (let d = 1; d <= last; d++) {
+    out.push(
+      `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`,
+    );
+  }
+  return out;
+}
+
+function weekHeaders(): string[] {
+  const base = new Date(2026, 0, 5); // Monday
+  return Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(base);
+    d.setDate(base.getDate() + i);
+    return d.toLocaleDateString(undefined, { weekday: "narrow" });
+  });
+}
+
 function SbItem({
   icon,
   label,
@@ -75,6 +98,82 @@ function SbItem({
       </span>
       <span className="sb-label">{label}</span>
       {count != null && count > 0 && <span className="sb-count">{count}</span>}
+    </div>
+  );
+}
+
+/** Compact month-grid calendar, always visible in the sidebar. */
+function SidebarCalendar() {
+  const { t } = useTranslation();
+  const today = useMemo(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }, []);
+
+  const viewYM = useCal((s) => s.viewYM);
+  const selectedDate = useCal((s) => s.selectedDate);
+  const reportDates = useCal((s) => s.reportDates);
+  const selectDate = useCal((s) => s.selectDate);
+  const prevMonth = useCal((s) => s.prevMonth);
+  const nextMonth = useCal((s) => s.nextMonth);
+
+  const days = useMemo(() => daysOfMonth(viewYM.y, viewYM.m), [viewYM.y, viewYM.m]);
+  const headers = useMemo(() => weekHeaders(), []);
+  const firstDow = new Date(viewYM.y, viewYM.m, 1).getDay();
+
+  const monthLabel = new Date(viewYM.y, viewYM.m, 1).toLocaleDateString(
+    undefined,
+    { year: "numeric", month: "short" },
+  );
+
+  return (
+    <div className="sb-calendar">
+      <div className="sb-cal-nav">
+        <button className="sb-cal-arrow" onClick={prevMonth}>‹</button>
+        <span className="sb-cal-month">{monthLabel}</span>
+        <button className="sb-cal-arrow" onClick={nextMonth}>›</button>
+      </div>
+      <div className="sb-cal-grid sb-cal-weekdays">
+        {headers.map((h) => (
+          <span key={h} className="sb-cal-wd">{h}</span>
+        ))}
+      </div>
+      <div className="sb-cal-grid sb-cal-days">
+        {Array.from({ length: firstDow }, (_, i) => (
+          <span key={`e${i}`} className="sb-cal-cell empty" />
+        ))}
+        {days.map((d) => {
+          const hasReport = reportDates.has(d);
+          const isSel = d === selectedDate;
+          const isToday = d === today;
+          const isFuture = d > today;
+          return (
+            <span
+              key={d}
+              className={
+                "sb-cal-cell" +
+                (isSel ? " selected" : "") +
+                (isToday ? " today" : "") +
+                (isFuture
+                  ? " future"
+                  : hasReport
+                    ? " has-report"
+                    : " no-report")
+              }
+              onClick={
+                isFuture
+                  ? undefined
+                  : () => {
+                      selectDate(d);
+                      useUi.getState().select({ kind: "home" }, t("smart.home"));
+                    }
+              }
+            >
+              {parseInt(d.slice(8), 10)}
+            </span>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -484,6 +583,8 @@ export default function Sidebar({
         <span>{t("sidebar.searchArticles")}</span>
         <kbd>{modCombo("K")}</kbd>
       </div>
+
+      <SidebarCalendar />
 
       <div className="sidebar-scroll">
         <div className="sb-section-title">

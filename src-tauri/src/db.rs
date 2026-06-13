@@ -242,6 +242,16 @@ static MIGRATIONS: LazyLock<Migrations> = LazyLock::new(|| {
             "ALTER TABLE articles ADD COLUMN translated_html TEXT;
              ALTER TABLE articles ADD COLUMN translated_lang TEXT;",
         ),
+        // v15 — persisted AI daily reports keyed by calendar date.
+        M::up(
+            "CREATE TABLE daily_reports (
+                 id          INTEGER PRIMARY KEY,
+                 report_date TEXT NOT NULL UNIQUE,
+                 content     TEXT NOT NULL,
+                 created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+             );
+             CREATE INDEX idx_daily_reports_date ON daily_reports(report_date);",
+        ),
     ])
 });
 
@@ -1070,6 +1080,86 @@ pub fn digest_source(conn: &Connection, limit: i64) -> AppResult<Vec<(String, St
     )?;
     let rows = stmt
         .query_map(params![limit], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Articles for a given date as `(article_id, title, feed_title)` for the
+/// Daily Report AI prompt. Only titles are used — the AI groups and
+/// summarises by headline alone, keeping the corpus compact.
+pub fn daily_report_source(conn: &Connection, date: &str) -> AppResult<Vec<(i64, String, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT a.id, a.title, f.title
+         FROM articles a JOIN feeds f ON f.id = a.feed_id
+         WHERE date(COALESCE(a.published_at, a.fetched_at)) = ?1
+         ORDER BY datetime(COALESCE(a.published_at, a.fetched_at)) DESC, a.id DESC",
+    )?;
+    let rows = stmt
+        .query_map(rusqlite::params![date], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Today's articles as full `ArticleSummary` rows for the Daily Report's
+/// clickable article list. Uses the same date filter as `daily_report_source`.
+pub fn today_articles(conn: &Connection) -> AppResult<Vec<ArticleSummary>> {
+    let mut stmt = conn.prepare(
+        "SELECT a.id, a.feed_id, f.title, f.source_type, a.title, a.author,
+                substr(a.body_text,1,280), a.image_url, a.url, a.published_at,
+                a.is_read, a.is_starred, a.read_later
+         FROM articles a JOIN feeds f ON f.id = a.feed_id
+         WHERE datetime(COALESCE(a.published_at, a.fetched_at)) >= datetime('now', 'start of day')
+         ORDER BY datetime(COALESCE(a.published_at, a.fetched_at)) DESC, a.id DESC",
+    )?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(ArticleSummary {
+                id: r.get(0)?,
+                feed_id: r.get(1)?,
+                feed_title: r.get(2)?,
+                source_type: r.get(3)?,
+                title: r.get(4)?,
+                author: r.get(5)?,
+                snippet: r.get(6)?,
+                image_url: r.get(7)?,
+                url: r.get(8)?,
+                published_at: r.get(9)?,
+                is_read: r.get(10)?,
+                is_starred: r.get(11)?,
+                read_later: r.get(12)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+// ── daily reports (persisted AI summaries) ─────────────────────────────
+
+/// Save (or replace) a daily report for the given date string (`YYYY-MM-DD`).
+pub fn save_daily_report(conn: &Connection, date: &str, content: &str) -> AppResult<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO daily_reports (report_date, content) VALUES (?1, ?2)",
+        rusqlite::params![date, content],
+    )?;
+    Ok(())
+}
+
+/// Retrieve the cached daily report content for a given date, if it exists.
+pub fn get_daily_report(conn: &Connection, date: &str) -> AppResult<Option<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT content FROM daily_reports WHERE report_date = ?1",
+    )?;
+    let mut rows = stmt.query_map(rusqlite::params![date], |r| r.get(0))?;
+    Ok(rows.next().transpose()?)
+}
+
+/// List all dates that have a saved daily report, newest first.
+pub fn list_daily_report_dates(conn: &Connection) -> AppResult<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT report_date FROM daily_reports ORDER BY report_date DESC",
+    )?;
+    let rows = stmt
+        .query_map([], |r| r.get(0))?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
 }

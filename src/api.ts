@@ -130,6 +130,23 @@ export function aiDigest(onToken: (e: AiEvent) => void): Promise<void> {
   return invoke<void>("ai_digest", { onToken: channel });
 }
 
+/** Stream an AI daily report for a given date (`YYYY-MM-DD`, empty = today). */
+export function aiDailyReport(onToken: (e: AiEvent) => void, date = ""): Promise<void> {
+  const channel = new Channel<AiEvent>();
+  channel.onmessage = onToken;
+  return invoke<void>("ai_daily_report", { onToken: channel, date });
+}
+
+/** Return today's articles for the Daily Report's clickable list. */
+export const todayArticles = () => invoke<ArticleSummary[]>("today_articles");
+
+/** Fetch a previously saved daily report by date (`YYYY-MM-DD`). */
+export const getDailyReport = (date: string) =>
+  invoke<string | null>("get_daily_report", { date });
+
+/** List all dates that have a saved daily report, newest first. */
+export const listDailyReportDates = () => invoke<string[]>("list_daily_report_dates");
+
 /** Translate the article body into the configured target language. Progress is
  *  reported per batch over `onEvent` (start → batch* → done); the full result is
  *  also persisted and returned via the final `done` event. */

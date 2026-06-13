@@ -41,6 +41,7 @@
     "loadError": "Couldn't play this episode"
   },
   "smart": {
+    "home": "Home",
     "all": "All Articles",
     "unread": "Unread",
     "starred": "Starred",
@@ -556,6 +557,16 @@
       "pink": "Pink",
       "purple": "Purple"
     }
+  },
+  "dailyReport": {
+    "title": "Daily Report",
+    "empty": "No report for this date.",
+    "generating": "Generating report…",
+    "error": "Could not generate report. Check your AI settings.",
+    "refresh": "Regenerate",
+    "generate": "Generate report",
+    "calendar": "History",
+    "noReports": "No reports yet."
   },
   "update": {
     "available": "Update available — v{{version}}",

@@ -199,3 +199,12 @@ pub enum RefreshProgress {
     FeedDone { feed_id: i64, new_articles: usize, error: Option<String> },
     Finished { new_articles: usize },
 }
+
+/// A persisted AI daily report, keyed by calendar date.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
+pub struct DailyReportEntry {
+    pub report_date: String,
+    pub content: String,
+}

@@ -155,6 +155,7 @@ export interface Highlight {
 
 // Mirrors the adjacently-tagged Rust `ArticleQuery` enum.
 export type ArticleQuery =
+  | { kind: "home" }
   | { kind: "all" }
   | { kind: "unread" }
   | { kind: "starred" }

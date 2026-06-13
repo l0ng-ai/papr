@@ -41,6 +41,7 @@
     "loadError": "无法播放这一集"
   },
   "smart": {
+    "home": "主页",
     "all": "全部文章",
     "unread": "未读",
     "starred": "星标",
@@ -556,6 +557,16 @@
       "pink": "粉色",
       "purple": "紫色"
     }
+  },
+  "dailyReport": {
+    "title": "每日报告",
+    "empty": "该日期暂无报告。",
+    "generating": "正在生成报告…",
+    "error": "无法生成报告，请检查 AI 设置。",
+    "refresh": "重新生成",
+    "generate": "生成报告",
+    "calendar": "历史记录",
+    "noReports": "暂无报告。"
   },
   "update": {
     "available": "有新版本 — v{{version}}",
