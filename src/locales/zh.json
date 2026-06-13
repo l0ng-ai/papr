@@ -297,7 +297,10 @@
       "noMatch": "没有匹配的订阅源。",
       "opmlExported": "OPML 已导出到下载文件夹",
       "opmlImported": "已从 OPML 导入 {{count}} 个订阅源",
-      "unsubscribed": "已退订 {{title}}"
+      "unsubscribed": "已退订 {{title}}",
+      "rsshubTitle": "RSSHub",
+      "rsshubInstance": "实例地址",
+      "rsshubInstanceDesc": "粘贴 rsshub:// 链接即可订阅。留空使用公共的 rsshub.app，或填入你自托管的实例地址。"
     },
     "filters": {
       "title": "过滤规则",

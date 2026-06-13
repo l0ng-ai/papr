@@ -81,6 +81,36 @@ pub fn youtube_feed_url(channel_id: &str) -> String {
     format!("https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}")
 }
 
+/// The public RSSHub instance used when the user hasn't configured their own.
+pub const DEFAULT_RSSHUB_INSTANCE: &str = "https://rsshub.app";
+
+/// Expand an `rsshub://route` short link into a full feed URL on `instance`.
+///
+/// RSSHub documents routes in a scheme-style shorthand —
+/// `rsshub://github/issue/DIYgod/RSSHub` — that maps onto a normal HTTP feed
+/// at `<instance>/github/issue/DIYgod/RSSHub`. Once expanded the result is an
+/// ordinary RSS URL, so the caller can run it through the regular fetch/parse
+/// flow with no further special-casing.
+///
+/// Returns `None` for anything that isn't an `rsshub://` link (so callers fall
+/// through to the normal flow) or for an empty route. Pure, so it is unit
+/// tested without the network; the `instance` setting lookup lives in the
+/// caller, mirroring how the YouTube network fetch stays out of this module.
+pub fn expand_rsshub(input: &str, instance: &str) -> Option<String> {
+    let trimmed = input.trim();
+    // Schemes are case-insensitive; users paste `rsshub://` but tolerate any
+    // casing. "rsshub://" is pure ASCII, so byte-slicing past it is safe.
+    if !trimmed.get(..9)?.eq_ignore_ascii_case("rsshub://") {
+        return None;
+    }
+    let route = trimmed[9..].trim_start_matches('/');
+    if route.is_empty() {
+        return None;
+    }
+    let base = instance.trim().trim_end_matches('/');
+    Some(format!("{base}/{route}"))
+}
+
 /// True for the URL-safe id characters YouTube uses in channel/playlist ids:
 /// ASCII alphanumerics plus `_` and `-`.
 fn is_id_char(c: char) -> bool {
@@ -496,6 +526,44 @@ mod tests {
     #[test]
     fn garbage_input_untouched() {
         assert_eq!(normalize_source("not a url at all"), Normalized::Untouched);
+    }
+
+    // ── rsshub:// expansion ───────────────────────────────────────────
+
+    #[test]
+    fn expand_rsshub_maps_route_onto_instance() {
+        assert_eq!(
+            expand_rsshub("rsshub://github/issue/DIYgod/RSSHub", DEFAULT_RSSHUB_INSTANCE)
+                .as_deref(),
+            Some("https://rsshub.app/github/issue/DIYgod/RSSHub")
+        );
+    }
+
+    #[test]
+    fn expand_rsshub_honours_custom_self_hosted_instance() {
+        assert_eq!(
+            expand_rsshub("rsshub://bilibili/user/video/2267573", "https://rss.example.com/")
+                .as_deref(),
+            Some("https://rss.example.com/bilibili/user/video/2267573")
+        );
+    }
+
+    #[test]
+    fn expand_rsshub_is_case_insensitive_and_trims_slashes() {
+        // Scheme casing varies; leading route slashes and instance trailing
+        // slashes must not produce a doubled `//`.
+        assert_eq!(
+            expand_rsshub("  RSSHub:///telegram/channel/awesomeDIYgod  ", "https://rsshub.app")
+                .as_deref(),
+            Some("https://rsshub.app/telegram/channel/awesomeDIYgod")
+        );
+    }
+
+    #[test]
+    fn expand_rsshub_rejects_non_rsshub_and_empty_route() {
+        assert_eq!(expand_rsshub("https://rsshub.app/foo", DEFAULT_RSSHUB_INSTANCE), None);
+        assert_eq!(expand_rsshub("rsshub://", DEFAULT_RSSHUB_INSTANCE), None);
+        assert_eq!(expand_rsshub("rss", DEFAULT_RSSHUB_INSTANCE), None);
     }
 
     // ── channelId extraction ──────────────────────────────────────────

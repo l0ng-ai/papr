@@ -297,7 +297,10 @@
       "noMatch": "一致するフィードがありません。",
       "opmlExported": "OPML をダウンロードフォルダにエクスポートしました",
       "opmlImported": "OPML から {{count}} 件のフィードをインポートしました",
-      "unsubscribed": "{{title}} の購読を解除しました"
+      "unsubscribed": "{{title}} の購読を解除しました",
+      "rsshubTitle": "RSSHub",
+      "rsshubInstance": "インスタンス",
+      "rsshubInstanceDesc": "rsshub:// リンクを貼り付けて購読できます。空欄で公開インスタンス rsshub.app を使用、または自分でホストしたインスタンスを指定します。"
     },
     "filters": {
       "title": "フィルタールール",

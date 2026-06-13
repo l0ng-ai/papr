@@ -65,6 +65,23 @@ pub async fn add_feed(
 ) -> AppResult<Feed> {
     let client = state.http();
 
+    // Step 0a: expand an `rsshub://route` short link into a normal feed URL on
+    // the configured RSSHub instance (default: the public rsshub.app). The
+    // expansion is a plain HTTP feed URL, so the rest of the pipeline handles
+    // it with no further special-casing. Only touch the DB when it's actually
+    // an rsshub link, so the common case pays nothing.
+    let url = if url.trim().get(..9).is_some_and(|s| s.eq_ignore_ascii_case("rsshub://")) {
+        let instance = {
+            let conn = state.db.lock().await;
+            db::get_setting(&conn, "rsshub_instance")?
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| sources::DEFAULT_RSSHUB_INSTANCE.to_string())
+        };
+        sources::expand_rsshub(&url, &instance).unwrap_or(url)
+    } else {
+        url
+    };
+
     // Step 0: multi-source normalization. If the pasted URL is a known
     // special source, rewrite it to its real feed URL. A YouTube vanity URL
     // needs the channel page fetched to learn its channel id; that single

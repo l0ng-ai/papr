@@ -297,7 +297,10 @@
       "noMatch": "No matching feeds.",
       "opmlExported": "OPML exported to the Downloads folder",
       "opmlImported": "Imported {{count}} feeds from OPML",
-      "unsubscribed": "Unsubscribed from {{title}}"
+      "unsubscribed": "Unsubscribed from {{title}}",
+      "rsshubTitle": "RSSHub",
+      "rsshubInstance": "Instance",
+      "rsshubInstanceDesc": "Paste rsshub:// links to subscribe. Leave blank for the public rsshub.app, or point to your self-hosted instance."
     },
     "filters": {
       "title": "Filter rules",

@@ -864,6 +864,7 @@ function SubscriptionsSection({
           </button>
         </div>
       </div>
+      <RsshubInstanceGroup />
       <div className="settings-group">
         <h3 className="settings-group-title">
           {t("settings.subscriptions.feedsCount", { count: filtered.length })}
@@ -900,6 +901,61 @@ function SubscriptionsSection({
         </div>
       </div>
     </>
+  );
+}
+
+/**
+ * RSSHub instance for expanding `rsshub://route` short links. Blank uses the
+ * public rsshub.app; self-hosters point it at their own instance. Persisted to
+ * the `rsshub_instance` setting that `add_feed` reads server-side.
+ */
+function RsshubInstanceGroup() {
+  const { t } = useTranslation();
+  const [value, setValue] = useState("");
+
+  useEffect(() => {
+    api
+      .getSetting("rsshub_instance")
+      .then((v) => setValue(v ?? ""))
+      .catch(() => {});
+  }, []);
+
+  const commit = () => {
+    api.setSetting("rsshub_instance", value.trim()).catch(() => {});
+  };
+
+  return (
+    <div className="settings-group" style={{ marginBottom: 18 }}>
+      <h3 className="settings-group-title">{t("settings.subscriptions.rsshubTitle")}</h3>
+      <Row
+        label={t("settings.subscriptions.rsshubInstance")}
+        desc={t("settings.subscriptions.rsshubInstanceDesc")}
+      >
+        <input
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") e.currentTarget.blur();
+          }}
+          placeholder="https://rsshub.app"
+          spellCheck={false}
+          autoCapitalize="off"
+          autoCorrect="off"
+          style={{
+            width: 220,
+            padding: "5px 9px",
+            borderRadius: 7,
+            border: "1px solid var(--hair-strong)",
+            background: "var(--panel)",
+            fontFamily: "inherit",
+            fontSize: 12.5,
+            color: "var(--ink)",
+            outline: 0,
+          }}
+        />
+      </Row>
+    </div>
   );
 }
 
