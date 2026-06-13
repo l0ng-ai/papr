@@ -602,6 +602,19 @@ pub fn feeds_for_export(conn: &Connection) -> AppResult<Vec<(String, String, Opt
     Ok(rows)
 }
 
+/// Feed URLs the sync layer should mirror onto the server. Excludes
+/// `newsletter` sources (those have no upstream feed URL the server could
+/// subscribe to), matching the OPML-export filter.
+pub fn feed_urls_for_sync(conn: &Connection) -> AppResult<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT feed_url FROM feeds WHERE source_type != 'newsletter' AND feed_url <> ''",
+    )?;
+    let rows = stmt
+        .query_map([], |r| r.get(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 /// Find a folder by name, creating it if absent. Used during OPML import.
 /// Resolve a folder name to its id, creating the folder when absent. Used by
 /// OPML import to attach imported feeds to their folders. `create_folder` is
