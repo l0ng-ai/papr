@@ -1667,21 +1667,6 @@ button { font-family: inherit; }
 .enclosure { margin: 1.4em 0; }
 .enclosure video { width: 100%; }
 
-/* article reading-progress hairline */
-.read-progress-track {
-  height: 2px;
-  background: transparent;
-  flex-shrink: 0;
-  position: relative;
-  z-index: 2;
-}
-.read-progress {
-  height: 100%;
-  background: var(--accent);
-  transform-origin: left;
-  transition: transform .1s linear;
-}
-
 /* AI drawer — markdown prose (real streaming output) */
 .ai-prose { overflow-wrap: break-word; }
 .ai-prose p { margin: 0 0 0.8em; }
