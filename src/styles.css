@@ -235,6 +235,11 @@ button { font-family: inherit; }
   justify-content: space-between;
   white-space: nowrap;
 }
+.sb-section-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
 .sb-section-title button {
   background: none;
   border: 0;

@@ -386,6 +386,23 @@ export default function Sidebar({
       onSubmit: (v) => guard(api.createTag(v), t("sidebar.toastTagCreated")),
     });
 
+  // Creating a folder only touches the folders list, which `refreshAfterBulk`
+  // (and thus `guard`) doesn't cover — invalidate it explicitly.
+  const createFolder = () =>
+    setPrompt({
+      title: t("app.newFolderTitle"),
+      initial: "",
+      placeholder: t("app.folderNamePlaceholder"),
+      onSubmit: (v) =>
+        api
+          .createFolder(v)
+          .then(() => {
+            qc.invalidateQueries({ queryKey: ["folders"] });
+            onToast(t("app.folderCreated"));
+          })
+          .catch((e) => reportError(e)),
+    });
+
   // Optimistically apply a new tag order, then persist; reconcile on either
   // outcome. Shared by the drag-reorder and the menu's move up/down.
   const persistTagOrder = (next: Tag[]) => {
@@ -519,13 +536,22 @@ export default function Sidebar({
 
         <div className="sb-section-title">
           <span>{t("sidebar.feeds")}</span>
-          <button
-            onClick={onAddFeed}
-            title={t("sidebar.addFeed")}
-            aria-label={t("sidebar.addFeed")}
-          >
-            <Icon name="plus" size={12} />
-          </button>
+          <span className="sb-section-actions">
+            <button
+              onClick={createFolder}
+              title={t("app.newFolderTitle")}
+              aria-label={t("app.newFolderTitle")}
+            >
+              <Icon name="folder" size={12} />
+            </button>
+            <button
+              onClick={onAddFeed}
+              title={t("sidebar.addFeed")}
+              aria-label={t("sidebar.addFeed")}
+            >
+              <Icon name="plus" size={12} />
+            </button>
+          </span>
         </div>
 
         {allFeeds.length === 0 && (
