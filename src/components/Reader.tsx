@@ -10,7 +10,6 @@ import { useArticleActions } from "../hooks/articleActions";
 import { renderMarkdown } from "../lib/markdown";
 import { downloadBlob, imageFilename } from "../lib/download";
 import { fullDate } from "../lib/feedMeta";
-import { readingProgress } from "../lib/readingProgress";
 import { isMac } from "../lib/platform";
 import { reportError, toast } from "../toast";
 import { tagColor } from "../lib/tagColors";
@@ -178,17 +177,12 @@ export default function Reader({ onToast }: Props) {
       if (heroBlob) URL.revokeObjectURL(heroBlob);
     };
   }, [heroBlob]);
-  const [progress, setProgress] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   // Article id we already auto-marked read via scroll, so a flurry of scroll
   // events near the foot doesn't fire `setRead` repeatedly before the
   // optimistic cache patch lands.
   const scrollMarkedRef = useRef<number | null>(null);
-  // Last seen scrollTop, so `readingProgress` can tell a real scroll-up from a
-  // forward scroll whose fraction only dropped because a lazy image grew the
-  // page. Reset to 0 on article change alongside the scroll position.
-  const lastScrollTopRef = useRef(0);
   const playTrack = usePlayer((s) => s.play);
   const playingSrc = usePlayer((s) => (s.playing ? s.track?.src : null));
 
@@ -213,8 +207,6 @@ export default function Reader({ onToast }: Props) {
     setTagPick(null);
     setHeroBroken(false);
     setHeroBlob(null);
-    setProgress(0);
-    lastScrollTopRef.current = 0;
     scrollMarkedRef.current = null;
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
   }, [id]);
@@ -365,10 +357,6 @@ export default function Reader({ onToast }: Props) {
     const el = scrollRef.current;
     if (!el) return;
     setScrolled(el.scrollTop > 8);
-    setProgress((prev) =>
-      readingProgress(prev, el.scrollTop, lastScrollTopRef.current, el.scrollHeight, el.clientHeight),
-    );
-    lastScrollTopRef.current = el.scrollTop;
     markReadIfAtFoot();
   };
 
@@ -606,13 +594,6 @@ export default function Reader({ onToast }: Props) {
             <Icon name="open" size={16} />
           </button>
         )}
-      </div>
-
-      <div className="read-progress-track" aria-hidden="true">
-        <div
-          className="read-progress"
-          style={{ transform: `scaleX(${progress})` }}
-        />
       </div>
 
       <div
