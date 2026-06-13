@@ -6,9 +6,11 @@
 //! differs per provider, so the `Provider` enum centralises that mapping.
 //!
 //! Flow: `ClientLogin` for an auth token, push any queued local read/starred
-//! changes via `edit-tag`, then pull the subscription list (to subscribe to
-//! new feeds) and the recent reading-list (to reconcile read/starred state,
-//! matched to local articles by URL).
+//! changes via `edit-tag`, pull the subscription list (to subscribe locally to
+//! new server feeds) and push any local-only feeds back to the server (so the
+//! two subscription lists converge rather than drifting), then pull the recent
+//! reading-list (to reconcile read/starred state, matched to local articles by
+//! URL).
 
 use crate::db;
 use crate::error::{AppError, AppResult};
@@ -162,6 +164,11 @@ impl SubCat {
     /// Human folder name for this category. Prefer the explicit `label`,
     /// otherwise derive it from the `user/-/label/NAME` id. `None` for an
     /// unnamed category, so it is skipped rather than creating a blank folder.
+    ///
+    /// FreshRSS files every feed the user hasn't categorised under a built-in
+    /// "Uncategorized" label. That isn't a real folder — mapping it onto a
+    /// local one buries every top-level feed in a junk folder that doesn't
+    /// match the server's own presentation — so it is treated as no folder.
     fn folder_name(&self) -> Option<String> {
         self.label
             .as_deref()
@@ -174,6 +181,7 @@ impl SubCat {
                     .map(|(_, n)| n.trim().to_string())
                     .filter(|s| !s.is_empty())
             })
+            .filter(|n| !n.eq_ignore_ascii_case("Uncategorized"))
     }
 }
 
@@ -295,6 +303,20 @@ pub async fn run_if_connected(app: &AppHandle) -> AppResult<bool> {
     }
 }
 
+/// Local feed URLs the server doesn't already carry, so each can be subscribed
+/// remotely. Pure set difference, factored out of `sync_now` so the selection
+/// is unit-testable without a live server.
+fn feeds_to_push<'a>(
+    local: &'a [String],
+    server: &std::collections::HashSet<String>,
+) -> Vec<&'a str> {
+    local
+        .iter()
+        .filter(|u| !server.contains(*u))
+        .map(String::as_str)
+        .collect()
+}
+
 /// Push queued changes, then pull subscriptions and read/starred state.
 /// Returns the number of local articles whose state was reconciled.
 pub async fn sync_now(app: &AppHandle) -> AppResult<usize> {
@@ -363,6 +385,12 @@ pub async fn sync_now(app: &AppHandle) -> AppResult<usize> {
         .error_for_status()?
         .json()
         .await?;
+    let server_urls: std::collections::HashSet<String> = subs
+        .subscriptions
+        .iter()
+        .filter_map(|s| s.url.clone())
+        .filter(|u| !u.is_empty())
+        .collect();
     {
         let state = app.state::<AppState>();
         let conn = state.db.lock().await;
@@ -395,6 +423,33 @@ pub async fn sync_now(app: &AppHandle) -> AppResult<usize> {
                     }
                 }
             }
+        }
+    }
+
+    // 2b ── push subscriptions: subscribe the server to any local feed it
+    // doesn't have yet, so adding a feed in the app propagates to the server
+    // instead of leaving the two sides to drift. Best-effort and idempotent —
+    // re-subscribing a feed the server already has is a no-op there.
+    let local_feeds = {
+        let state = app.state::<AppState>();
+        let conn = state.db.lock().await;
+        db::feed_urls_for_sync(&conn)?
+    };
+    for url in feeds_to_push(&local_feeds, &server_urls) {
+        let stream = format!("feed/{url}");
+        let pushed = session
+            .post(&http, "subscription/edit")
+            .form(&[
+                ("ac", "subscribe"),
+                ("s", stream.as_str()),
+                ("T", session.token.as_str()),
+            ])
+            .send()
+            .await
+            .and_then(|r| r.error_for_status())
+            .is_ok();
+        if !pushed {
+            log::warn!("sync: failed to subscribe server to {url}");
         }
     }
 
@@ -472,5 +527,39 @@ mod tests {
         // A state tag (not a label) or a blank label is not a folder.
         assert_eq!(cat("user/-/state/com.google/read", None).folder_name(), None);
         assert_eq!(cat("", Some("   ")).folder_name(), None);
+    }
+
+    #[test]
+    fn folder_name_skips_freshrss_uncategorized() {
+        // FreshRSS's built-in "Uncategorized" label is not a real folder, by
+        // either label or id, and regardless of case.
+        assert_eq!(
+            cat("user/-/label/Uncategorized", Some("Uncategorized")).folder_name(),
+            None
+        );
+        assert_eq!(cat("user/-/label/uncategorized", None).folder_name(), None);
+    }
+
+    #[test]
+    fn feeds_to_push_selects_only_local_only_feeds() {
+        let local = vec![
+            "https://a.example/feed".to_string(),
+            "https://b.example/feed".to_string(),
+            "https://c.example/feed".to_string(),
+        ];
+        let server: std::collections::HashSet<String> =
+            ["https://b.example/feed".to_string()].into_iter().collect();
+        assert_eq!(
+            feeds_to_push(&local, &server),
+            vec!["https://a.example/feed", "https://c.example/feed"]
+        );
+    }
+
+    #[test]
+    fn feeds_to_push_empty_when_server_has_everything() {
+        let local = vec!["https://a.example/feed".to_string()];
+        let server: std::collections::HashSet<String> =
+            ["https://a.example/feed".to_string()].into_iter().collect();
+        assert!(feeds_to_push(&local, &server).is_empty());
     }
 }
