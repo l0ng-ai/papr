@@ -6,6 +6,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import * as api from "./api";
 import { useUi, READER_FONTS } from "./store";
+import type { DarkShade } from "./store";
 import { useArticleActions } from "./hooks/articleActions";
 import { readCurrentItems } from "./lib/currentList";
 import { checkForUpdates } from "./lib/updater";
@@ -33,11 +34,20 @@ const ACCENTS: Record<
   ink: { accent: "oklch(0.30 0.02 50)", soft: "oklch(0.92 0.005 50)", ink: "oklch(0.20 0.01 50)", dAccent: "oklch(0.86 0.005 50)", dSoft: "oklch(0.30 0.005 50)", dInk: "oklch(0.92 0.005 50)" },
 };
 
+// Native window background per dark-shade. Must match each shade's `--paper`
+// in styles.css so a window resize never flashes a mismatched strip.
+const DARK_PAPER: Record<DarkShade, string> = {
+  default: "#16140F",
+  dimmer: "#0E0C08",
+  black: "#000000",
+};
+
 export default function App() {
   const { t } = useTranslation();
   const qc = useQueryClient();
 
   const theme = useUi((s) => s.theme);
+  const darkShade = useUi((s) => s.darkShade);
   const accent = useUi((s) => s.accent);
   const density = useUi((s) => s.density);
   const readerFont = useUi((s) => s.readerFont);
@@ -65,6 +75,7 @@ export default function App() {
   useEffect(() => {
     const root = document.documentElement;
     root.dataset.theme = theme;
+    root.dataset.darkShade = darkShade;
     root.dataset.density = density;
     const a = ACCENTS[accent] ?? ACCENTS.clay;
     const dark = theme === "dark";
@@ -73,11 +84,12 @@ export default function App() {
     root.style.setProperty("--accent-ink", dark ? a.dInk : a.ink);
     // Keep the native window/webview background on the themed paper colour, so
     // a live window resize never flashes a mismatched colour in the strip the
-    // webview has not repainted yet. Mirrors --paper in styles.css.
+    // webview has not repainted yet. Mirrors --paper in styles.css, including
+    // the dark-shade override.
     getCurrentWindow()
-      .setBackgroundColor(dark ? "#16140F" : "#F6F3EC")
+      .setBackgroundColor(dark ? DARK_PAPER[darkShade] : "#F6F3EC")
       .catch(() => {});
-  }, [theme, accent, density]);
+  }, [theme, darkShade, accent, density]);
 
   // ── dismiss the boot splash once the app shell has mounted ──
   useEffect(() => {

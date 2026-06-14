@@ -550,6 +550,8 @@ function AppearanceSection() {
   const { t, i18n } = useTranslation();
   const theme = useUi((s) => s.theme);
   const setTheme = useUi((s) => s.setTheme);
+  const darkShade = useUi((s) => s.darkShade);
+  const setDarkShade = useUi((s) => s.setDarkShade);
   const accent = useUi((s) => s.accent);
   const setAccent = useUi((s) => s.setAccent);
   const density = useUi((s) => s.density);
@@ -596,6 +598,22 @@ function AppearanceSection() {
             onChange={setTheme}
           />
         </Row>
+        {theme === "dark" && (
+          <Row
+            label={t("settings.appearance.darkShade")}
+            desc={t("settings.appearance.darkShadeDesc")}
+          >
+            <Segmented
+              value={darkShade}
+              options={[
+                { value: "default", label: t("settings.appearance.darkShadeDefault") },
+                { value: "dimmer", label: t("settings.appearance.darkShadeDimmer") },
+                { value: "black", label: t("settings.appearance.darkShadeBlack") },
+              ]}
+              onChange={setDarkShade}
+            />
+          </Row>
+        )}
         <Row
           label={t("settings.appearance.accent")}
           desc={t("settings.appearance.accentDesc")}

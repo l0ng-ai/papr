@@ -94,6 +94,22 @@
   --shadow-ring: 0 0 0 1px oklch(0 0 0 / 0.3);
 }
 
+/* Dark-shade overrides — only the surface colours change, keeping the warm
+   hue; ink, accents and borders stay as the base dark theme defines them.
+   "default" needs no block (it uses the values above). */
+[data-theme="dark"][data-dark-shade="dimmer"] {
+  --paper: #0E0C08;
+  --panel: #131009;
+  --panel-2: #19150D;
+  --reader: #131009;
+}
+[data-theme="dark"][data-dark-shade="black"] {
+  --paper: #000000;
+  --panel: #0A0908;
+  --panel-2: #121009;
+  --reader: #0A0908;
+}
+
 [data-density="compact"] { --row-py: 10px; --list-px: 14px; }
 [data-density="cozy"]    { --row-py: 14px; --list-px: 18px; }
 [data-density="spacious"]{ --row-py: 20px; --list-px: 24px; }
