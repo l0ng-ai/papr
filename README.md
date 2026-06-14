@@ -29,8 +29,7 @@ A fast, native RSS reader for the desktop.
 Install with [Homebrew](https://brew.sh):
 
 ```sh
-brew tap l0ng-ai/papr
-brew install --cask papr
+brew install --cask l0ng-ai/papr/papr
 ```
 
 ### All platforms
