@@ -413,15 +413,18 @@ pub async fn extract_fulltext(state: State<'_, AppState>, article_id: i64) -> Ap
     // Decode in the page's declared charset — a non-UTF-8 page (Shift-JIS,
     // GBK, ISO-8859-1, …) would otherwise become mojibake before Readability.
     let html = fetch::decode_html(&bytes, ct.as_deref());
+    let lead_image = extraction::lead_image(&html, &final_url);
 
     // Readability is not Send — run it on the blocking pool.
+    let extraction_url = final_url.clone();
     let extracted =
-        tokio::task::spawn_blocking(move || extraction::extract_article(&html, &final_url))
+        tokio::task::spawn_blocking(move || extraction::extract_article(&html, &extraction_url))
             .await
             .map_err(|e| AppError::other(format!("extraction task: {e}")))??;
+    let image_url = sanitize::first_image(&extracted).or(lead_image);
 
     let conn = state.db.lock().await;
-    db::set_extracted_html(&conn, article_id, &extracted)?;
+    db::set_extracted_html(&conn, article_id, &extracted, image_url.as_deref())?;
     Ok(extracted)
 }
 
@@ -477,7 +480,7 @@ pub async fn fetch_image(
     state: State<'_, AppState>,
     url: String,
     page_url: Option<String>,
-) -> AppResult<tauri::ipc::Response> {
+) -> AppResult<Vec<u8>> {
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return Err(AppError::code("badImageUrl"));
     }
@@ -498,7 +501,7 @@ pub async fn fetch_image(
                 if bytes.len() as u64 > MAX_IMAGE_BYTES {
                     return Err(AppError::code("imageTooLarge"));
                 }
-                return Ok(tauri::ipc::Response::new(bytes.to_vec()));
+                return Ok(bytes.to_vec());
             }
         }
     }

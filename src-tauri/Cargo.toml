@@ -54,6 +54,9 @@ mail-parser = "0.11"
 # content
 ammonia = "4.1.2"
 dom_smoothie = "0.17"
+# Rewrite lazy-loaded <img> tags (real URL in data-src/srcset) before ammonia
+# strips those attributes — see sanitize::promote_lazy_images.
+lol_html = "2"
 
 # "Send to Kindle" delivers the article as an email attachment (feature F8).
 # `rustls-tls` keeps the build self-contained (no system OpenSSL), matching the

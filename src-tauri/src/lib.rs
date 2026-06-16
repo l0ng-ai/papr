@@ -170,7 +170,7 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 let updates = tauri::async_runtime::spawn_blocking(move || {
                     let conn = db::open_reader(&bf_db_path).ok()?;
-                    if db::get_setting(&conn, "card_image_backfill")
+                    if db::get_setting(&conn, "card_image_backfill_v2")
                         .ok()
                         .flatten()
                         .is_some()
@@ -186,7 +186,7 @@ pub fn run() {
                 let state = bf_handle.state::<AppState>();
                 let conn = state.db.lock().await;
                 let _ = db::apply_card_images(&conn, &updates);
-                let _ = db::set_setting(&conn, "card_image_backfill", "1");
+                let _ = db::set_setting(&conn, "card_image_backfill_v2", "1");
             });
             Ok(())
         })

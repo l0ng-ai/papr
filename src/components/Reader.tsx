@@ -30,6 +30,31 @@ function youtubeId(url: string | null): string | null {
   return m ? m[1] : null;
 }
 
+function needsImageProxy(src: string): boolean {
+  try {
+    const host = new URL(src).hostname.toLowerCase();
+    return host === "cdnfile.sspai.com" || host === "rssfile.sspai.com";
+  } catch {
+    return false;
+  }
+}
+
+function imageBlob(src: string, bytes: Uint8Array): Blob {
+  const path = src.split(/[?#]/, 1)[0]?.toLowerCase() ?? "";
+  const type = path.endsWith(".png")
+    ? "image/png"
+    : path.endsWith(".webp")
+      ? "image/webp"
+      : path.endsWith(".gif")
+        ? "image/gif"
+        : path.endsWith(".svg")
+          ? "image/svg+xml"
+          : path.endsWith(".jpg") || path.endsWith(".jpeg")
+            ? "image/jpeg"
+            : "";
+  return new Blob([bytes], type ? { type } : undefined);
+}
+
 /** Plain, entity-decoded text of an HTML body — for the reading-time estimate.
  *  A bare `replace(/<[^>]+>/g, " ")` tag-strip leaves HTML entities intact, so
  *  `Tom &amp; Jerry &mdash; done` would be counted as 5 words / 28 chars when
@@ -170,6 +195,10 @@ export default function Reader({ onToast }: Props) {
   // blob: URL of a hero image recovered through the backend after the webview
   // failed to load it directly (see the body-image retry effect below).
   const [heroBlob, setHeroBlob] = useState<string | null>(null);
+  const [proxiedBody, setProxiedBody] = useState<{
+    source: string;
+    html: string;
+  } | null>(null);
   // Release the previous hero blob whenever it's replaced or cleared, and on
   // unmount — object URLs otherwise live until the page does.
   useEffect(() => {
@@ -227,6 +256,7 @@ export default function Reader({ onToast }: Props) {
     if (!el) return;
     const pageUrl = a?.url;
     const blobs: string[] = [];
+    const timers: number[] = [];
     let alive = true;
     const recover = async (img: HTMLImageElement) => {
       const src = img.getAttribute("src") || "";
@@ -238,7 +268,7 @@ export default function Reader({ onToast }: Props) {
       try {
         const buf = await api.fetchImage(src, pageUrl);
         if (!alive) return;
-        const blob = URL.createObjectURL(new Blob([buf]));
+        const blob = URL.createObjectURL(imageBlob(src, buf));
         blobs.push(blob);
         img.dataset.paprSrc = src;
         img.src = blob;
@@ -246,20 +276,60 @@ export default function Reader({ onToast }: Props) {
         img.style.display = "none";
       }
     };
+    const recoverIfBroken = (img: HTMLImageElement) => {
+      if (img.dataset.paprRetried) return;
+      if (img.complete && img.naturalWidth === 0) void recover(img);
+    };
     const onError = (e: Event) => void recover(e.currentTarget as HTMLImageElement);
     const watched: HTMLImageElement[] = [];
     el.querySelectorAll("img").forEach((img) => {
       img.addEventListener("error", onError);
       watched.push(img);
-      // Already failed before this effect attached its listener.
-      if (img.complete && img.naturalWidth === 0) void recover(img);
+      // 少数派/CDN images reject the webview's bare no-referrer request. Proxy
+      // them immediately instead of waiting for WebKit to surface a load error.
+      if (needsImageProxy(img.getAttribute("src") || "")) {
+        void recover(img);
+      } else {
+        // Already failed before this effect attached its listener.
+        recoverIfBroken(img);
+      }
+    });
+    // WKWebView can finish a parser-inserted image before React's effect
+    // listener is attached, and in practice not every broken image reports
+    // that state synchronously. A few delayed sweeps make the fallback
+    // deterministic without retrying images that are still loading.
+    [250, 1000, 2500].forEach((delay) => {
+      timers.push(window.setTimeout(() => watched.forEach(recoverIfBroken), delay));
     });
     return () => {
       alive = false;
+      timers.forEach(window.clearTimeout);
       watched.forEach((img) => img.removeEventListener("error", onError));
       blobs.forEach((b) => URL.revokeObjectURL(b));
     };
   }, [a?.id, a?.url, showExtracted, a?.extractedHtml, showTranslation, a?.translatedHtml]);
+
+  // Same proactive proxy for the reader hero. These hosts need a Referer that
+  // only the Rust fetch path can provide; waiting for `onError` leaves a broken
+  // image visible in WKWebView on some builds.
+  useEffect(() => {
+    if (!a?.imageUrl || heroBlob || heroBroken || !needsImageProxy(a.imageUrl)) return;
+    let alive = true;
+    const articleId = a.id;
+    api
+      .fetchImage(a.imageUrl, a.url)
+      .then((buf) => {
+        if (!alive || useUi.getState().selectedArticleId !== articleId) return;
+        setHeroBlob(URL.createObjectURL(imageBlob(a.imageUrl!, buf)));
+      })
+      .catch(() => {
+        if (!alive || useUi.getState().selectedArticleId !== articleId) return;
+        setHeroBroken(true);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [a?.id, a?.imageUrl, a?.url, heroBlob, heroBroken]);
 
   // Mark as read once when an unread article is opened (if the user opted in).
   useEffect(() => {
@@ -299,6 +369,71 @@ export default function Reader({ onToast }: Props) {
   // articles can translate at once and switching away never interrupts one.
   const startTranslate = useTranslationJobs((s) => s.translate);
   const job = useTranslationJobs((s) => (id != null ? s.jobs[id] : undefined));
+
+  const hasExtracted = !!a?.extractedHtml;
+  const canTranslate = !!(a?.extractedHtml || a?.contentHtml);
+  const baseBody =
+    (showExtracted && a?.extractedHtml ? a.extractedHtml : a?.contentHtml) || "";
+  const jobForTarget = job && job.lang === targetLang ? job : undefined;
+  const translating = jobForTarget?.status === "translating";
+  const cachedValid = !!a?.translatedHtml && a.translatedLang === targetLang;
+  const translatedBody =
+    jobForTarget?.html || (cachedValid ? a?.translatedHtml ?? "" : "");
+  const hasTranslation = !!translatedBody;
+  const showToggle = hasTranslation || translating;
+  const body = showTranslation
+    ? translatedBody ||
+      (translating ? `<p><em>${t("reader.translating")}</em></p>` : baseBody)
+    : baseBody;
+  const displayBody = proxiedBody?.source === body ? proxiedBody.html : body;
+
+  // For hosts that require a Referer (notably 少数派's image CDN), proxy image
+  // URLs before injecting the HTML. This avoids relying on WKWebView's image
+  // error events for parser-inserted nodes, which are not reliable in release
+  // builds.
+  useEffect(() => {
+    if (!body) {
+      setProxiedBody(null);
+      return;
+    }
+    const doc = new DOMParser().parseFromString(body, "text/html");
+    const imgs = Array.from(doc.body.querySelectorAll("img")).filter((img) => {
+      const src = img.getAttribute("src") || "";
+      return /^https?:\/\//.test(src) && needsImageProxy(src);
+    });
+    if (imgs.length === 0) {
+      setProxiedBody(null);
+      return;
+    }
+
+    let alive = true;
+    const blobs: string[] = [];
+    Promise.all(
+      imgs.map(async (img) => {
+        const src = img.getAttribute("src") || "";
+        try {
+          const buf = await api.fetchImage(src, a?.url);
+          if (!alive) return;
+          const blob = URL.createObjectURL(imageBlob(src, buf));
+          blobs.push(blob);
+          img.dataset.paprSrc = src;
+          img.setAttribute("src", blob);
+          img.removeAttribute("srcset");
+          img.removeAttribute("referrerpolicy");
+        } catch {
+          if (!alive) return;
+          img.style.display = "none";
+        }
+      }),
+    ).then(() => {
+      if (alive) setProxiedBody({ source: body, html: doc.body.innerHTML });
+    });
+
+    return () => {
+      alive = false;
+      blobs.forEach((b) => URL.revokeObjectURL(b));
+    };
+  }, [body, a?.url]);
 
   // When a translation finishes, refetch the article so its persisted
   // `translatedHtml` lands in the cache — the toggle then keeps working after
@@ -477,33 +612,6 @@ export default function Reader({ onToast }: Props) {
     );
   }
 
-  const hasExtracted = !!a.extractedHtml;
-  const canTranslate = !!(a.extractedHtml || a.contentHtml);
-  const baseBody =
-    (showExtracted && a.extractedHtml ? a.extractedHtml : a.contentHtml) || "";
-
-  // A translation is "current" for this article only when it was produced for
-  // the active target language — a stale-language copy (cache or a job for a
-  // previously chosen language) is ignored so a re-translate kicks in instead.
-  const jobForTarget = job && job.lang === targetLang ? job : undefined;
-  const translating = jobForTarget?.status === "translating";
-  const cachedValid = !!a.translatedHtml && a.translatedLang === targetLang;
-  // Prefer the live job (grows per batch) so the translation streams in; fall
-  // back to the persisted copy when the article is reopened in a later session.
-  const translatedBody =
-    jobForTarget?.html || (cachedValid ? a.translatedHtml ?? "" : "");
-  const hasTranslation = !!translatedBody;
-  // The inline original/translation toggle appears once there is something to
-  // show or a translation is being produced.
-  const showToggle = hasTranslation || translating;
-  // In the translated view: show the translation when we have any, the
-  // "translating…" placeholder while a batch is still pending, and otherwise
-  // (e.g. the job errored) fall back to the original rather than a stuck spinner.
-  const body = showTranslation
-    ? translatedBody ||
-      (translating ? `<p><em>${t("reader.translating")}</em></p>` : baseBody)
-    : baseBody;
-
   const beginTranslate = () => {
     if (!canTranslate) return;
     if (!hasTranslation && !translating) startTranslate(a.id, targetLang);
@@ -581,7 +689,7 @@ export default function Reader({ onToast }: Props) {
           key={a.id}
           articleId={a.id}
           bodyRef={bodyRef}
-          bodyVersion={body}
+          bodyVersion={displayBody}
         />
         <div className="tb-btn spacer" />
         {a.url && (
@@ -780,7 +888,7 @@ export default function Reader({ onToast }: Props) {
             ref={bodyRef}
             onClick={makeLinkClickHandler(a.url)}
             dangerouslySetInnerHTML={{
-              __html: body || `<p><em>${t("reader.noContent")}</em></p>`,
+              __html: displayBody || `<p><em>${t("reader.noContent")}</em></p>`,
             }}
           />
         </article>

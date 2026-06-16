@@ -1065,23 +1065,36 @@ pub fn list_articles(
     Ok(rows)
 }
 
-/// Scan stored articles that have no thumbnail but whose body HTML embeds an
-/// image, returning the `(id, image_url)` pairs to adopt. Reads only — paired
-/// with `apply_card_images` so the caller can run this heavy parse on a reader
-/// connection and the quick writes under the writer lock. One-time: feeds
-/// ingested after the body-image fallback shipped already store this at parse.
+/// Scan stored articles that have no thumbnail but whose feed or extracted
+/// body HTML embeds an image, returning the `(id, image_url)` pairs to adopt.
+/// Reads only — paired with `apply_card_images` so the caller can run this
+/// heavy parse on a reader connection and the quick writes under the writer
+/// lock. One-time: feeds ingested after the body-image fallback shipped
+/// already store this at parse.
 pub fn card_image_backfill_scan(conn: &Connection) -> AppResult<Vec<(i64, String)>> {
     let mut stmt = conn.prepare(
-        "SELECT id, content_html FROM articles
-         WHERE image_url IS NULL AND content_html IS NOT NULL AND content_html <> ''",
+        "SELECT id, content_html, extracted_html FROM articles
+         WHERE image_url IS NULL
+           AND (
+                (content_html IS NOT NULL AND content_html <> '')
+                OR (extracted_html IS NOT NULL AND extracted_html <> '')
+           )",
     )?;
     let rows = stmt.query_map([], |r| {
-        Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, Option<String>>(1)?,
+            r.get::<_, Option<String>>(2)?,
+        ))
     })?;
     let mut out = Vec::new();
     for row in rows {
-        let (id, html) = row?;
-        if let Some(img) = crate::sanitize::first_image(&html) {
+        let (id, content_html, extracted_html) = row?;
+        let img = content_html
+            .as_deref()
+            .and_then(crate::sanitize::first_image)
+            .or_else(|| extracted_html.as_deref().and_then(crate::sanitize::first_image));
+        if let Some(img) = img {
             out.push((id, img));
         }
     }
@@ -1251,11 +1264,23 @@ pub fn set_read_later(conn: &Connection, id: i64, v: bool) -> AppResult<()> {
 /// Store the extracted full-text HTML and re-index the article's FTS body
 /// with it, so search covers the whole article rather than just the short
 /// summary the feed shipped.
-pub fn set_extracted_html(conn: &Connection, id: i64, html: &str) -> AppResult<()> {
+pub fn set_extracted_html(
+    conn: &Connection,
+    id: i64,
+    html: &str,
+    image_url: Option<&str>,
+) -> AppResult<()> {
     let tx = conn.unchecked_transaction()?;
     tx.execute(
-        "UPDATE articles SET extracted_html = ?2 WHERE id = ?1",
-        params![id, html],
+        "UPDATE articles
+            SET extracted_html = ?2,
+                image_url = CASE
+                    WHEN ?3 IS NOT NULL AND (image_url IS NULL OR trim(image_url) = '')
+                    THEN ?3
+                    ELSE image_url
+                END
+         WHERE id = ?1",
+        params![id, html, image_url],
     )?;
     tx.execute(
         "UPDATE articles_fts SET body = ?2 WHERE rowid = ?1",
@@ -2201,6 +2226,48 @@ mod tests {
         let after = get_article(&conn, id).unwrap();
         assert_eq!(after.translated_html.as_deref(), Some("<p>translation</p>"));
         assert_eq!(after.translated_lang.as_deref(), Some("en"));
+    }
+
+    #[test]
+    fn set_extracted_html_backfills_missing_image_url() {
+        let (conn, id) = test_db();
+        set_extracted_html(&conn, id, "<p>full text</p>", Some("https://ex.com/lead.jpg"))
+            .unwrap();
+
+        let after = get_article(&conn, id).unwrap();
+        assert_eq!(after.extracted_html.as_deref(), Some("<p>full text</p>"));
+        assert_eq!(after.image_url.as_deref(), Some("https://ex.com/lead.jpg"));
+    }
+
+    #[test]
+    fn set_extracted_html_keeps_existing_image_url() {
+        let (conn, id) = test_db();
+        conn.execute(
+            "UPDATE articles SET image_url = ?2 WHERE id = ?1",
+            params![id, "https://ex.com/feed.jpg"],
+        )
+        .unwrap();
+
+        set_extracted_html(&conn, id, "<p>full text</p>", Some("https://ex.com/lead.jpg"))
+            .unwrap();
+
+        let after = get_article(&conn, id).unwrap();
+        assert_eq!(after.image_url.as_deref(), Some("https://ex.com/feed.jpg"));
+    }
+
+    #[test]
+    fn card_image_backfill_scan_reads_extracted_html() {
+        let (conn, id) = test_db();
+        set_extracted_html(
+            &conn,
+            id,
+            r#"<p>full text</p><img src="https://ex.com/from-extracted.jpg">"#,
+            None,
+        )
+        .unwrap();
+
+        let updates = card_image_backfill_scan(&conn).unwrap();
+        assert_eq!(updates, vec![(id, "https://ex.com/from-extracted.jpg".into())]);
     }
 
     /// Compact `NewHighlight` builder for the highlight tests.

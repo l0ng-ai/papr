@@ -1,6 +1,7 @@
 // Thin typed wrappers over the Tauri command surface (src-tauri/src/commands.rs).
 
 import { invoke, Channel } from "@tauri-apps/api/core";
+import { imageBytes, type ImageBytesResponse } from "./lib/imageBytes";
 import type {
   AiEvent,
   ArticleDetail,
@@ -38,7 +39,9 @@ export const deleteFolder = (id: number) =>
  *  reader's "Save image" action and to retry images the webview itself failed
  *  to load. `pageUrl` is the embedding article's link. */
 export const fetchImage = (url: string, pageUrl?: string | null) =>
-  invoke<ArrayBuffer>("fetch_image", { url, pageUrl: pageUrl ?? null });
+  invoke<ImageBytesResponse>("fetch_image", { url, pageUrl: pageUrl ?? null }).then(
+    imageBytes,
+  );
 
 // ── feeds ──
 export const listFeeds = () => invoke<Feed[]>("list_feeds");
