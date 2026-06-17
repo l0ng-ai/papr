@@ -10,6 +10,7 @@ import { useTranslationJobs } from "../translation";
 import { useArticleActions } from "../hooks/articleActions";
 import { renderMarkdown } from "../lib/markdown";
 import { downloadBlob, imageFilename } from "../lib/download";
+import { imageDataUrl } from "../lib/imageBytes";
 import { fullDate } from "../lib/feedMeta";
 import { isMac } from "../lib/platform";
 import { reportError, toast } from "../toast";
@@ -38,22 +39,6 @@ function needsImageProxy(src: string): boolean {
   } catch {
     return false;
   }
-}
-
-function imageBlob(src: string, bytes: Uint8Array): Blob {
-  const path = src.split(/[?#]/, 1)[0]?.toLowerCase() ?? "";
-  const type = path.endsWith(".png")
-    ? "image/png"
-    : path.endsWith(".webp")
-      ? "image/webp"
-      : path.endsWith(".gif")
-        ? "image/gif"
-        : path.endsWith(".svg")
-          ? "image/svg+xml"
-          : path.endsWith(".jpg") || path.endsWith(".jpeg")
-            ? "image/jpeg"
-            : "";
-  return new Blob([bytes], type ? { type } : undefined);
 }
 
 /** Plain, entity-decoded text of an HTML body — for the reading-time estimate.
@@ -193,20 +178,15 @@ export default function Reader({ onToast }: Props) {
     selection?: string;
   } | null>(null);
   const [heroBroken, setHeroBroken] = useState(false);
-  // blob: URL of a hero image recovered through the backend after the webview
-  // failed to load it directly (see the body-image retry effect below).
-  const [heroBlob, setHeroBlob] = useState<string | null>(null);
+  // data: URL of a hero image recovered through the backend after the webview
+  // failed to load it directly (see the body-image retry effect below). A data:
+  // URL (not blob:) so the bytes stay inline and survive the webview dropping
+  // blob backing data under memory pressure — the same fix as body images.
+  const [heroDataUrl, setHeroDataUrl] = useState<string | null>(null);
   const [proxiedBody, setProxiedBody] = useState<{
     source: string;
     html: string;
   } | null>(null);
-  // Release the previous hero blob whenever it's replaced or cleared, and on
-  // unmount — object URLs otherwise live until the page does.
-  useEffect(() => {
-    return () => {
-      if (heroBlob) URL.revokeObjectURL(heroBlob);
-    };
-  }, [heroBlob]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   // Article id we already auto-marked read via scroll, so a flurry of scroll
@@ -236,7 +216,7 @@ export default function Reader({ onToast }: Props) {
     setScrolled(false);
     setTagPick(null);
     setHeroBroken(false);
-    setHeroBlob(null);
+    setHeroDataUrl(null);
     scrollMarkedRef.current = null;
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
   }, [id]);
@@ -247,16 +227,18 @@ export default function Reader({ onToast }: Props) {
   // *require* one (cdnfile.sspai.com 403s a bare request), and the webview
   // can't vary the value per host. So a failed image gets one retry through
   // the backend, which walks Referer fallbacks (fetch_image) and returns the
-  // bytes; the <img> is swapped to a blob: URL, with the original kept in
-  // data-papr-src for the context-menu actions. Images the backend can't
-  // recover are hidden — a broken-image icon mid-article is just noise. Runs
-  // whenever the body changes (article switch, extract toggle, extraction
-  // finishing).
+  // bytes; the <img> is swapped to an inline data: URL, with the original kept
+  // in data-papr-src for the context-menu actions. A data: URL (not blob:) is
+  // deliberate — WKWebView/WebView2 silently drop a blob:'s backing data under
+  // memory pressure (e.g. layer recompositing while scrolling), so a recovered
+  // image carried by a blob: vanishes when the user scrolls away and back; the
+  // inline data: bytes always repaint. Images the backend can't recover are
+  // hidden — a broken-image icon mid-article is just noise. Runs whenever the
+  // body changes (article switch, extract toggle, extraction finishing).
   useEffect(() => {
     const el = bodyRef.current;
     if (!el) return;
     const pageUrl = a?.url;
-    const blobs: string[] = [];
     const timers: number[] = [];
     let alive = true;
     const recover = async (img: HTMLImageElement) => {
@@ -269,10 +251,8 @@ export default function Reader({ onToast }: Props) {
       try {
         const buf = await api.fetchImage(src, pageUrl);
         if (!alive) return;
-        const blob = URL.createObjectURL(imageBlob(src, buf));
-        blobs.push(blob);
         img.dataset.paprSrc = src;
-        img.src = blob;
+        img.src = imageDataUrl(src, buf);
       } catch {
         img.style.display = "none";
       }
@@ -287,7 +267,7 @@ export default function Reader({ onToast }: Props) {
       img.addEventListener("error", onError);
       watched.push(img);
       // Proxy-eligible images (少数派/CDN hosts that reject a bare no-referrer
-      // request) are rewritten to blob: URLs up front by the `proxiedBody`
+      // request) are rewritten to data: URLs up front by the `proxiedBody`
       // effect, so don't fetch them again here — that duplicated the backend /
       // IPC / network work for every matched image. `onError` above stays as a
       // fallback; this only retries an image that had already failed before the
@@ -305,7 +285,6 @@ export default function Reader({ onToast }: Props) {
       alive = false;
       timers.forEach(window.clearTimeout);
       watched.forEach((img) => img.removeEventListener("error", onError));
-      blobs.forEach((b) => URL.revokeObjectURL(b));
     };
   }, [a?.id, a?.url, showExtracted, a?.extractedHtml, showTranslation, a?.translatedHtml]);
 
@@ -313,14 +292,14 @@ export default function Reader({ onToast }: Props) {
   // only the Rust fetch path can provide; waiting for `onError` leaves a broken
   // image visible in WKWebView on some builds.
   useEffect(() => {
-    if (!a?.imageUrl || heroBlob || heroBroken || !needsImageProxy(a.imageUrl)) return;
+    if (!a?.imageUrl || heroDataUrl || heroBroken || !needsImageProxy(a.imageUrl)) return;
     let alive = true;
     const articleId = a.id;
     api
       .fetchImage(a.imageUrl, a.url)
       .then((buf) => {
         if (!alive || useUi.getState().selectedArticleId !== articleId) return;
-        setHeroBlob(URL.createObjectURL(imageBlob(a.imageUrl!, buf)));
+        setHeroDataUrl(imageDataUrl(a.imageUrl!, buf));
       })
       .catch(() => {
         if (!alive || useUi.getState().selectedArticleId !== articleId) return;
@@ -329,7 +308,7 @@ export default function Reader({ onToast }: Props) {
     return () => {
       alive = false;
     };
-  }, [a?.id, a?.imageUrl, a?.url, heroBlob, heroBroken]);
+  }, [a?.id, a?.imageUrl, a?.url, heroDataUrl, heroBroken]);
 
   // Mark as read once when an unread article is opened (if the user opted in).
   useEffect(() => {
@@ -409,7 +388,8 @@ export default function Reader({ onToast }: Props) {
   // For hosts that require a Referer (notably 少数派's image CDN), proxy image
   // URLs before injecting the HTML. This avoids relying on WKWebView's image
   // error events for parser-inserted nodes, which are not reliable in release
-  // builds.
+  // builds. The fetched bytes are inlined as data: URLs (not blob:) so they
+  // survive the webview dropping blob backing data while scrolling.
   useEffect(() => {
     if (!body) {
       setProxiedBody(null);
@@ -426,17 +406,14 @@ export default function Reader({ onToast }: Props) {
     }
 
     let alive = true;
-    const blobs: string[] = [];
     Promise.all(
       imgs.map(async (img) => {
         const src = img.getAttribute("src") || "";
         try {
           const buf = await api.fetchImage(src, a?.url);
           if (!alive) return;
-          const blob = URL.createObjectURL(imageBlob(src, buf));
-          blobs.push(blob);
           img.dataset.paprSrc = src;
-          img.setAttribute("src", blob);
+          img.setAttribute("src", imageDataUrl(src, buf));
           img.removeAttribute("srcset");
           img.removeAttribute("referrerpolicy");
         } catch {
@@ -450,7 +427,6 @@ export default function Reader({ onToast }: Props) {
 
     return () => {
       alive = false;
-      blobs.forEach((b) => URL.revokeObjectURL(b));
     };
   }, [body, a?.url]);
 
@@ -761,7 +737,7 @@ export default function Reader({ onToast }: Props) {
             x: e.clientX,
             y: e.clientY,
             // data-papr-src holds the real address when the image was
-            // recovered through the backend and src is a blob: URL.
+            // recovered through the backend and src is an inline data: URL.
             imageUrl: img?.dataset.paprSrc || img?.currentSrc || img?.getAttribute("src") || undefined,
             selection: selection || undefined,
           });
@@ -826,11 +802,11 @@ export default function Reader({ onToast }: Props) {
             // feeds that repeat their lead image don't show it twice.
             !body.includes(a.imageUrl) && (
               <img
-                src={heroBlob ?? a.imageUrl}
+                src={heroDataUrl ?? a.imageUrl}
                 alt=""
-                // The original URL when src is a recovered blob:, so the
+                // The original URL when src is a recovered data: URL, so the
                 // context-menu copy/save actions see a real address.
-                data-papr-src={heroBlob ? a.imageUrl : undefined}
+                data-papr-src={heroDataUrl ? a.imageUrl : undefined}
                 // No Referer, for the same hotlink-protection reason feed-body
                 // images are sanitized this way (e.g. *.sinaimg.cn 403s a
                 // request carrying our origin). See `sanitize`.
@@ -839,9 +815,9 @@ export default function Reader({ onToast }: Props) {
                 // (cdnfile.sspai.com) 403 the direct load, so retry through
                 // the backend's Referer-fallback fetch before giving up.
                 onError={() => {
-                  // A failing blob: means the recovered bytes weren't a
+                  // A failing data: URL means the recovered bytes weren't a
                   // renderable image — don't loop, give up.
-                  if (heroBlob) {
+                  if (heroDataUrl) {
                     setHeroBroken(true);
                     return;
                   }
@@ -850,7 +826,7 @@ export default function Reader({ onToast }: Props) {
                     .fetchImage(a.imageUrl!, a.url)
                     .then((buf) => {
                       if (useUi.getState().selectedArticleId !== articleId) return;
-                      setHeroBlob(URL.createObjectURL(new Blob([buf])));
+                      setHeroDataUrl(imageDataUrl(a.imageUrl!, buf));
                     })
                     .catch(() => {
                       if (useUi.getState().selectedArticleId !== articleId) return;
