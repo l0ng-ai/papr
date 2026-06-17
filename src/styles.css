@@ -77,7 +77,11 @@
   --selected: rgba(255, 248, 230, 0.07);
 
   --accent: oklch(0.74 0.13 45);
-  --accent-soft: oklch(0.32 0.06 40);
+  /* Highlight wash for selected rows, ::selection and active sidebar items.
+     The old oklch(0.32 0.06 40) (#4C271A) sat low and warm enough to read as a
+     muddy dried-blood brown; lifting it brighter and slightly more golden keeps
+     the terracotta identity while looking clean against the dark surfaces. */
+  --accent-soft: oklch(0.42 0.06 48);
   --accent-ink: oklch(0.80 0.10 45);
 
   --danger: oklch(0.68 0.16 28);
