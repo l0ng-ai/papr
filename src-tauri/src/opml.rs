@@ -124,6 +124,12 @@ fn collect(outline: &Outline, folder: Option<&str>, out: &mut Vec<ImportedFeed>)
 }
 
 /// Build an OPML document from `(title, feed_url, folder)` tuples.
+///
+/// Empty `feed_url` entries are skipped (a feed with no URL has no meaning in
+/// OPML and would not round-trip through `parse`). `folder` is treated as
+/// ungrouped if it is `None`, the empty string, or whitespace-only — this
+/// matches the `parse` side, where blank folder outlines are mapped to
+/// ungrouped feeds.
 pub fn build(feeds: &[(String, String, Option<String>)]) -> AppResult<String> {
     let mut doc = OPML {
         head: Some(Head {
@@ -135,13 +141,30 @@ pub fn build(feeds: &[(String, String, Option<String>)]) -> AppResult<String> {
 
     let mut by_folder: BTreeMap<Option<String>, Vec<Outline>> = BTreeMap::new();
     for (title, url, folder) in feeds {
+        let trimmed_url = url.trim();
+        if trimmed_url.is_empty() {
+            // Skip entries with no feed URL: they would not round-trip through
+            // parse() anyway (xml_url is required for a feed outline).
+            continue;
+        }
+        // Normalise folder name so that empty/whitespace-only values land in
+        // the same ungrouped bucket as `None`. This keeps `build` symmetric
+        // with `parse`, where blank folder labels are mapped to ungrouped.
+        let normalised_folder = folder
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
         let outline = Outline {
             text: title.clone(),
-            xml_url: Some(url.clone()),
+            xml_url: Some(trimmed_url.to_string()),
             r#type: Some("rss".to_string()),
             ..Outline::default()
         };
-        by_folder.entry(folder.clone()).or_default().push(outline);
+        by_folder
+            .entry(normalised_folder)
+            .or_default()
+            .push(outline);
     }
 
     for (folder, outlines) in by_folder {
