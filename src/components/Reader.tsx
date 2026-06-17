@@ -286,14 +286,13 @@ export default function Reader({ onToast }: Props) {
     el.querySelectorAll("img").forEach((img) => {
       img.addEventListener("error", onError);
       watched.push(img);
-      // 少数派/CDN images reject the webview's bare no-referrer request. Proxy
-      // them immediately instead of waiting for WebKit to surface a load error.
-      if (needsImageProxy(img.getAttribute("src") || "")) {
-        void recover(img);
-      } else {
-        // Already failed before this effect attached its listener.
-        recoverIfBroken(img);
-      }
+      // Proxy-eligible images (少数派/CDN hosts that reject a bare no-referrer
+      // request) are rewritten to blob: URLs up front by the `proxiedBody`
+      // effect, so don't fetch them again here — that duplicated the backend /
+      // IPC / network work for every matched image. `onError` above stays as a
+      // fallback; this only retries an image that had already failed before the
+      // listener attached.
+      recoverIfBroken(img);
     });
     // WKWebView can finish a parser-inserted image before React's effect
     // listener is attached, and in practice not every broken image reports

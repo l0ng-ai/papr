@@ -1074,7 +1074,7 @@ pub fn list_articles(
 pub fn card_image_backfill_scan(conn: &Connection) -> AppResult<Vec<(i64, String)>> {
     let mut stmt = conn.prepare(
         "SELECT id, content_html, extracted_html FROM articles
-         WHERE image_url IS NULL
+         WHERE (image_url IS NULL OR trim(image_url) = '')
            AND (
                 (content_html IS NOT NULL AND content_html <> '')
                 OR (extracted_html IS NOT NULL AND extracted_html <> '')
@@ -2268,6 +2268,26 @@ mod tests {
 
         let updates = card_image_backfill_scan(&conn).unwrap();
         assert_eq!(updates, vec![(id, "https://ex.com/from-extracted.jpg".into())]);
+    }
+
+    #[test]
+    fn card_image_backfill_scan_includes_blank_image_url() {
+        // A row whose `image_url` is blank (`''`, not NULL) must still be
+        // scanned: `set_extracted_html`/`apply_card_images` treat NULL *or*
+        // blank as missing, so a scan that only matched NULL would leave blank
+        // rows permanently un-backfilled.
+        let (conn, id) = test_db();
+        conn.execute(
+            "UPDATE articles
+                SET image_url = '',
+                    content_html = '<p>x</p><img src=\"https://ex.com/blank.jpg\">'
+              WHERE id = ?1",
+            [id],
+        )
+        .unwrap();
+
+        let updates = card_image_backfill_scan(&conn).unwrap();
+        assert_eq!(updates, vec![(id, "https://ex.com/blank.jpg".into())]);
     }
 
     /// Compact `NewHighlight` builder for the highlight tests.
