@@ -127,6 +127,36 @@ pub fn run() {
                 }
             }
 
+            // ── Kill the WKWebview's opaque white backing (macOS) ─────
+            // On macOS wry creates the WKWebview isOpaque=true / drawsBackground
+            // =true (a solid WHITE backing) and only turns that off under its
+            // `transparent` cargo feature — which we don't enable. So during a
+            // live window resize the webview's renderer lags the new size and
+            // the freshly-exposed strip shows that white backing. No CSS, html
+            // background, or NSWindow colour can cover it: the opaque webview
+            // layer composites ON TOP of the page. The only fix is to make the
+            // webview non-opaque so the (themed) NSWindow background shows
+            // through that strip instead. See tauri-apps/tauri#14288.
+            #[cfg(target_os = "macos")]
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.with_webview(|webview| {
+                    use objc2::msg_send;
+                    use objc2::runtime::AnyObject;
+                    use objc2_foundation::{NSNumber, NSString};
+                    let wk = webview.inner() as *mut AnyObject;
+                    if !wk.is_null() {
+                        unsafe {
+                            let _: () = msg_send![wk, setOpaque: false];
+                            // `drawsBackground` is a private KVC key on WKWebView
+                            // — the same one wry toggles for transparent windows.
+                            let no = NSNumber::numberWithBool(false);
+                            let key = NSString::from_str("drawsBackground");
+                            let _: () = msg_send![wk, setValue: &*no, forKey: &*key];
+                        }
+                    }
+                });
+            }
+
             // ── Themed launch background ──────────────────────────────
             // `tauri.conf.json` hardcodes a light window background, so a
             // dark-theme user would see a brief light flash in the gap
@@ -136,11 +166,13 @@ pub fn run() {
             // (The frontend re-asserts this on every theme change.)
             if theme.as_deref() == Some("dark") {
                 if let Some(win) = app.get_webview_window("main") {
-                    // Match the dark-shade's `--paper` in styles.css / DARK_PAPER.
+                    // Match the dark-shade's `--reader` in styles.css / DARK_BACKING
+                    // — the webview is non-opaque, so a resize exposes this colour
+                    // and it must blend with the reader pane, not the darker floor.
                     let (r, g, b) = match dark_shade.as_deref() {
-                        Some("dimmer") => (0x06, 0x05, 0x04),
-                        Some("black") => (0x00, 0x00, 0x00),
-                        _ => (0x0E, 0x0C, 0x0B),
+                        Some("dimmer") => (0x1C, 0x17, 0x15),
+                        Some("black") => (0x15, 0x10, 0x0F),
+                        _ => (0x25, 0x20, 0x1F),
                     };
                     let _ = win
                         .set_background_color(Some(tauri::window::Color(r, g, b, 0xFF)));

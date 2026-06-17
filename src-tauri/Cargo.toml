@@ -70,6 +70,14 @@ anyhow = "1"
 thiserror = "2"
 log = "0.4"
 
+# macOS-only: used in setup() to turn off the WKWebview's opaque white backing
+# (wry only does this under its `transparent` feature, which we don't enable),
+# so a live window resize stops flashing white. Versions track what tauri/wry
+# already pull in, keeping a single objc2 in the tree.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+
 [profile.release]
 codegen-units = 1
 lto = true

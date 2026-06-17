@@ -3335,6 +3335,8 @@ dependencies = [
  "log",
  "lol_html",
  "mail-parser",
+ "objc2",
+ "objc2-foundation",
  "opml",
  "reqwest 0.12.28",
  "rusqlite",

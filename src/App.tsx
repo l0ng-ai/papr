@@ -35,12 +35,17 @@ const ACCENTS: Record<
   ink: { accent: "oklch(0.30 0.02 50)", soft: "oklch(0.92 0.005 50)", ink: "oklch(0.20 0.01 50)", dAccent: "oklch(0.86 0.005 50)", dSoft: "oklch(0.30 0.005 50)", dInk: "oklch(0.92 0.005 50)" },
 };
 
-// Native window background per dark-shade. Must match each shade's `--paper`
-// in styles.css so a window resize never flashes a mismatched strip.
-const DARK_PAPER: Record<DarkShade, string> = {
-  default: "#0E0C0B",
-  dimmer: "#060504",
-  black: "#000000",
+// Native window backing per dark-shade. The webview is made non-opaque in
+// lib.rs (to kill the white resize flash), so a resize exposes THIS colour in
+// the strip the webview hasn't repainted yet. Use each shade's `--reader`
+// (the widest pane, 1fr, and the right/bottom edge a resize is dragged from)
+// rather than the darker `--paper` floor — otherwise the exposed strip flashes
+// a shade darker than the reader content it sits next to. Mirrors `--reader`
+// in styles.css.
+const DARK_BACKING: Record<DarkShade, string> = {
+  default: "#25201F",
+  dimmer: "#1C1715",
+  black: "#15100F",
 };
 
 export default function App() {
@@ -83,19 +88,15 @@ export default function App() {
     root.style.setProperty("--accent", dark ? a.dAccent : a.accent);
     root.style.setProperty("--accent-soft", dark ? a.dSoft : a.soft);
     root.style.setProperty("--accent-ink", dark ? a.dInk : a.ink);
-    // Keep BOTH native layers on the themed paper colour. On macOS the WKWebview
-    // is opaque and covers the whole content view, so a live resize exposes the
-    // *webview's own backing* (not the NSWindow's) in the strip it hasn't
-    // repainted yet. `getCurrentWindow().setBackgroundColor` only touches the
-    // NSWindow (plugin:window|set_background_color) — which the webview hides —
-    // so on its own it can't stop the resize flash; the webview backing has to
-    // be set too (plugin:webview|set_webview_background_color). The Rust launch
-    // path uses `WebviewWindow::set_background_color`, which already sets both;
-    // this is its runtime counterpart, run on every live theme/shade switch.
-    // Mirrors --paper in styles.css.
-    const paper = dark ? DARK_PAPER[darkShade] : "#F6F3EC";
-    getCurrentWindow().setBackgroundColor(paper).catch(() => {});
-    getCurrentWebview().setBackgroundColor(paper).catch(() => {});
+    // Keep the native window backing on the themed reader colour. The webview is
+    // non-opaque on macOS (see lib.rs), so a live resize exposes the NSWindow
+    // background in the strip the webview hasn't repainted yet — use --reader so
+    // that strip blends with the reader pane it sits next to. (On Win/Linux the
+    // webview is opaque, so setBackgroundColor here mainly covers their own
+    // resize/overscroll; harmless on macOS where it's the NSWindow colour.)
+    const backing = dark ? DARK_BACKING[darkShade] : "#FBF9F3";
+    getCurrentWindow().setBackgroundColor(backing).catch(() => {});
+    getCurrentWebview().setBackgroundColor(backing).catch(() => {});
   }, [theme, darkShade, accent, density]);
 
   // ── dismiss the boot splash once the app shell has mounted ──
