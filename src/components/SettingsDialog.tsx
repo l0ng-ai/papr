@@ -1626,7 +1626,13 @@ function DangerZone({ onToast }: { onToast: (m: string) => void }) {
   );
 }
 
-/** Real AI provider configuration — backing the AI summary feature. */
+/** The default article-translation engine. "llm" reuses the AI provider
+ *  configured for summaries; the rest are standalone machine-translation
+ *  services. The reader can override this per translation, but only temporarily. */
+type TranslateEngine = "llm" | "google" | "deepl" | "bing";
+
+/** Real AI provider configuration — backing the AI summary feature, plus the
+ *  default translation engine + language and the engines' credentials. */
 function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
   const { t, i18n } = useTranslation();
   const qc = useQueryClient();
@@ -1634,7 +1640,9 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
-  // Empty = not yet set; the Select then falls back to the UI language.
+  // Default engine + target language for translation. Empty lang = follow the UI
+  // language until the user picks one.
+  const [engine, setEngine] = useState<TranslateEngine>("llm");
   const [translateLang, setTranslateLang] = useState("");
   const savedKey = useRef("");
   const savedModel = useRef("");
@@ -1646,9 +1654,10 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
       api.getSetting("ai_api_key"),
       api.getSetting("ai_model"),
       api.getSetting("ai_base_url"),
+      api.getSetting("translate_engine"),
       api.getSetting("translate_target_lang"),
     ])
-      .then(([p, k, m, b, tl]) => {
+      .then(([p, k, m, b, eng, tl]) => {
         if (p === "openai" || p === "anthropic") setProvider(p);
         if (k) {
           setApiKey(k);
@@ -1662,6 +1671,8 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
           setBaseUrl(b);
           savedBaseUrl.current = b;
         }
+        if (eng === "google" || eng === "deepl" || eng === "bing" || eng === "llm")
+          setEngine(eng);
         if (tl) setTranslateLang(tl);
       })
       .catch(() => {});
@@ -1787,18 +1798,40 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
         />
       </Row>
       <Row
+        label={t("settings.advanced.translateEngine")}
+        desc={t("settings.advanced.translateEngineDesc")}
+      >
+        <Select
+          value={engine}
+          options={[
+            { value: "llm", label: t("settings.advanced.translateEngineLlm") },
+            { value: "google", label: "Google" },
+            { value: "deepl", label: "DeepL" },
+            { value: "bing", label: "Bing" },
+          ]}
+          aria-label={t("settings.advanced.translateEngine")}
+          onChange={(v) => {
+            setEngine(v);
+            save("translate_engine", v, t("settings.advanced.translateEngineLabel"));
+            // The reader reads this default when starting a translation —
+            // refresh it so the change takes effect on the next translate.
+            qc.invalidateQueries({ queryKey: ["setting", "translate_engine"] });
+          }}
+        />
+      </Row>
+      <Row
         label={t("settings.advanced.translateLang")}
         desc={t("settings.advanced.translateLangDesc")}
       >
         <Select
           value={translateLang || i18n.language}
           options={LANGUAGES.map((l) => ({ value: l.code, label: l.label }))}
+          aria-label={t("settings.advanced.translateLang")}
           onChange={(v) => {
             setTranslateLang(v);
             save("translate_target_lang", v, t("settings.advanced.translateLangLabel"));
-            // The reader caches this setting to decide whether a stored
-            // translation is still current — refresh it so a language change
-            // takes effect immediately.
+            // The reader caches this default to decide whether a stored
+            // translation is still current — refresh it so a change applies now.
             qc.invalidateQueries({ queryKey: ["setting", "translate_target_lang"] });
           }}
         />

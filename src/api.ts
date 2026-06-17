@@ -134,16 +134,19 @@ export function aiDigest(onToken: (e: AiEvent) => void): Promise<void> {
   return invoke<void>("ai_digest", { onToken: channel });
 }
 
-/** Translate the article body into the configured target language. Progress is
- *  reported per batch over `onEvent` (start → batch* → done); the full result is
- *  also persisted and returned via the final `done` event. */
+/** Translate the article body into `lang` using `engine` (`llm` / `google` /
+ *  `deepl` / `bing`). Progress is reported per batch over `onEvent` (start →
+ *  batch* → done); the full result is also persisted and returned via the final
+ *  `done` event. */
 export function aiTranslate(
   articleId: number,
+  lang: string,
+  engine: string,
   onEvent: (e: TranslateEvent) => void,
 ): Promise<void> {
   const channel = new Channel<TranslateEvent>();
   channel.onmessage = onEvent;
-  return invoke<void>("ai_translate", { articleId, onEvent: channel });
+  return invoke<void>("ai_translate", { articleId, lang, engine, onEvent: channel });
 }
 
 // ── settings ──

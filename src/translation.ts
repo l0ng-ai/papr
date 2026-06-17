@@ -20,14 +20,17 @@ export interface TranslationJob {
   html: string;
   /** The target language code this job was started for. */
   lang: string;
+  /** The engine this job was started with (`llm` / `google` / `deepl` / `bing`). */
+  engine: string;
 }
 
 interface TranslationState {
   jobs: Record<number, TranslationJob>;
-  /** Start a background translation for an article into `lang`. A no-op if one
-   *  is already running; a finished/errored job is replaced (e.g. to retry or
-   *  translate into a newly chosen language). */
-  translate: (articleId: number, lang: string) => void;
+  /** Start a background translation for an article into `lang` with `engine`. A
+   *  no-op if an identical job (same language and engine) is already running; any
+   *  other in-flight or finished job is replaced (e.g. to retry, switch language,
+   *  or switch engine). */
+  translate: (articleId: number, lang: string, engine: string) => void;
   /** Drop a job (e.g. after its cached result has been read back from the DB). */
   clear: (articleId: number) => void;
 }
@@ -43,17 +46,26 @@ export const useTranslationJobs = create<TranslationState>((set, get) => {
   return {
     jobs: {},
 
-    translate: (articleId, lang) => {
-      if (get().jobs[articleId]?.status === "translating") return;
+    translate: (articleId, lang, engine) => {
+      const cur = get().jobs[articleId];
+      // An identical job already streaming — leave it alone. A job for a
+      // different language/engine (or a finished one) is replaced below so the
+      // new choice takes effect.
+      if (
+        cur?.status === "translating" &&
+        cur.lang === lang &&
+        cur.engine === engine
+      )
+        return;
       set((s) => ({
         jobs: {
           ...s.jobs,
-          [articleId]: { status: "translating", done: 0, total: 0, html: "", lang },
+          [articleId]: { status: "translating", done: 0, total: 0, html: "", lang, engine },
         },
       }));
 
       api
-        .aiTranslate(articleId, (e) => {
+        .aiTranslate(articleId, lang, engine, (e) => {
           if (e.type === "start") {
             patch(articleId, (j) => ({ ...j, total: e.data.total }));
           } else if (e.type === "batch") {

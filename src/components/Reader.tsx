@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import * as api from "../api";
+import { LANGUAGES } from "../i18n";
 import { useUi } from "../store";
 import { usePlayer } from "../player";
 import { useTranslationJobs } from "../translation";
@@ -286,14 +287,33 @@ export default function Reader({ onToast }: Props) {
     onError: (e) => reportError(e),
   });
 
-  // The configured translation target, falling back to the UI language. The
-  // article's cached `translatedLang` (and any running job's `lang`) is compared
-  // against this to decide whether a translation is current for it.
+  // The default translation target + engine, switched inline from the toolbar
+  // The default target language + engine come from Settings. The toolbar can
+  // override them per translation, but only temporarily: the override is not
+  // written back and resets to the default when switching articles. The article's
+  // cached `translatedLang` (and any running job's `lang`) is compared against the
+  // effective `targetLang` to decide whether a translation is current for it.
   const translateSetting = useQuery({
     queryKey: ["setting", "translate_target_lang"],
     queryFn: () => api.getSetting("translate_target_lang"),
   });
-  const targetLang = translateSetting.data || i18n.language;
+  const defaultLang = translateSetting.data || i18n.language;
+  const engineSetting = useQuery({
+    queryKey: ["setting", "translate_engine"],
+    queryFn: () => api.getSetting("translate_engine"),
+  });
+  const defaultEngine = engineSetting.data || "llm";
+  // `null` = follow the default; a string = a temporary per-article override.
+  const [tmpLang, setTmpLang] = useState<string | null>(null);
+  const [tmpEngine, setTmpEngine] = useState<string | null>(null);
+  const targetLang = tmpLang ?? defaultLang;
+  const engine = tmpEngine ?? defaultEngine;
+  // Drop the temporary overrides when the article changes so each article opens
+  // on the configured defaults.
+  useEffect(() => {
+    setTmpLang(null);
+    setTmpEngine(null);
+  }, [id]);
 
   // Background translation jobs run independently of this view, so several
   // articles can translate at once and switching away never interrupts one.
@@ -504,9 +524,12 @@ export default function Reader({ onToast }: Props) {
       (translating ? `<p><em>${t("reader.translating")}</em></p>` : baseBody)
     : baseBody;
 
-  const beginTranslate = () => {
+  // Translate into `lang` with `eng` and show the result. Defaults come from
+  // Settings; the toolbar passes temporary overrides here (not persisted). Always
+  // starts a fresh job (the store skips only a duplicate in-flight one).
+  const run = (lang: string, eng: string) => {
     if (!canTranslate) return;
-    if (!hasTranslation && !translating) startTranslate(a.id, targetLang);
+    startTranslate(a.id, lang, eng);
     setShowTranslation(true);
   };
 
@@ -574,6 +597,20 @@ export default function Reader({ onToast }: Props) {
           disabled={!a.url}
         >
           <Icon name="share" size={16} />
+        </button>
+        <button
+          className={`tb-btn ${showTranslation ? "on" : ""}`}
+          title={t("reader.tbTranslate")}
+          aria-label={t("reader.tbTranslate")}
+          aria-pressed={showTranslation}
+          disabled={!canTranslate}
+          onClick={() =>
+            // One click: translate with the default language + engine, or flip
+            // back to the original. Switch engine/language inline on the toggle.
+            showTranslation ? setShowTranslation(false) : run(targetLang, engine)
+          }
+        >
+          <Icon name="globe" size={16} />
         </button>
         <HighlightLayer
           // Keyed by article id so the export menu / popovers reset cleanly
@@ -765,6 +802,38 @@ export default function Reader({ onToast }: Props) {
               >
                 {t("reader.translation")}
               </button>
+              {/* Temporary per-article switchers — change engine or language for
+                  this translation only, without touching the configured defaults;
+                  switching re-translates with the new choice straight away. */}
+              <select
+                className="s-select tr-sel"
+                value={engine}
+                aria-label={t("reader.translateEngine")}
+                onChange={(e) => {
+                  setTmpEngine(e.target.value);
+                  run(targetLang, e.target.value);
+                }}
+              >
+                <option value="llm">{t("reader.translateEngineLlm")}</option>
+                <option value="google">Google</option>
+                <option value="deepl">DeepL</option>
+                <option value="bing">Bing</option>
+              </select>
+              <select
+                className="s-select tr-sel"
+                value={targetLang}
+                aria-label={t("reader.translateTitle")}
+                onChange={(e) => {
+                  setTmpLang(e.target.value);
+                  run(e.target.value, engine);
+                }}
+              >
+                {LANGUAGES.map((l) => (
+                  <option key={l.code} value={l.code}>
+                    {l.label}
+                  </option>
+                ))}
+              </select>
               {translating && (
                 <span className="tr-progress">
                   {t("reader.translating")}
@@ -851,7 +920,9 @@ export default function Reader({ onToast }: Props) {
                       ? t("reader.tbShowOriginal")
                       : t("reader.tbTranslate"),
                     onClick: () =>
-                      showTranslation ? setShowTranslation(false) : beginTranslate(),
+                      showTranslation
+                        ? setShowTranslation(false)
+                        : run(targetLang, engine),
                   },
                 ]
               : []),

@@ -589,6 +589,23 @@ fn load_ai_config(conn: &rusqlite::Connection) -> AppResult<AiConfig> {
     )
 }
 
+/// Resolve a translation engine chosen by the caller (the reader's translate
+/// switcher) into what it needs. `engine` is one of `google` / `bing` / `deepl`
+/// / `llm`; anything else falls back to the LLM. Google, DeepL and Bing are
+/// keyless free endpoints; only the LLM path needs credentials (the shared AI
+/// provider config). The engine is picked per translation.
+fn build_translate_selection(
+    conn: &rusqlite::Connection,
+    engine: &str,
+) -> AppResult<translate::Selection> {
+    Ok(match engine {
+        "google" => translate::Selection::Google,
+        "bing" => translate::Selection::Bing,
+        "deepl" => translate::Selection::Deepl,
+        _ => translate::Selection::Llm(load_ai_config(conn)?),
+    })
+}
+
 /// Truncate to at most `max` characters without splitting a UTF-8 boundary.
 fn truncate(s: &str, max: usize) -> String {
     s.chars().take(max).collect()
@@ -775,9 +792,11 @@ pub enum TranslateEvent {
 pub async fn ai_translate(
     state: State<'_, AppState>,
     article_id: i64,
+    lang: String,
+    engine: String,
     on_event: Channel<TranslateEvent>,
 ) -> AppResult<()> {
-    let (source_html, cfg, target) = {
+    let (source_html, sel, target) = {
         let conn = state.read().await;
         let detail = db::get_article(&conn, article_id)?;
         // Translate the richest body available: the extracted full text when the
@@ -787,26 +806,40 @@ pub async fn ai_translate(
             .filter(|s| !s.trim().is_empty())
             .or(detail.content_html)
             .unwrap_or_default();
-        (source, load_ai_config(&conn)?, translate_target_lang(&conn))
+        // The reader picks the target language and engine per translation; fall
+        // back to the stored default only if the caller sent none.
+        let target = if lang.trim().is_empty() {
+            translate_target_lang(&conn)
+        } else {
+            lang
+        };
+        (source, build_translate_selection(&conn, &engine)?, target)
     };
     if source_html.trim().is_empty() {
         return Err(AppError::code("noArticleBody"));
     }
 
-    let batches = translate::chunk_blocks(&source_html, ai::TRANSLATE_CHUNK_BUDGET);
+    let http = state.http();
+    // Resolve the chosen engine (fetching Bing's auth token, if selected) before
+    // the loop, so a credential or network failure surfaces before any progress
+    // is reported rather than mid-stream.
+    let backend = translate::ready(&http, sel).await?;
+
+    // Split by an engine-specific budget so a short article translates in one
+    // request and a long one is chunked to fit the engine's per-call limits.
+    let batches = translate::chunk_blocks(&source_html, translate::chunk_budget(&engine));
     let total = batches.len();
     let _ = on_event.send(TranslateEvent::Start { total });
 
     let system = translate::translate_system_prompt(translate::language_name(&target));
-    let http = state.http();
     let mut full = String::new();
     for (i, batch) in batches.iter().enumerate() {
-        let text = ai::complete_chat(&http, &cfg, &system, batch, ai::TRANSLATE_MAX_TOKENS).await?;
-        // The model output is untrusted, so each batch passes through the same
-        // sanitizer as feed HTML before it reaches the webview or the database.
-        // Source URLs are already absolute (sanitized at ingestion), so no base
-        // is needed.
-        let clean = sanitize::sanitize(translate::strip_code_fence(&text).trim(), None);
+        let raw = backend.translate_batch(&http, &system, batch, &target).await?;
+        // Engine output (LLM or machine translation) is untrusted, so each batch
+        // passes through the same sanitizer as feed HTML before it reaches the
+        // webview or the database. Source URLs are already absolute (sanitized at
+        // ingestion), so no base is needed.
+        let clean = sanitize::sanitize(raw.trim(), None);
         full.push_str(&clean);
         full.push('\n');
         let _ = on_event.send(TranslateEvent::Batch { html: clean, done: i + 1 });
