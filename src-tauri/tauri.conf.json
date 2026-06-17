@@ -21,7 +21,7 @@
         "backgroundColor": "#F6F3EC",
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
-        "trafficLightPosition": { "x": 13, "y": 16 }
+        "trafficLightPosition": { "x": 13, "y": 19 }
       }
     ],
     "security": {
