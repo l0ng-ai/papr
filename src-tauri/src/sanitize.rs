@@ -3,6 +3,7 @@
 
 use ammonia::{Builder, UrlRelative};
 use ego_tree::iter::Edge;
+use lol_html::{element, rewrite_str, RewriteStrSettings};
 use scraper::node::Node;
 use scraper::{Html, Selector};
 use std::sync::LazyLock;
@@ -11,6 +12,13 @@ use url::Url;
 /// Sanitize untrusted HTML for safe rendering inside the reader webview.
 /// Relative URLs are rewritten against `base` so feed images/links resolve.
 pub fn sanitize(html: &str, base: Option<&str>) -> String {
+    // Recover lazy-loaded image URLs before ammonia runs: feeds that lazy-load
+    // (少数派/sspai, WeChat, many CMSes) put the real URL in `data-src`/`srcset`
+    // and leave `src` empty or a placeholder, and ammonia's default whitelist
+    // drops those attributes — so without this the `<img>` reaches the reader
+    // with no usable `src` and silently shows nothing. See `promote_lazy_images`.
+    let html = promote_lazy_images(html);
+
     let mut builder = Builder::default();
     builder
         .link_rel(Some("noopener noreferrer nofollow"))
@@ -31,7 +39,61 @@ pub fn sanitize(html: &str, base: Option<&str>) -> String {
     if let Some(b) = parsed_base {
         builder.url_relative(UrlRelative::RewriteWithBase(b));
     }
-    builder.clean(html).to_string()
+    builder.clean(&html).to_string()
+}
+
+/// Promote a lazy-loaded image's real URL into `src` so it survives `sanitize`.
+/// Lazy-loading feeds ship `<img src="" data-src="https://…">` (or a tiny
+/// `data:` placeholder in `src`, or only a `srcset`); ammonia's default img
+/// whitelist keeps `src` but drops `data-*`/`srcset`, which would leave an
+/// `<img>` with nothing to load. Filling `src` here lets the recovered URL flow
+/// through the rest of the pipeline unchanged — relative-URL rewriting, the
+/// forced `no-referrer` policy, the webview load, and the `fetch_image` Referer
+/// fallback that handles hosts like `cdnfile.sspai.com`. Runs before `clean`,
+/// so ammonia still has the final say on safety; a rewrite failure falls back
+/// to the original HTML.
+fn promote_lazy_images(html: &str) -> String {
+    let handler = element!("img", |el| {
+        let has_real_src = el.get_attribute("src").is_some_and(|s| {
+            let s = s.trim();
+            !s.is_empty() && !s.starts_with("data:")
+        });
+        if !has_real_src {
+            let recovered = [
+                "data-src",
+                "data-original",
+                "data-actualsrc",
+                "data-lazy-src",
+            ]
+            .iter()
+            .find_map(|a| el.get_attribute(a))
+            .or_else(|| {
+                // `srcset` is "url1 1x, url2 2x" / "url1 480w, …" — take the
+                // first candidate's URL.
+                el.get_attribute("srcset").and_then(|ss| {
+                    ss.split(',')
+                        .next()
+                        .and_then(|c| c.split_whitespace().next())
+                        .map(str::to_string)
+                })
+            });
+            if let Some(url) = recovered {
+                let url = url.trim();
+                if !url.is_empty() {
+                    let _ = el.set_attribute("src", url);
+                }
+            }
+        }
+        Ok(())
+    });
+    rewrite_str(
+        html,
+        RewriteStrSettings {
+            element_content_handlers: vec![handler],
+            ..Default::default()
+        },
+    )
+    .unwrap_or_else(|_| html.to_string())
 }
 
 /// Tags whose text content is dropped wholesale (it isn't human-readable copy).
@@ -40,10 +102,39 @@ const SKIP_TAGS: &[&str] = &["script", "style", "template", "noscript"];
 /// Block-level tags: their edges are word boundaries, so text on either side
 /// must not be allowed to run together (`</h1><p>` → "TitleBody").
 const BLOCK_TAGS: &[&str] = &[
-    "address", "article", "aside", "blockquote", "br", "caption", "dd", "div",
-    "dl", "dt", "figcaption", "figure", "footer", "h1", "h2", "h3", "h4", "h5",
-    "h6", "header", "hr", "li", "main", "nav", "ol", "p", "pre", "section",
-    "table", "td", "th", "tr", "ul",
+    "address",
+    "article",
+    "aside",
+    "blockquote",
+    "br",
+    "caption",
+    "dd",
+    "div",
+    "dl",
+    "dt",
+    "figcaption",
+    "figure",
+    "footer",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "header",
+    "hr",
+    "li",
+    "main",
+    "nav",
+    "ol",
+    "p",
+    "pre",
+    "section",
+    "table",
+    "td",
+    "th",
+    "tr",
+    "ul",
 ];
 
 /// Strip all markup from HTML, yielding collapsed plain text. Used for the
@@ -134,10 +225,7 @@ mod tests {
     #[test]
     fn block_boundaries_keep_words_apart() {
         // `</h1><p>` must not collapse to "TitleBody".
-        assert_eq!(
-            html_to_text("<h1>Title</h1><p>Body</p>"),
-            "Title Body"
-        );
+        assert_eq!(html_to_text("<h1>Title</h1><p>Body</p>"), "Title Body");
     }
 
     #[test]
@@ -148,10 +236,7 @@ mod tests {
 
     #[test]
     fn html_entities_are_decoded() {
-        assert_eq!(
-            html_to_text("<p>Tom &amp; Jerry</p>"),
-            "Tom & Jerry"
-        );
+        assert_eq!(html_to_text("<p>Tom &amp; Jerry</p>"), "Tom & Jerry");
         assert_eq!(html_to_text("caf&#233;"), "café");
         assert_eq!(html_to_text("a &lt;tag&gt; b"), "a <tag> b");
     }
@@ -205,7 +290,8 @@ mod tests {
 
     #[test]
     fn first_image_returns_the_first_absolute_img() {
-        let html = r#"<p>intro</p><img src="https://ex.com/a.png"><img src="https://ex.com/b.png">"#;
+        let html =
+            r#"<p>intro</p><img src="https://ex.com/a.png"><img src="https://ex.com/b.png">"#;
         assert_eq!(first_image(html).as_deref(), Some("https://ex.com/a.png"));
     }
 
@@ -214,7 +300,10 @@ mod tests {
         // A leftover relative src can't resolve (sanitize would have made real
         // ones absolute); a data: blob is an inline pixel, not a thumbnail.
         assert_eq!(first_image(r#"<img src="/local.png">"#), None);
-        assert_eq!(first_image(r#"<img src="data:image/png;base64,AAAA">"#), None);
+        assert_eq!(
+            first_image(r#"<img src="data:image/png;base64,AAAA">"#),
+            None
+        );
         assert_eq!(first_image("<p>no images here</p>"), None);
         assert_eq!(first_image(""), None);
     }
@@ -222,7 +311,10 @@ mod tests {
     #[test]
     fn first_image_falls_through_relative_to_next_absolute() {
         let html = r#"<img src="/rel.png"><img src="https://ex.com/real.jpg">"#;
-        assert_eq!(first_image(html).as_deref(), Some("https://ex.com/real.jpg"));
+        assert_eq!(
+            first_image(html).as_deref(),
+            Some("https://ex.com/real.jpg")
+        );
     }
 
     #[test]
@@ -250,13 +342,74 @@ mod tests {
 
     #[test]
     fn sanitize_rewrites_relative_urls_against_base() {
-        let out = sanitize(
-            "<img src=\"/pic.png\">",
-            Some("https://example.com/post/"),
-        );
+        let out = sanitize("<img src=\"/pic.png\">", Some("https://example.com/post/"));
         assert!(
             out.contains("https://example.com/pic.png"),
             "relative URL not rewritten: {out}"
         );
+    }
+
+    // --- promote_lazy_images: recover lazy-loaded <img> URLs before sanitize. ---
+
+    #[test]
+    fn promotes_data_src_to_src() {
+        // sspai and many CMSes ship the real URL in data-src with src empty;
+        // ammonia would otherwise drop data-src, leaving an unloadable <img>.
+        let out = sanitize(
+            r#"<img src="" data-src="https://cdnfile.sspai.com/a.jpg">"#,
+            None,
+        );
+        assert!(
+            out.contains(r#"src="https://cdnfile.sspai.com/a.jpg""#),
+            "data-src not promoted: {out}"
+        );
+    }
+
+    #[test]
+    fn promotes_srcset_first_candidate_when_no_src() {
+        let out = sanitize(
+            r#"<img srcset="https://ex.com/a.jpg 1x, https://ex.com/b.jpg 2x">"#,
+            None,
+        );
+        assert!(
+            out.contains(r#"src="https://ex.com/a.jpg""#),
+            "srcset not promoted: {out}"
+        );
+    }
+
+    #[test]
+    fn promotes_over_data_placeholder_src() {
+        // A 1px data: placeholder in src must not block promotion.
+        let out = sanitize(
+            r#"<img src="data:image/gif;base64,AAAA" data-original="https://ex.com/real.jpg">"#,
+            None,
+        );
+        assert!(out.contains(r#"src="https://ex.com/real.jpg""#), "{out}");
+        assert!(
+            !out.contains("data:image/gif"),
+            "placeholder survived: {out}"
+        );
+    }
+
+    #[test]
+    fn real_src_is_not_overwritten_by_data_src() {
+        let out = sanitize(
+            r#"<img src="https://ex.com/real.jpg" data-src="https://ex.com/other.jpg">"#,
+            None,
+        );
+        assert!(out.contains(r#"src="https://ex.com/real.jpg""#), "{out}");
+        assert!(
+            !out.contains("other.jpg"),
+            "data-src wrongly overrode src: {out}"
+        );
+    }
+
+    #[test]
+    fn promoted_image_still_gets_no_referrer() {
+        // The recovered src must still flow through the no-referrer policy that
+        // hotlink-protected hosts depend on.
+        let out = sanitize(r#"<img data-src="https://cdnfile.sspai.com/a.jpg">"#, None);
+        assert!(out.contains(r#"referrerpolicy="no-referrer""#), "{out}");
+        assert!(out.contains("cdnfile.sspai.com/a.jpg"), "{out}");
     }
 }
