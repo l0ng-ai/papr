@@ -62,27 +62,40 @@
 
 [data-theme="dark"] {
   color-scheme: dark;
-  --paper: #16140F;
-  --panel: #1B1812;
-  --panel-2: #221E18;
-  --reader: #1B1812;
+  /* "Editorial Quiet", dark. The chrome (window, sidebar, list) stays cool and
+     near-neutral; warmth is reserved for the reading surface so the page reads
+     as a sheet of lamp-lit paper and the rest recedes. Crucially the surfaces
+     now STEP in lightness — sidebar darkest, list lighter, reader lightest —
+     instead of sitting at one flat tone, so the three panes read as depth, not
+     a single grey field. The reader also carries roughly double the chroma so
+     it alone feels like paper, not metal.
+     Hue note: every surface sits at oklch hue ~40-42 (red-leaning terracotta),
+     NOT 55-66. On a near-black field a warm hue past ~50 reads as dirty yellow/
+     khaki ("淡淡的黄") — keeping the tint red-leaning and very low-chroma gives
+     warmth without ever going yellow. Do not raise these hues back toward 60. */
+  --paper: oklch(0.155 0.004 40);   /* #0e0c0b — window floor, deepest */
+  --panel: oklch(0.190 0.005 40);   /* #161312 — sidebar, recedes */
+  --panel-2: oklch(0.230 0.005 40); /* #1f1c1b — list rows + floating menus */
+  --reader: oklch(0.250 0.008 42);  /* #25201f — reading surface, warm & lit */
 
-  --ink: #ECE7DC;
-  --ink-2: #C7C1B3;
-  --muted: #8B8479;
-  --muted-2: #5F594F;
-  --hair: rgba(255, 248, 230, 0.08);
-  --hair-strong: rgba(255, 248, 230, 0.14);
-  --hover: rgba(255, 248, 230, 0.05);
-  --selected: rgba(255, 248, 230, 0.07);
+  --ink: oklch(0.930 0.006 50);     /* #ebe7e4 — soft warm white, never #fff */
+  --ink-2: oklch(0.800 0.006 48);
+  --muted: oklch(0.605 0.006 45);
+  --muted-2: oklch(0.455 0.006 44);
+  /* Hairlines do real work here — they're what makes the stepped panes read as
+     crisp divisions rather than a soft blur, so they're a touch stronger. */
+  --hair: rgba(246, 240, 238, 0.09);
+  --hair-strong: rgba(246, 240, 238, 0.15);
+  --hover: rgba(246, 240, 238, 0.05);
+  --selected: rgba(246, 240, 238, 0.07);
 
-  --accent: oklch(0.74 0.13 45);
-  /* Highlight wash for selected rows, ::selection and active sidebar items.
-     The old oklch(0.32 0.06 40) (#4C271A) sat low and warm enough to read as a
-     muddy dried-blood brown; lifting it brighter and slightly more golden keeps
-     the terracotta identity while looking clean against the dark surfaces. */
-  --accent-soft: oklch(0.42 0.06 48);
-  --accent-ink: oklch(0.80 0.10 45);
+  /* One accent, used rarely. Terracotta clay, calm — it tints small marks (the
+     active dot, a link, a tag), never floods a whole surface. */
+  --accent: oklch(0.70 0.115 42);   /* #da8564 */
+  /* The selected/active wash: a restrained warm tone that lifts off the stepped
+     surfaces enough to register, without the loud orange block of before. */
+  --accent-soft: oklch(0.34 0.045 44); /* #4c3025 */
+  --accent-ink: oklch(0.78 0.10 44);
 
   --danger: oklch(0.68 0.16 28);
   --danger-soft: oklch(0.30 0.07 28);
@@ -92,9 +105,10 @@
   --warn: oklch(0.70 0.16 40);
   --toast-alert: oklch(0.50 0.17 28);
 
-  --shadow-raise: 0 1px 2px oklch(0 0 0 / 0.45);
-  --shadow-pop: 0 14px 38px oklch(0 0 0 / 0.55);
-  --shadow-modal: 0 26px 64px oklch(0 0 0 / 0.62);
+  /* Quiet, faintly warm elevation — depth without joining the colour story. */
+  --shadow-raise: 0 1px 2px oklch(0.06 0.006 40 / 0.5);
+  --shadow-pop: 0 14px 38px oklch(0.05 0.006 40 / 0.6);
+  --shadow-modal: 0 26px 64px oklch(0.04 0.005 40 / 0.68);
   --shadow-ring: 0 0 0 1px oklch(0 0 0 / 0.3);
 }
 
@@ -102,17 +116,43 @@
    hue; ink, accents and borders stay as the base dark theme defines them.
    "default" needs no block (it uses the values above). */
 [data-theme="dark"][data-dark-shade="dimmer"] {
-  --paper: #0E0C08;
-  --panel: #131009;
-  --panel-2: #19150D;
-  --reader: #131009;
+  --paper: oklch(0.115 0.004 40);   /* #060504 */
+  --panel: oklch(0.150 0.005 40);   /* #0d0a0a */
+  --panel-2: oklch(0.190 0.005 40); /* #161312 */
+  --reader: oklch(0.210 0.008 42);  /* #1c1715 — reader stays warm & lifted */
 }
 [data-theme="dark"][data-dark-shade="black"] {
+  /* True-black window for OLED — but the panes keep stepping up and the reader
+     stays a warm lit sheet, so it never collapses into flat grey-on-black. */
   --paper: #000000;
-  --panel: #0A0908;
-  --panel-2: #121009;
-  --reader: #0A0908;
+  --panel: oklch(0.105 0.004 40);   /* #050403 */
+  --panel-2: oklch(0.150 0.005 40); /* #0d0a0a */
+  --reader: oklch(0.180 0.008 42);  /* #15100f */
 }
+
+/* ── Dark theme: accent as a mark, not a fill ──────────────────────────────
+   Painting whole active rows in --accent-soft read as a muddy "rust" block at
+   these low lightnesses ("锈迹斑斑"). In dark, the active row instead gets a
+   neutral lift, the list item a thin terracotta bar, and per-row feed names go
+   quiet — so the warm accent only ever shows up as a small mark. Small uses of
+   --accent-soft (text selection, focus rings, tag hover) are left alone; at that
+   size they don't muddy. Light theme keeps its pale terracotta washes. */
+[data-theme="dark"] .sb-item.active {
+  background: rgba(246, 240, 238, 0.10);
+  color: var(--ink);
+}
+[data-theme="dark"] .sb-item.active .sb-count { color: var(--muted); }
+
+[data-theme="dark"] .art.active { background: rgba(246, 240, 238, 0.09); }
+[data-theme="dark"] .art.active::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: var(--accent);
+}
+
+[data-theme="dark"] .art-feed { color: var(--muted); }
 
 [data-density="compact"] { --row-py: 10px; --list-px: 14px; }
 [data-density="cozy"]    { --row-py: 14px; --list-px: 18px; }
