@@ -164,9 +164,12 @@
 
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
-/* The window is transparent, so a window resize briefly exposes the
-   document background before `.window` repaints. Keep it on the themed
-   paper colour — a hardcoded dark value flashed black in the light theme. */
+/* Keep the document background on the themed paper colour so any strip a
+   resize exposes before `.window` repaints matches. NOTE: this alone does NOT
+   fix the macOS resize flash — the WKWebview is opaque and hides this layer;
+   the real fix is setting the webview's native backing per theme (see the
+   setBackgroundColor calls in App.tsx). A hardcoded dark value here flashed
+   black in the light theme, so it stays var(--paper). */
 html { background: var(--paper); }
 body {
   background: var(--paper);

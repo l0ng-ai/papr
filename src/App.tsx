@@ -83,33 +83,20 @@ export default function App() {
     root.style.setProperty("--accent", dark ? a.dAccent : a.accent);
     root.style.setProperty("--accent-soft", dark ? a.dSoft : a.soft);
     root.style.setProperty("--accent-ink", dark ? a.dInk : a.ink);
-    // Lock BOTH native layers to the themed paper colour. A live window resize
-    // briefly exposes the WKWebView's own backing before it repaints; that
-    // backing is opaque white unless we paint it, which is the strip that
-    // flashes white in dark mode. Setting the window colour alone is not enough
-    // — the webview sits on top of it — so we set both. Mirrors --paper in
-    // styles.css, including the dark-shade override.
+    // Keep BOTH native layers on the themed paper colour. On macOS the WKWebview
+    // is opaque and covers the whole content view, so a live resize exposes the
+    // *webview's own backing* (not the NSWindow's) in the strip it hasn't
+    // repainted yet. `getCurrentWindow().setBackgroundColor` only touches the
+    // NSWindow (plugin:window|set_background_color) — which the webview hides —
+    // so on its own it can't stop the resize flash; the webview backing has to
+    // be set too (plugin:webview|set_webview_background_color). The Rust launch
+    // path uses `WebviewWindow::set_background_color`, which already sets both;
+    // this is its runtime counterpart, run on every live theme/shade switch.
+    // Mirrors --paper in styles.css.
     const paper = dark ? DARK_PAPER[darkShade] : "#F6F3EC";
     getCurrentWindow().setBackgroundColor(paper).catch(() => {});
     getCurrentWebview().setBackgroundColor(paper).catch(() => {});
   }, [theme, darkShade, accent, density]);
-
-  // Re-assert the webview background on every resize. setBackgroundColor is
-  // persistent, but some macOS WebKit builds reset the webview's backing during
-  // a live resize — so we clamp it back each time the size changes, keeping the
-  // exposed strip on the paper colour instead of flashing white.
-  useEffect(() => {
-    const dark = theme === "dark";
-    const paper = dark ? DARK_PAPER[darkShade] : "#F6F3EC";
-    const win = getCurrentWindow();
-    const unlisten = win.onResized(() => {
-      getCurrentWindow().setBackgroundColor(paper).catch(() => {});
-      getCurrentWebview().setBackgroundColor(paper).catch(() => {});
-    });
-    return () => {
-      unlisten.then((f) => f()).catch(() => {});
-    };
-  }, [theme, darkShade]);
 
   // ── dismiss the boot splash once the app shell has mounted ──
   useEffect(() => {
