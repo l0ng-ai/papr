@@ -905,6 +905,11 @@ button { font-family: inherit; }
   justify-content: center;
   color: var(--muted-2);
 }
+/* On the dark reader surface --panel is *darker* than --reader, so the glyph
+   reads as a black tile punched into the page. Lift it with a faint neutral
+   wash instead — the same way active rows lift in dark — so it sits as a quiet
+   mark on the sheet, not a hole in it. */
+[data-theme="dark"] .empty .glyph { background: rgba(246, 240, 238, 0.05); }
 .empty-retry {
   background: var(--panel);
   border: 1px solid var(--hair);
