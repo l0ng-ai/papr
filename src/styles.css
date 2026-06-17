@@ -73,7 +73,11 @@
      NOT 55-66. On a near-black field a warm hue past ~50 reads as dirty yellow/
      khaki ("淡淡的黄") — keeping the tint red-leaning and very low-chroma gives
      warmth without ever going yellow. Do not raise these hues back toward 60. */
-  --paper: oklch(0.155 0.004 40);   /* #0e0c0b — window floor, deepest */
+  /* hex, not oklch: this var paints the root `html` background, and a
+     root-propagated oklch viewport background flashes white in the strip
+     WebKit exposes during a live window resize. The other surfaces below stay
+     oklch — they sit on child elements, not the viewport, so they're unaffected. */
+  --paper: #0e0c0b;                 /* window floor, deepest */
   --panel: oklch(0.190 0.005 40);   /* #161312 — sidebar, recedes */
   --panel-2: oklch(0.230 0.005 40); /* #1f1c1b — list rows + floating menus */
   --reader: oklch(0.250 0.008 42);  /* #25201f — reading surface, warm & lit */
@@ -116,7 +120,7 @@
    hue; ink, accents and borders stay as the base dark theme defines them.
    "default" needs no block (it uses the values above). */
 [data-theme="dark"][data-dark-shade="dimmer"] {
-  --paper: oklch(0.115 0.004 40);   /* #060504 */
+  --paper: #060504;                 /* hex — root background, see note above */
   --panel: oklch(0.150 0.005 40);   /* #0d0a0a */
   --panel-2: oklch(0.190 0.005 40); /* #161312 */
   --reader: oklch(0.210 0.008 42);  /* #1c1715 — reader stays warm & lifted */

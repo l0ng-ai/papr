@@ -138,9 +138,9 @@ pub fn run() {
                 if let Some(win) = app.get_webview_window("main") {
                     // Match the dark-shade's `--paper` in styles.css / DARK_PAPER.
                     let (r, g, b) = match dark_shade.as_deref() {
-                        Some("dimmer") => (0x0E, 0x0C, 0x08),
+                        Some("dimmer") => (0x06, 0x05, 0x04),
                         Some("black") => (0x00, 0x00, 0x00),
-                        _ => (0x16, 0x14, 0x0F),
+                        _ => (0x0E, 0x0C, 0x0B),
                     };
                     let _ = win
                         .set_background_color(Some(tauri::window::Color(r, g, b, 0xFF)));

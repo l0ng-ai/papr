@@ -37,8 +37,8 @@ const ACCENTS: Record<
 // Native window background per dark-shade. Must match each shade's `--paper`
 // in styles.css so a window resize never flashes a mismatched strip.
 const DARK_PAPER: Record<DarkShade, string> = {
-  default: "#16140F",
-  dimmer: "#0E0C08",
+  default: "#0E0C0B",
+  dimmer: "#060504",
   black: "#000000",
 };
 
