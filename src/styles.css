@@ -665,6 +665,12 @@ button { font-family: inherit; }
   background: var(--panel-2);
   color: var(--ink);
 }
+/* Inline engine / language switchers sitting next to the original/translation
+   toggle — slightly more compact than a settings select. */
+.tr-toggle .tr-sel {
+  font-size: 12px;
+  padding: 3px 26px 3px 9px;
+}
 .tr-progress {
   font-size: 12px;
   color: var(--muted);

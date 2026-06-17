@@ -191,7 +191,10 @@
     "aiSummaryTitle": "AI 摘要",
     "aiReadingFullText": "正在阅读全文…",
     "aiError": "无法生成摘要",
-    "aiDisclaimer": "由本地模型生成 · 仅供参考 · 内容可能不准确"
+    "aiDisclaimer": "由本地模型生成 · 仅供参考 · 内容可能不准确",
+    "translateTitle": "翻译为",
+    "translateEngine": "引擎",
+    "translateEngineLlm": "AI 模型"
   },
   "settings": {
     "title": "设置",
@@ -473,10 +476,14 @@
       "aiBaseUrl": "Base URL",
       "aiBaseUrlDesc": "API 端点根地址。留空则使用官方端点，也可指向任意兼容服务商（OpenRouter、Groq、DeepSeek、本地服务等）",
       "aiBaseUrlLabel": "Base URL",
+      "aiSaved": "{{label}}已保存",
+      "translateEngine": "翻译引擎",
+      "translateEngineDesc": "翻译文章的默认引擎。LLM 使用上方的 AI 服务商；Google、DeepL、Bing 为独立服务。可在阅读界面按文章临时切换",
+      "translateEngineLabel": "翻译引擎",
+      "translateEngineLlm": "LLM（上方 AI 服务商）",
       "translateLang": "翻译语言",
-      "translateLangDesc": "文章翻译成的目标语言。默认跟随界面语言",
-      "translateLangLabel": "翻译语言",
-      "aiSaved": "{{label}}已保存"
+      "translateLangDesc": "文章翻译成的默认语言。默认跟随界面语言；可在阅读界面按文章临时切换",
+      "translateLangLabel": "翻译语言"
     },
     "about": {
       "tagline": "把信息流，变回一份安静的读物",

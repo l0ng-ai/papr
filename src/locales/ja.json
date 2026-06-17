@@ -191,7 +191,10 @@
     "aiSummaryTitle": "AI要約",
     "aiReadingFullText": "全文を読み込み中…",
     "aiError": "要約を生成できませんでした",
-    "aiDisclaimer": "ローカルモデルによる生成 · 参考用 · 内容は不正確な場合があります"
+    "aiDisclaimer": "ローカルモデルによる生成 · 参考用 · 内容は不正確な場合があります",
+    "translateTitle": "翻訳先",
+    "translateEngine": "エンジン",
+    "translateEngineLlm": "AI モデル"
   },
   "settings": {
     "title": "設定",
@@ -473,10 +476,14 @@
       "aiBaseUrl": "ベース URL",
       "aiBaseUrlDesc": "API エンドポイントのルート。空欄で公式エンドポイントを使用。互換プロバイダー（OpenRouter、Groq、DeepSeek、ローカルサーバーなど）も指定できます",
       "aiBaseUrlLabel": "ベース URL",
+      "aiSaved": "{{label}}を保存しました",
+      "translateEngine": "翻訳エンジン",
+      "translateEngineDesc": "記事翻訳の既定エンジン。LLM は上の AI プロバイダーを使用します。Google・DeepL・Bing は独立サービスです。閲覧画面で記事ごとに一時的に切り替えられます",
+      "translateEngineLabel": "翻訳エンジン",
+      "translateEngineLlm": "LLM（上の AI プロバイダー）",
       "translateLang": "翻訳言語",
-      "translateLangDesc": "記事を翻訳する言語。既定はインターフェースの言語です",
-      "translateLangLabel": "翻訳言語",
-      "aiSaved": "{{label}}を保存しました"
+      "translateLangDesc": "記事を翻訳する既定の言語。既定では UI 言語に従います。閲覧画面で記事ごとに一時的に切り替え可能",
+      "translateLangLabel": "翻訳言語"
     },
     "about": {
       "tagline": "静かな紙のような RSS リーダー",
