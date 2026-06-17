@@ -1219,6 +1219,11 @@ button { font-family: inherit; }
 
 /* Selection */
 ::selection { background: var(--accent-soft); color: var(--accent-ink); }
+/* In dark, --accent-soft is a low-lightness terracotta; dragged across a whole
+   run of text it floods as a muddy khaki block (the same "accent must not fill"
+   problem the active row solves). So selection gets a neutral lift instead and
+   keeps the text its own ink colour. */
+[data-theme="dark"] ::selection { background: rgba(246, 240, 238, 0.16); color: var(--ink); }
 
 /* ====== Settings ====== */
 .settings-backdrop {
