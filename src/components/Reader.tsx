@@ -183,6 +183,10 @@ export default function Reader({ onToast }: Props) {
   // opt-in via the toolbar button; on shows the extracted full text.
   const [showExtracted, setShowExtracted] = useState(autoExtract);
   const [showTranslation, setShowTranslation] = useState(false);
+  // Reading vs. the article's original web page, shown in an in-app iframe.
+  // Sites that set X-Frame-Options / CSP frame-ancestors refuse to load this
+  // way — the in-frame hint points those back to "open in browser".
+  const [viewMode, setViewMode] = useState<"reader" | "web">("reader");
   const [tagPick, setTagPick] = useState<{ x: number; y: number } | null>(null);
   const [ctxMenu, setCtxMenu] = useState<{
     x: number;
@@ -209,6 +213,8 @@ export default function Reader({ onToast }: Props) {
   }, [heroBlob]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
+  // Host element the native original-page child webview is positioned over.
+  const pageHostRef = useRef<HTMLDivElement>(null);
   // Article id we already auto-marked read via scroll, so a flurry of scroll
   // events near the foot doesn't fire `setRead` repeatedly before the
   // optimistic cache patch lands.
@@ -233,6 +239,7 @@ export default function Reader({ onToast }: Props) {
   useEffect(() => {
     setShowExtracted(useUi.getState().prefs.autoExtract);
     setShowTranslation(false);
+    setViewMode("reader");
     setScrolled(false);
     setTagPick(null);
     setHeroBroken(false);
@@ -240,6 +247,41 @@ export default function Reader({ onToast }: Props) {
     scrollMarkedRef.current = null;
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
   }, [id]);
+
+  // Drive the native original-page child webview (page_view.rs) while in web
+  // mode. It floats above the DOM, so we measure the host rect and keep the
+  // webview aligned to it across window/sidebar resizes. (Switching articles
+  // resets viewMode to "reader" above, so a.url is stable within a session.)
+  const articleUrl = a?.url ?? null;
+  useEffect(() => {
+    const host = pageHostRef.current;
+    if (viewMode !== "web" || !articleUrl || !host) return;
+
+    const bounds = () => {
+      const r = host.getBoundingClientRect();
+      return { x: r.left, y: r.top, width: r.width, height: r.height };
+    };
+    let open = false;
+    api.openPageView(articleUrl, bounds()).then(
+      () => {
+        open = true;
+      },
+      () => {},
+    );
+
+    const sync = () => {
+      if (open) api.setPageViewBounds(bounds()).catch(() => {});
+    };
+    const ro = new ResizeObserver(sync);
+    ro.observe(host);
+    window.addEventListener("resize", sync);
+
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", sync);
+      api.closePageView().catch(() => {});
+    };
+  }, [viewMode, articleUrl]);
 
   // Recover article-body images the webview fails to load, then hide the
   // stragglers. The webview sends no Referer (see sanitize.rs) — right for
@@ -734,6 +776,17 @@ export default function Reader({ onToast }: Props) {
         <div className="tb-btn spacer" />
         {a.url && (
           <button
+            className={`tb-btn ${viewMode === "web" ? "on" : ""}`}
+            title={t("reader.tbWebView")}
+            aria-label={t("reader.tbWebView")}
+            aria-pressed={viewMode === "web"}
+            onClick={() => setViewMode((v) => (v === "web" ? "reader" : "web"))}
+          >
+            <Icon name="eye" size={16} />
+          </button>
+        )}
+        {a.url && (
+          <button
             className="tb-btn"
             title={t("reader.tbOpenInBrowser")}
             aria-label={t("reader.tbOpenInBrowser")}
@@ -744,6 +797,23 @@ export default function Reader({ onToast }: Props) {
         )}
       </div>
 
+      {viewMode === "web" && a.url ? (
+        <div className="reader-webview">
+          <div className="reader-webview-bar">
+            <span className="reader-webview-url">{a.url}</span>
+            <button
+              className="reader-webview-open"
+              onClick={() => openUrl(a.url!).catch(() => {})}
+            >
+              {t("reader.tbOpenInBrowser")}
+            </button>
+          </div>
+          {/* The native child webview (page_view.rs) floats over this host —
+              it's not in the DOM, so this div only reserves the space. The
+              effect below measures it and positions the webview to match. */}
+          <div className="reader-webview-host" ref={pageHostRef} />
+        </div>
+      ) : (
       <div
         className="reader-scroll"
         ref={scrollRef}
@@ -965,6 +1035,7 @@ export default function Reader({ onToast }: Props) {
           />
         </article>
       </div>
+      )}
 
       <AIDrawer
         // Keyed by article id so switching articles remounts the drawer:

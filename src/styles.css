@@ -596,6 +596,52 @@ button { font-family: inherit; }
   overflow-y: auto;
 }
 
+/* In-app original-page view (issue #49): a thin address bar over a host div.
+   A native child webview (page_view.rs) is positioned over `.reader-webview-host`
+   — it is NOT in the DOM, so the host only reserves the space and shows a
+   neutral backdrop until the webview paints. */
+.reader-webview {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.reader-webview-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 18px;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--paper);
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+.reader-webview-url {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.reader-webview-open {
+  flex-shrink: 0;
+  color: var(--accent);
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0;
+}
+.reader-webview-open:hover {
+  text-decoration: underline;
+}
+.reader-webview-host {
+  flex: 1;
+  min-height: 0;
+  background: #fff;
+}
+
 .article {
   max-width: 680px;
   margin: 0 auto;

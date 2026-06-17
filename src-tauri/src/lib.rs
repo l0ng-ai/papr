@@ -11,6 +11,7 @@ mod ingestion;
 mod models;
 mod notify;
 mod opml;
+mod page_view;
 mod sanitize;
 mod state;
 mod sync;
@@ -254,6 +255,9 @@ pub fn run() {
             commands::update_highlight_note,
             commands::set_highlight_color,
             commands::delete_highlight,
+            page_view::open_page_view,
+            page_view::set_page_view_bounds,
+            page_view::close_page_view,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Papr");
