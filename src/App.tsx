@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import * as api from "./api";
 import { useUi, READER_FONTS } from "./store";
@@ -82,14 +83,33 @@ export default function App() {
     root.style.setProperty("--accent", dark ? a.dAccent : a.accent);
     root.style.setProperty("--accent-soft", dark ? a.dSoft : a.soft);
     root.style.setProperty("--accent-ink", dark ? a.dInk : a.ink);
-    // Keep the native window/webview background on the themed paper colour, so
-    // a live window resize never flashes a mismatched colour in the strip the
-    // webview has not repainted yet. Mirrors --paper in styles.css, including
-    // the dark-shade override.
-    getCurrentWindow()
-      .setBackgroundColor(dark ? DARK_PAPER[darkShade] : "#F6F3EC")
-      .catch(() => {});
+    // Lock BOTH native layers to the themed paper colour. A live window resize
+    // briefly exposes the WKWebView's own backing before it repaints; that
+    // backing is opaque white unless we paint it, which is the strip that
+    // flashes white in dark mode. Setting the window colour alone is not enough
+    // — the webview sits on top of it — so we set both. Mirrors --paper in
+    // styles.css, including the dark-shade override.
+    const paper = dark ? DARK_PAPER[darkShade] : "#F6F3EC";
+    getCurrentWindow().setBackgroundColor(paper).catch(() => {});
+    getCurrentWebview().setBackgroundColor(paper).catch(() => {});
   }, [theme, darkShade, accent, density]);
+
+  // Re-assert the webview background on every resize. setBackgroundColor is
+  // persistent, but some macOS WebKit builds reset the webview's backing during
+  // a live resize — so we clamp it back each time the size changes, keeping the
+  // exposed strip on the paper colour instead of flashing white.
+  useEffect(() => {
+    const dark = theme === "dark";
+    const paper = dark ? DARK_PAPER[darkShade] : "#F6F3EC";
+    const win = getCurrentWindow();
+    const unlisten = win.onResized(() => {
+      getCurrentWindow().setBackgroundColor(paper).catch(() => {});
+      getCurrentWebview().setBackgroundColor(paper).catch(() => {});
+    });
+    return () => {
+      unlisten.then((f) => f()).catch(() => {});
+    };
+  }, [theme, darkShade]);
 
   // ── dismiss the boot splash once the app shell has mounted ──
   useEffect(() => {
