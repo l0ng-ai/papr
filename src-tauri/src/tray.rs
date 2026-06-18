@@ -249,15 +249,25 @@ pub async fn refresh(app: &AppHandle) {
             db::latest_fetch(&conn).ok().flatten(),
         )
     };
-    let Some(tray) = app.tray_by_id(TRAY_ID) else {
-        return;
-    };
-    if let Ok(menu) = build_menu(app, &lang, unread, last.as_deref()) {
-        let _ = tray.set_menu(Some(menu));
-    }
-    let _ = tray.set_title(if unread > 0 {
-        Some(unread.to_string())
-    } else {
-        None
+    // Tray mutations touch AppKit, which on macOS must happen on the main
+    // thread. Callers reach here from the async runtime (commands and the
+    // background scheduler), where `set_menu`/`set_title` would silently
+    // no-op — so hop onto the main thread before touching the tray.
+    let app = app.clone();
+    let _ = app.clone().run_on_main_thread(move || {
+        let Some(tray) = app.tray_by_id(TRAY_ID) else {
+            return;
+        };
+        if let Ok(menu) = build_menu(&app, &lang, unread, last.as_deref()) {
+            let _ = tray.set_menu(Some(menu));
+        }
+        // Pass an empty string rather than `None` to clear the count: on
+        // macOS `set_title(None)` leaves the previous title in place, so a
+        // drop to zero would otherwise keep showing the stale number.
+        let _ = tray.set_title(Some(if unread > 0 {
+            unread.to_string()
+        } else {
+            String::new()
+        }));
     });
 }
