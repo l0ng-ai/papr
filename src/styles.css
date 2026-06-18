@@ -1749,6 +1749,14 @@ button { font-family: inherit; }
   margin: 1.2em 0;
   display: block;
 }
+/* Feed-embedded <video> (see sanitize): keep it within the column like images. */
+.article-body video {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+  margin: 1.2em 0;
+  display: block;
+}
 .article-body table { border-collapse: collapse; width: 100%; margin: 1.2em 0; font-size: 0.92em; }
 .article-body th, .article-body td { border: 1px solid var(--hair); padding: 6px 10px; }
 

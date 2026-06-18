@@ -23,6 +23,23 @@ pub fn sanitize(html: &str, base: Option<&str>) -> String {
     builder
         .link_rel(Some("noopener noreferrer nofollow"))
         .add_generic_attributes(["loading"])
+        // Allow inline HTML5 video. ammonia's default whitelist drops <video>
+        // and <source> entirely, so a feed that embeds a clip with a <video>
+        // tag reached the reader as nothing at all. Permit the element plus its
+        // safe layout/playback attributes (and <source> for multiple formats);
+        // `src`/`poster` are URL attributes, so they go through the same
+        // relative-URL rewriting and scheme filtering as every other URL here,
+        // which strips `javascript:` and friends. `autoplay` is deliberately
+        // not whitelisted — feed-embedded video must be user-initiated.
+        .add_tags(["video", "source"])
+        .add_tag_attributes(
+            "video",
+            ["src", "poster", "width", "height", "preload", "loop", "muted", "playsinline"],
+        )
+        .add_tag_attributes("source", ["src", "type", "media"])
+        // Always expose player controls: a feed clip with no `controls` (and no
+        // whitelisted `autoplay`) would otherwise be a frozen, unplayable frame.
+        .set_tag_attribute_value("video", "controls", "")
         // Load every feed image without a `Referer`. Common image hosts —
         // notably Sina's `*.sinaimg.cn` CDN, which backs 喷嚏图卦 and many
         // Weibo-sourced feeds — hotlink-protect by Referer: a request carrying
@@ -284,6 +301,59 @@ mod tests {
     fn sanitize_adds_rel_to_links() {
         let out = sanitize("<a href=\"https://example.com\">x</a>", None);
         assert!(out.contains("noopener"), "link rel missing: {out}");
+    }
+
+    // --- video: inline HTML5 video survives sanitize (issue #39). ---
+
+    #[test]
+    fn sanitize_keeps_video_and_source() {
+        let out = sanitize(
+            r#"<video poster="https://ex.com/p.jpg"><source src="https://ex.com/v.mp4" type="video/mp4"></video>"#,
+            None,
+        );
+        assert!(out.contains("<video"), "video tag dropped: {out}");
+        assert!(out.contains("<source"), "source tag dropped: {out}");
+        assert!(out.contains(r#"src="https://ex.com/v.mp4""#), "source src dropped: {out}");
+        assert!(out.contains(r#"type="video/mp4""#), "source type dropped: {out}");
+        assert!(out.contains(r#"poster="https://ex.com/p.jpg""#), "poster dropped: {out}");
+    }
+
+    #[test]
+    fn sanitize_forces_video_controls() {
+        // A clip with no controls (and no autoplay) is an unplayable frozen
+        // frame — controls are forced on so the reader can always play it.
+        let out = sanitize(r#"<video src="https://ex.com/v.mp4"></video>"#, None);
+        assert!(out.contains("controls"), "controls not forced: {out}");
+    }
+
+    #[test]
+    fn sanitize_strips_video_autoplay_and_handlers() {
+        // autoplay isn't whitelisted (feed video must be user-initiated), and
+        // event handlers are stripped like everywhere else.
+        let out = sanitize(
+            r#"<video src="https://ex.com/v.mp4" autoplay onerror="evil()"></video>"#,
+            None,
+        );
+        assert!(!out.contains("autoplay"), "autoplay survived: {out}");
+        assert!(!out.contains("onerror"), "event handler survived: {out}");
+    }
+
+    #[test]
+    fn sanitize_rewrites_relative_video_src_against_base() {
+        let out = sanitize(
+            r#"<video src="/clip.mp4"></video>"#,
+            Some("https://example.com/post/"),
+        );
+        assert!(
+            out.contains("https://example.com/clip.mp4"),
+            "relative video src not rewritten: {out}"
+        );
+    }
+
+    #[test]
+    fn sanitize_drops_javascript_video_src() {
+        let out = sanitize(r#"<video src="javascript:evil()"></video>"#, None);
+        assert!(!out.contains("javascript:"), "javascript: src survived: {out}");
     }
 
     // --- first_image: card-thumbnail fallback from body HTML. ---
