@@ -183,6 +183,7 @@
     "tbTags": "标签",
     "tbFocusMode": "焦点阅读 (F)",
     "tbOpenInBrowser": "在浏览器中打开 (⌘O)",
+    "tbWebView": "在此打开原网页",
     "episodePlay": "播放音频",
     "episodePlaying": "正在播放",
     "readMinutes": "{{count}} 分钟阅读",

@@ -289,3 +289,19 @@ export const listNewsletterSources = () =>
   invoke<NewsletterSource[]>("list_newsletter_sources");
 export const removeNewsletterSource = (feedId: number) =>
   invoke<void>("remove_newsletter_source", { feedId });
+
+// ── in-app original-page view (issue #49) ──
+// A native child webview overlaid on the reading area. Bounds are logical
+// (CSS) pixels relative to the window content top-left — i.e. what
+// getBoundingClientRect returns inside the main webview.
+export interface PageViewBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+export const openPageView = (url: string, b: PageViewBounds) =>
+  invoke<void>("open_page_view", { url, ...b });
+export const setPageViewBounds = (b: PageViewBounds) =>
+  invoke<void>("set_page_view_bounds", { ...b });
+export const closePageView = () => invoke<void>("close_page_view");
