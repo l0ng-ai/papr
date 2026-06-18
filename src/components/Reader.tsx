@@ -242,21 +242,27 @@ export default function Reader({ onToast }: Props) {
       return { x: r.left, y: r.top, width: r.width, height: r.height };
     };
     let open = false;
+    let cancelled = false;
     api.openPageView(articleUrl, bounds()).then(
       () => {
         open = true;
+        // If teardown ran while this open was still in flight, the cleanup's
+        // closePageView fired against a not-yet-created webview (a no-op) and
+        // would leave this one orphaned above the DOM — close it now.
+        if (cancelled) api.closePageView().catch(() => {});
       },
       () => {},
     );
 
     const sync = () => {
-      if (open) api.setPageViewBounds(bounds()).catch(() => {});
+      if (open && !cancelled) api.setPageViewBounds(bounds()).catch(() => {});
     };
     const ro = new ResizeObserver(sync);
     ro.observe(host);
     window.addEventListener("resize", sync);
 
     return () => {
+      cancelled = true;
       ro.disconnect();
       window.removeEventListener("resize", sync);
       api.closePageView().catch(() => {});

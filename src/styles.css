@@ -690,7 +690,10 @@ button { font-family: inherit; }
 .reader-webview-host {
   flex: 1;
   min-height: 0;
-  background: #fff;
+  /* Themed floor, not hard `#fff`: the native webview paints over this, but
+     until it does, a white tile flashes in the dark theme (the very flash the
+     recent window fixes chased). `--paper` is dark in dark mode, cream in light. */
+  background: var(--paper);
 }
 
 .article {
