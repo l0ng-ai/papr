@@ -318,6 +318,8 @@ button { font-family: inherit; }
   align-items: center;
 }
 .sb-section-title button:hover { background: var(--hover); color: var(--ink-2); }
+.sb-section-title button.active { color: var(--accent); }
+.sb-section-title button.active:hover { color: var(--accent); }
 
 .sb-item {
   display: flex;
