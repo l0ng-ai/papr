@@ -22,7 +22,9 @@ import AddFeedDialog from "./components/AddFeedDialog";
 import ExploreDialog from "./components/ExploreDialog";
 import PromptDialog from "./components/PromptDialog";
 import PlayerBar from "./components/PlayerBar";
+import ResizeHandle from "./components/ResizeHandle";
 import Icon from "./components/Icon";
+import { PANEL_BOUNDS } from "./store";
 
 // Accent palettes — ported from the design prototype (app.jsx ACCENTS).
 const ACCENTS: Record<
@@ -60,6 +62,9 @@ export default function App() {
   const readerSize = useUi((s) => s.readerSize);
   const readerLeading = useUi((s) => s.readerLeading);
   const readerWidth = useUi((s) => s.readerWidth);
+  const sidebarWidth = useUi((s) => s.sidebarWidth);
+  const listWidth = useUi((s) => s.listWidth);
+  const aiWidth = useUi((s) => s.aiWidth);
   const reduceMotion = useUi((s) => s.prefs.reduceMotion);
   const focusMode = useUi((s) => s.focusMode);
 
@@ -163,6 +168,17 @@ export default function App() {
     root.setProperty("--reader-leading", String(readerLeading / 100));
     root.setProperty("--reader-width", `${readerWidth}px`);
   }, [readerFont, readerSize, readerLeading, readerWidth]);
+
+  // ── apply the draggable pane widths as the grid/drawer CSS variables ──
+  // These drive `.window`'s grid columns and the AI drawer's width; the resize
+  // handles write to the store, the store persists, and this mirrors the value
+  // back onto the document root.
+  useEffect(() => {
+    const root = document.documentElement.style;
+    root.setProperty("--col-sidebar", `${sidebarWidth}px`);
+    root.setProperty("--col-list", `${listWidth}px`);
+    root.setProperty("--ai-width", `${aiWidth}px`);
+  }, [sidebarWidth, listWidth, aiWidth]);
 
   // ── toast ──
   // The store owns the queue; App owns only the dwell timer and the render.
@@ -458,6 +474,39 @@ export default function App() {
           />
           <ArticleList onToast={showToast} />
           <Reader onToast={showToast} />
+          {/* Pane resize handles. Hidden in focus mode (the sidebar + list are
+              hidden then, collapsing the grid to a single reader column). They
+              sit at the column boundaries via the `left` offset below. */}
+          {!focusMode && (
+            <>
+              <div
+                className="resize-handle-slot"
+                style={{ left: "var(--col-sidebar)" }}
+              >
+                <ResizeHandle
+                  width={sidebarWidth}
+                  side="right"
+                  min={PANEL_BOUNDS.sidebar.min}
+                  max={PANEL_BOUNDS.sidebar.max}
+                  onResize={(w) => useUi.getState().setPanel({ sidebarWidth: w })}
+                  label={t("app.resizeSidebar")}
+                />
+              </div>
+              <div
+                className="resize-handle-slot"
+                style={{ left: "calc(var(--col-sidebar) + var(--col-list))" }}
+              >
+                <ResizeHandle
+                  width={listWidth}
+                  side="right"
+                  min={PANEL_BOUNDS.list.min}
+                  max={PANEL_BOUNDS.list.max}
+                  onResize={(w) => useUi.getState().setPanel({ listWidth: w })}
+                  label={t("app.resizeList")}
+                />
+              </div>
+            </>
+          )}
         </div>
         <PlayerBar />
       </div>

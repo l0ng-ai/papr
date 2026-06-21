@@ -36,6 +36,17 @@ export const READER_BOUNDS = {
   width: { min: 520, max: 840 },
 } as const;
 
+/** Valid ranges for the draggable pane widths — shared by the resize handles,
+ *  persistence validation, and the `setPanel` write guard so all stay in
+ *  lockstep (mirrors `READER_BOUNDS`). The article-list column and the AI
+ *  drawer can grow wide, but never so far they crowd out the reader; the
+ *  sidebar stays a navigation rail. */
+export const PANEL_BOUNDS = {
+  sidebar: { min: 200, max: 420 },
+  list: { min: 300, max: 560 },
+  ai: { min: 280, max: 560 },
+} as const;
+
 /** Clamp `n` into `[min, max]`. */
 function clamp(n: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, n));
@@ -108,6 +119,11 @@ interface UiState {
   readerLeading: number;
   readerWidth: number;
 
+  // draggable pane widths (px)
+  sidebarWidth: number;
+  listWidth: number;
+  aiWidth: number;
+
   // behavioural preferences
   prefs: Prefs;
 
@@ -127,6 +143,7 @@ interface UiState {
   setViewMode: (v: ViewMode) => void;
   setReaderFont: (v: ReaderFont) => void;
   setReader: (p: Partial<Pick<UiState, "readerSize" | "readerLeading" | "readerWidth">>) => void;
+  setPanel: (p: Partial<Pick<UiState, "sidebarWidth" | "listWidth" | "aiWidth">>) => void;
 
   setPref: (patch: Partial<Prefs>) => void;
 
@@ -218,6 +235,10 @@ export const useUi = create<UiState>((set) => ({
   ),
   readerWidth: ls.num("readerWidth", 680, READER_BOUNDS.width.min, READER_BOUNDS.width.max),
 
+  sidebarWidth: ls.num("sidebarWidth", 248, PANEL_BOUNDS.sidebar.min, PANEL_BOUNDS.sidebar.max),
+  listWidth: ls.num("listWidth", 388, PANEL_BOUNDS.list.min, PANEL_BOUNDS.list.max),
+  aiWidth: ls.num("aiWidth", 360, PANEL_BOUNDS.ai.min, PANEL_BOUNDS.ai.max),
+
   prefs: loadPrefs(),
 
   focusMode: false,
@@ -258,6 +279,25 @@ export const useUi = create<UiState>((set) => ({
     if (p.readerWidth != null) {
       next.readerWidth = clamp(p.readerWidth, READER_BOUNDS.width.min, READER_BOUNDS.width.max);
       ls.set("readerWidth", next.readerWidth);
+    }
+    set(next);
+  },
+  setPanel: (p) => {
+    // Clamp on write so neither a drag past the handle's guard nor a stale
+    // persisted value (from an older build with different limits) can push an
+    // out-of-range width into the store or its `--col-*` CSS variable.
+    const next: Partial<Pick<UiState, "sidebarWidth" | "listWidth" | "aiWidth">> = {};
+    if (p.sidebarWidth != null) {
+      next.sidebarWidth = clamp(p.sidebarWidth, PANEL_BOUNDS.sidebar.min, PANEL_BOUNDS.sidebar.max);
+      ls.set("sidebarWidth", next.sidebarWidth);
+    }
+    if (p.listWidth != null) {
+      next.listWidth = clamp(p.listWidth, PANEL_BOUNDS.list.min, PANEL_BOUNDS.list.max);
+      ls.set("listWidth", next.listWidth);
+    }
+    if (p.aiWidth != null) {
+      next.aiWidth = clamp(p.aiWidth, PANEL_BOUNDS.ai.min, PANEL_BOUNDS.ai.max);
+      ls.set("aiWidth", next.aiWidth);
     }
     set(next);
   },

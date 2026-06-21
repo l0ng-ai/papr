@@ -96,6 +96,8 @@
     "noFolder": "フォルダなし"
   },
   "app": {
+    "resizeSidebar": "サイドバーの幅を調整",
+    "resizeList": "記事リストの幅を調整",
     "refreshing": "すべてのフィードを更新中…",
     "foundNew": "新着記事 {{count}} 件",
     "upToDate": "最新です",
@@ -156,6 +158,7 @@
     "footerHint": "記事 · フィード · コマンド"
   },
   "reader": {
+    "resizeAi": "AI 要約パネルの幅を調整",
     "fullTextExtracted": "全文を抽出しました",
     "linkCopied": "リンクをコピーしました",
     "ctxCopy": "コピー",

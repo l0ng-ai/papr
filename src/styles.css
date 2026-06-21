@@ -205,6 +205,66 @@ button { font-family: inherit; }
   transition: background .35s ease, color .25s ease;
 }
 
+/* ====== Pane resize handles ====== */
+/* A handle is a thin draggable strip straddling a pane boundary. The two grid
+   boundaries (sidebar|list, list|reader) are positioned by an absolute slot
+   anchored to the column offset; the AI-drawer handle lives inline on the
+   drawer's own left edge. The strip is 7px wide for an easy grab target but
+   draws only a 1px line on hover/focus so it stays visually quiet. */
+.resize-handle-slot {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  z-index: 6;            /* above the panes, below modals/toasts */
+  pointer-events: none;  /* only the handle itself is interactive */
+}
+.resize-handle-slot--inline {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 6;
+  width: 0;
+  pointer-events: none;
+}
+.resize-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;            /* centre the 7px strip on the boundary */
+  width: 7px;
+  cursor: col-resize;
+  pointer-events: auto;
+  touch-action: none;
+  /* The visible line: drawn as a centred 1px pseudo-element so the wide hit
+     area stays invisible until hover/focus. */
+  background: transparent;
+  transition: background .12s ease;
+}
+.resize-handle::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 1px;
+  background: transparent;
+  transition: background .12s ease;
+}
+.resize-handle:hover::after,
+.resize-handle:focus-visible::after,
+.resize-handle:active::after {
+  background: var(--accent);
+}
+.resize-handle:focus-visible {
+  outline: none;
+}
+[data-reduce-motion="true"] .resize-handle,
+[data-reduce-motion="true"] .resize-handle::after {
+  transition: none;
+}
+
 .titlebar {
   position: absolute;
   top: 0; left: 0; right: 0;
@@ -875,7 +935,7 @@ button { font-family: inherit; }
 .ai-drawer {
   position: absolute;
   top: 38px; right: 0; bottom: 0;
-  width: 360px;
+  width: var(--ai-width, 360px);
   background: var(--panel);
   border-left: 1px solid var(--hair);
   transform: translateX(100%);

@@ -96,6 +96,8 @@
     "noFolder": "No folder"
   },
   "app": {
+    "resizeSidebar": "Resize sidebar",
+    "resizeList": "Resize article list",
     "refreshing": "Refreshing all feeds…",
     "foundNew": "Found {{count}} new articles",
     "upToDate": "Up to date",
@@ -156,6 +158,7 @@
     "footerHint": "Articles · Feeds · Commands"
   },
   "reader": {
+    "resizeAi": "Resize AI summary panel",
     "fullTextExtracted": "Full text extracted",
     "linkCopied": "Link copied",
     "ctxCopy": "Copy",

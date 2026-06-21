@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import * as api from "../api";
 import { LANGUAGES } from "../i18n";
-import { useUi } from "../store";
+import { useUi, PANEL_BOUNDS } from "../store";
 import { usePlayer } from "../player";
 import { useTranslationJobs } from "../translation";
 import { useArticleActions } from "../hooks/articleActions";
@@ -18,6 +18,7 @@ import { tagColor } from "../lib/tagColors";
 import type { ArticleDetail } from "../types";
 import Icon from "./Icon";
 import TagPicker from "./TagPicker";
+import ResizeHandle from "./ResizeHandle";
 import HighlightLayer from "./HighlightLayer";
 import ContextMenu, { type MenuEntry } from "./ContextMenu";
 
@@ -1119,6 +1120,7 @@ function AIDrawer({
 }) {
   const { t } = useTranslation();
   const qc = useQueryClient();
+  const aiWidth = useUi((s) => s.aiWidth);
   // Initialised from the article's stored summary (if any). The parent keys
   // this component by article id, so a switch remounts it and re-runs this
   // initialiser — no separate "reset on article change" effect is needed.
@@ -1212,6 +1214,18 @@ function AIDrawer({
       // close button and content out of the tab order and the a11y tree.
       inert={!open}
     >
+      {/* Left-edge handle: dragging left widens the drawer. Hidden from the
+          a11y tree while the drawer is closed (the whole drawer is `inert`). */}
+      <div className="resize-handle-slot resize-handle-slot--inline">
+        <ResizeHandle
+          width={aiWidth}
+          side="left"
+          min={PANEL_BOUNDS.ai.min}
+          max={PANEL_BOUNDS.ai.max}
+          onResize={(w) => useUi.getState().setPanel({ aiWidth: w })}
+          label={t("reader.resizeAi")}
+        />
+      </div>
       <div className="ai-head">
         <span className="accent-ico">
           <Icon name="sparkle-fill" size={15} />
