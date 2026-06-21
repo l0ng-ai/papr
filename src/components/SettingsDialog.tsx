@@ -1636,7 +1636,9 @@ type TranslateEngine = "llm" | "google" | "deepl" | "bing";
 function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
   const { t, i18n } = useTranslation();
   const qc = useQueryClient();
-  const [provider, setProvider] = useState<"anthropic" | "openai">("anthropic");
+  const [provider, setProvider] = useState<"anthropic" | "openai" | "deepseek">(
+    "anthropic",
+  );
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
@@ -1658,7 +1660,8 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
       api.getSetting("translate_target_lang"),
     ])
       .then(([p, k, m, b, eng, tl]) => {
-        if (p === "openai" || p === "anthropic") setProvider(p);
+        if (p === "openai" || p === "anthropic" || p === "deepseek")
+          setProvider(p);
         if (k) {
           setApiKey(k);
           savedKey.current = k;
@@ -1688,12 +1691,16 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
   const placeholder =
     provider === "openai"
       ? t("settings.advanced.aiModelPlaceholderOpenai")
-      : t("settings.advanced.aiModelPlaceholderAnthropic");
+      : provider === "deepseek"
+        ? t("settings.advanced.aiModelPlaceholderDeepseek")
+        : t("settings.advanced.aiModelPlaceholderAnthropic");
 
   const baseUrlPlaceholder =
     provider === "openai"
       ? "https://api.openai.com/v1"
-      : "https://api.anthropic.com/v1";
+      : provider === "deepseek"
+        ? "https://api.deepseek.com"
+        : "https://api.anthropic.com/v1";
 
   return (
     <div className="settings-group">
@@ -1707,6 +1714,7 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
           options={[
             { value: "anthropic", label: "Anthropic" },
             { value: "openai", label: "OpenAI" },
+            { value: "deepseek", label: "DeepSeek" },
           ]}
           onChange={(v) => {
             setProvider(v);

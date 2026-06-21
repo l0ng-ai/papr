@@ -474,6 +474,7 @@
       "aiModelLabel": "AI モデル",
       "aiModelPlaceholderOpenai": "gpt-4.1-mini（既定）",
       "aiModelPlaceholderAnthropic": "claude-sonnet-4-6（既定）",
+      "aiModelPlaceholderDeepseek": "deepseek-chat（既定）",
       "aiBaseUrl": "ベース URL",
       "aiBaseUrlDesc": "API エンドポイントのルート。空欄で公式エンドポイントを使用。互換プロバイダー（OpenRouter、Groq、DeepSeek、ローカルサーバーなど）も指定できます",
       "aiBaseUrlLabel": "ベース URL",

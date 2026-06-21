@@ -62,6 +62,10 @@ pub enum AiEvent {
 enum Provider {
     Anthropic,
     OpenAi,
+    /// DeepSeek exposes an OpenAI-compatible API (same `/chat/completions`
+    /// endpoint, request body and SSE shape), so it reuses the OpenAI request
+    /// and parsing paths; only the default base URL and model differ.
+    DeepSeek,
 }
 
 /// Resolved AI configuration read from the settings table.
@@ -96,6 +100,7 @@ impl AiConfig {
             .ok_or_else(|| AppError::code("noAiKey"))?;
         let provider = match provider.as_deref() {
             Some("openai") => Provider::OpenAi,
+            Some("deepseek") => Provider::DeepSeek,
             _ => Provider::Anthropic,
         };
         // Likewise trim the model name — it is JSON-serialised into the
@@ -106,6 +111,7 @@ impl AiConfig {
             .unwrap_or_else(|| match provider {
                 Provider::Anthropic => "claude-sonnet-4-6".to_string(),
                 Provider::OpenAi => "gpt-4.1-mini".to_string(),
+                Provider::DeepSeek => "deepseek-chat".to_string(),
             });
         let base_url = base_url
             .map(|u| u.trim().trim_end_matches('/').to_string())
@@ -127,7 +133,17 @@ impl Provider {
         match self {
             Provider::Anthropic => "https://api.anthropic.com/v1",
             Provider::OpenAi => "https://api.openai.com/v1",
+            // DeepSeek serves the OpenAI-compatible API at this root; our code
+            // appends `/chat/completions`.
+            Provider::DeepSeek => "https://api.deepseek.com",
         }
+    }
+
+    /// Whether this provider speaks the Anthropic or the OpenAI wire format
+    /// (request body, endpoint path, and SSE shape). DeepSeek is
+    /// OpenAI-compatible, so it shares OpenAI's request and parsing paths.
+    fn is_openai_compatible(self) -> bool {
+        matches!(self, Provider::OpenAi | Provider::DeepSeek)
     }
 }
 
@@ -151,13 +167,10 @@ pub async fn stream_chat(
     channel: &Channel<AiEvent>,
     max_tokens: u32,
 ) -> AppResult<ChatOutcome> {
-    let result = match cfg.provider {
-        Provider::Anthropic => {
-            stream_anthropic(client, cfg, system, user, Some(channel), max_tokens).await
-        }
-        Provider::OpenAi => {
-            stream_openai(client, cfg, system, user, Some(channel), max_tokens).await
-        }
+    let result = if cfg.provider.is_openai_compatible() {
+        stream_openai(client, cfg, system, user, Some(channel), max_tokens).await
+    } else {
+        stream_anthropic(client, cfg, system, user, Some(channel), max_tokens).await
     };
     match &result {
         Ok(_) => {
@@ -181,11 +194,10 @@ pub async fn complete_chat(
     user: &str,
     max_tokens: u32,
 ) -> AppResult<String> {
-    let outcome = match cfg.provider {
-        Provider::Anthropic => {
-            stream_anthropic(client, cfg, system, user, None, max_tokens).await
-        }
-        Provider::OpenAi => stream_openai(client, cfg, system, user, None, max_tokens).await,
+    let outcome = if cfg.provider.is_openai_compatible() {
+        stream_openai(client, cfg, system, user, None, max_tokens).await
+    } else {
+        stream_anthropic(client, cfg, system, user, None, max_tokens).await
     }?;
     Ok(outcome.text)
 }
@@ -353,7 +365,10 @@ async fn consume_sse(
 fn extract_error(v: &Value, provider: Provider) -> Option<String> {
     let err = match provider {
         Provider::Anthropic => (v["type"] == "error").then(|| &v["error"]),
-        Provider::OpenAi => v.get("error").filter(|e| e.is_object()),
+        // DeepSeek is OpenAI-compatible; in practice it always reaches this
+        // function tagged as `OpenAi` (see `stream_openai`), but handle it
+        // identically so the match stays exhaustive.
+        Provider::OpenAi | Provider::DeepSeek => v.get("error").filter(|e| e.is_object()),
     }?;
     Some(
         err["message"]
@@ -373,7 +388,8 @@ fn extract_delta(v: &Value, provider: Provider) -> Option<String> {
                 None
             }
         }
-        Provider::OpenAi => v["choices"][0]["delta"]["content"]
+        // DeepSeek shares the OpenAI SSE shape; see the note in `extract_error`.
+        Provider::OpenAi | Provider::DeepSeek => v["choices"][0]["delta"]["content"]
             .as_str()
             .map(String::from),
     }
@@ -555,6 +571,32 @@ mod tests {
             Ok(_) => panic!("a whitespace-only key must not be accepted"),
             Err(e) => assert!(e.to_string().contains("noAiKey")),
         }
+    }
+
+    #[test]
+    fn deepseek_provider_uses_its_own_defaults_and_openai_wire_format() {
+        // DeepSeek has no model or base URL set, so it must fall back to its
+        // own defaults — not OpenAI's — while still speaking the OpenAI wire
+        // format (it is OpenAI-compatible).
+        let cfg = AiConfig::new(Some("deepseek".into()), Some("sk-key".into()), None, None)
+            .unwrap();
+        assert_eq!(cfg.model, "deepseek-chat");
+        assert_eq!(cfg.base_url, "https://api.deepseek.com");
+        assert!(cfg.provider.is_openai_compatible());
+    }
+
+    #[test]
+    fn deepseek_honours_a_custom_base_url() {
+        let cfg = AiConfig::new(
+            Some("deepseek".into()),
+            Some("sk-key".into()),
+            Some("deepseek-reasoner".into()),
+            Some("https://proxy.example.com/v1/".into()),
+        )
+        .unwrap();
+        assert_eq!(cfg.model, "deepseek-reasoner");
+        // Trailing slash trimmed, as for every provider.
+        assert_eq!(cfg.base_url, "https://proxy.example.com/v1");
     }
 
     #[test]

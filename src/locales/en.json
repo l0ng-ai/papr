@@ -474,6 +474,7 @@
       "aiModelLabel": "AI model",
       "aiModelPlaceholderOpenai": "gpt-4.1-mini (default)",
       "aiModelPlaceholderAnthropic": "claude-sonnet-4-6 (default)",
+      "aiModelPlaceholderDeepseek": "deepseek-chat (default)",
       "aiBaseUrl": "Base URL",
       "aiBaseUrlDesc": "API endpoint root. Leave blank for the provider's official endpoint, or point to any compatible provider (OpenRouter, Groq, DeepSeek, a local server)",
       "aiBaseUrlLabel": "Base URL",
