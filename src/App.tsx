@@ -77,6 +77,15 @@ export default function App() {
   const [explore, setExplore] = useState(false);
   const [newFolder, setNewFolder] = useState(false);
 
+  // Mirror "any covering modal is open" into the store. The reader's
+  // original-page view is a native child webview that floats above the whole
+  // DOM, so it would occlude a dialog opened over the reader (issue #54). The
+  // reader watches this flag and tears the view down while a modal is up.
+  const setModalOpen = useUi((s) => s.setModalOpen);
+  useEffect(() => {
+    setModalOpen(cpOpen || settings.open || addFeed || explore || newFolder);
+  }, [cpOpen, settings.open, addFeed, explore, newFolder, setModalOpen]);
+
   // ── apply appearance to the document root ──
   useEffect(() => {
     const root = document.documentElement;
