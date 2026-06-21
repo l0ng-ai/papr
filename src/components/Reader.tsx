@@ -209,6 +209,13 @@ export default function Reader({ onToast }: Props) {
   });
   const a: ArticleDetail | undefined = article.data;
 
+  // Feed list, so the article's source feed can be checked for its per-feed
+  // auto-translate flag. Shared cache key with the sidebar — no extra fetch.
+  const feeds = useQuery({ queryKey: ["feeds"], queryFn: api.listFeeds });
+  const autoTranslateFeed = !!(
+    a && feeds.data?.find((f) => f.id === a.feedId)?.autoTranslate
+  );
+
   const readMinutes = useMemo(() => {
     return estimateReadMinutes(bodyPlainText(a?.extractedHtml || a?.contentHtml || ""));
     // Recompute when the body changes — including after full-text extraction
@@ -515,6 +522,27 @@ export default function Reader({ onToast }: Props) {
     extract.mutate(a.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [a?.id, a?.extractedHtml, autoExtract]);
+
+  // Per-feed auto-translate: when the article's source feed opts in, translate
+  // it into the configured target the moment it opens. Fires once per article
+  // (guarded by `autoTranslatedRef`), only when there's a body to translate and
+  // a usable cached translation in the target language isn't already present —
+  // so a feed left untouched still shows its original text, and reopening a
+  // cached article doesn't re-spend an API call. The toolbar toggle still lets
+  // the reader flip back to the original at any time.
+  const autoTranslatedRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!autoTranslateFeed || !a || !canTranslate) return;
+    if (autoTranslatedRef.current === a.id) return;
+    autoTranslatedRef.current = a.id;
+    // A fresh cached translation for the target language needs no new job;
+    // just surface it. Otherwise start a background translation.
+    if (!(a.translatedHtml && a.translatedLang === targetLang)) {
+      startTranslate(a.id, targetLang, engine);
+    }
+    setShowTranslation(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [a?.id, autoTranslateFeed, canTranslate, targetLang, engine]);
 
   // Mark the current article read once its foot is reached. Also fires for an
   // article short enough to need no scrolling at all (`scrollHeight` already

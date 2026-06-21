@@ -63,6 +63,10 @@ export const renameFeed = (id: number, title: string) =>
  *  setting; `525600` opts the feed out of automatic refresh. */
 export const setFeedRefreshInterval = (id: number, minutes: number | null) =>
   invoke<void>("set_feed_refresh_interval", { id, minutes });
+/** Toggle a feed's auto-translate flag. When on, opening an article from the
+ *  feed translates it into the configured target language straight away. */
+export const setFeedAutoTranslate = (id: number, enabled: boolean) =>
+  invoke<void>("set_feed_auto_translate", { id, enabled });
 
 /** Refresh all feeds, reporting progress through the supplied callback. */
 export function refreshFeeds(

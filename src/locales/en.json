@@ -311,6 +311,8 @@
       "refresh12h": "Every 12 hours",
       "refresh1d": "Every day",
       "refreshOff": "Never",
+      "autoTranslate": "Auto-translate",
+      "autoTranslateDesc": "Translate articles from this feed automatically when opened",
       "unsubscribe": "Unsubscribe",
       "noMatch": "No matching feeds.",
       "opmlExported": "OPML exported to the Downloads folder",
