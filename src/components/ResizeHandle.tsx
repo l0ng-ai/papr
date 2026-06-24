@@ -23,9 +23,16 @@ interface Props {
  * the project's hand-rolled interaction code.
  *
  * The drag is tracked from the pointer's start X and the pane's start width, so
- * a slow first frame can't desync the handle from the cursor. Pointer capture
- * keeps the drag alive even if the cursor outruns the 6px hit area, and the
- * body `col-resize` cursor + a no-select guard make the gesture feel native.
+ * a slow first frame can't desync the handle from the cursor. Move/up are bound
+ * on `window` so the drag survives the cursor outrunning the 7px hit area, and
+ * the body `col-resize` cursor + a no-select guard make the gesture feel native.
+ *
+ * We deliberately do NOT use `setPointerCapture`: the handle's slot moves every
+ * frame (its `left` tracks the live `--col-*` variable), and WebKit (the macOS
+ * Tauri webview) releases the capture whenever the captured element changes
+ * position — which dropped the drag and flickered the line mid-gesture. The
+ * handle draws no line on hover/drag now (the `col-resize` cursor is the
+ * affordance); only keyboard focus shows one, where capture loss can't apply.
  */
 export default function ResizeHandle({ width, side, min, max, onResize, label }: Props) {
   // Latest props in a ref so the move/up listeners (bound once per drag) always
@@ -40,7 +47,6 @@ export default function ResizeHandle({ width, side, min, max, onResize, label }:
     const startX = e.clientX;
     const { width: startW } = latest.current;
     const target = e.currentTarget;
-    target.setPointerCapture(e.pointerId);
 
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
@@ -53,8 +59,7 @@ export default function ResizeHandle({ width, side, min, max, onResize, label }:
       const raw = side === "right" ? startW + dx : startW - dx;
       onResize(Math.min(max, Math.max(min, raw)));
     };
-    const up = (ev: PointerEvent) => {
-      target.releasePointerCapture?.(ev.pointerId);
+    const up = () => {
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
       window.removeEventListener("pointermove", move);

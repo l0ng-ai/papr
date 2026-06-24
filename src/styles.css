@@ -252,9 +252,9 @@ button { font-family: inherit; }
   background: transparent;
   transition: background .12s ease;
 }
-.resize-handle:hover::after,
-.resize-handle:focus-visible::after,
-.resize-handle:active::after {
+/* No visible line on hover/drag — the `col-resize` cursor is the affordance.
+   Keyboard focus still shows the accent line for a11y (no flicker there). */
+.resize-handle:focus-visible::after {
   background: var(--accent);
 }
 .resize-handle:focus-visible {
