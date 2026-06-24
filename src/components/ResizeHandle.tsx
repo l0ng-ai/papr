@@ -46,7 +46,6 @@ export default function ResizeHandle({ width, side, min, max, onResize, label }:
     e.preventDefault();
     const startX = e.clientX;
     const { width: startW } = latest.current;
-    const target = e.currentTarget;
 
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
