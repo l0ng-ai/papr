@@ -505,6 +505,8 @@
     "feeds": "Feeds",
     "addFeed": "Add feed",
     "emptyHint": "No feeds yet. Click + to add one.",
+    "unreadOnly": "Show unread only",
+    "allReadHint": "No unread feeds — all caught up.",
     "feedError": "Update failed",
     "uncategorized": "Uncategorized",
     "dropUngroup": "Drop here to remove from folder",

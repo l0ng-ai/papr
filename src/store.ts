@@ -63,6 +63,8 @@ export interface Prefs {
   autoExtract: boolean;
   startupView: StartupView;
   hideReadOnStartup: boolean;
+  /** Sidebar "unread only" mode — hide feeds with no unread articles. */
+  sidebarUnreadOnly: boolean;
 }
 
 const ls = {
@@ -167,6 +169,7 @@ const PREF_KEYS: (keyof Prefs)[] = [
   "autoExtract",
   "startupView",
   "hideReadOnStartup",
+  "sidebarUnreadOnly",
 ];
 
 /** Mirror the active theme into the backend settings table so the Rust side
@@ -208,6 +211,7 @@ function loadPrefs(): Prefs {
       "unread",
     ),
     hideReadOnStartup: ls.bool("pref.hideReadOnStartup", false),
+    sidebarUnreadOnly: ls.bool("pref.sidebarUnreadOnly", false),
   };
 }
 

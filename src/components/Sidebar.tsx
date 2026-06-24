@@ -94,6 +94,8 @@ export default function Sidebar({
   const query = useUi((s) => s.query);
   const select = useUi((s) => s.select);
   const showCounts = useUi((s) => s.prefs.showSidebarCounts);
+  const unreadOnly = useUi((s) => s.prefs.sidebarUnreadOnly);
+  const setPref = useUi((s) => s.setPref);
 
   const feeds = useQuery({ queryKey: ["feeds"], queryFn: api.listFeeds });
   const folders = useQuery({ queryKey: ["folders"], queryFn: api.listFolders });
@@ -198,8 +200,19 @@ export default function Sidebar({
   const allFeeds = feeds.data ?? [];
   const allFolders = folders.data ?? [];
   const allTags = tags.data ?? [];
-  const ungrouped = allFeeds.filter((f) => f.folderId == null);
   const isActive = (q: ArticleQuery) => sameQuery(q, query);
+
+  // "Unread only" hides feeds with nothing unread, decluttering large
+  // sidebars. The currently-selected feed is always kept so it doesn't vanish
+  // from under the user the moment its last article is marked read, and the
+  // filter is suspended mid-drag so a drag target never disappears.
+  const feedVisible = (f: Feed) =>
+    !unreadOnly ||
+    dragId != null ||
+    f.unreadCount > 0 ||
+    isActive({ kind: "feed", value: f.id });
+  const visibleFeeds = allFeeds.filter(feedVisible);
+  const ungrouped = visibleFeeds.filter((f) => f.folderId == null);
 
   // ── drag to move a feed between folders ──
   const handleDrop = (target: number | null) => {
@@ -538,6 +551,15 @@ export default function Sidebar({
           <span>{t("sidebar.feeds")}</span>
           <span className="sb-section-actions">
             <button
+              className={unreadOnly ? "active" : ""}
+              onClick={() => setPref({ sidebarUnreadOnly: !unreadOnly })}
+              title={t("sidebar.unreadOnly")}
+              aria-label={t("sidebar.unreadOnly")}
+              aria-pressed={unreadOnly}
+            >
+              <Icon name={unreadOnly ? "eye-off" : "eye"} size={12} />
+            </button>
+            <button
               onClick={createFolder}
               title={t("app.newFolderTitle")}
               aria-label={t("app.newFolderTitle")}
@@ -564,6 +586,19 @@ export default function Sidebar({
             }}
           >
             {t("sidebar.emptyHint")}
+          </div>
+        )}
+
+        {allFeeds.length > 0 && unreadOnly && visibleFeeds.length === 0 && (
+          <div
+            style={{
+              padding: "10px 12px",
+              fontSize: 12,
+              color: "var(--muted)",
+              lineHeight: 1.5,
+            }}
+          >
+            {t("sidebar.allReadHint")}
           </div>
         )}
 
@@ -597,7 +632,11 @@ export default function Sidebar({
         )}
 
         {allFolders.map((folder) => {
-          const inFolder = allFeeds.filter((f) => f.folderId === folder.id);
+          const inFolder = visibleFeeds.filter((f) => f.folderId === folder.id);
+          // In "unread only" mode an empty folder is hidden — unless a drag is
+          // active, when it must stay as a drop target.
+          if (unreadOnly && dragId == null && inFolder.length === 0)
+            return null;
           const isCollapsed = collapsed[folder.id];
           // Aggregate unread for the folder. Shown only while collapsed —
           // expanded, the per-feed badges already carry the same signal, and a

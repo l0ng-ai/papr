@@ -505,6 +505,8 @@
     "feeds": "订阅源",
     "addFeed": "添加订阅源",
     "emptyHint": "还没有订阅源。点击 + 添加一个。",
+    "unreadOnly": "仅显示未读",
+    "allReadHint": "没有未读的订阅源 — 已全部读完。",
     "feedError": "更新失败",
     "uncategorized": "未分类",
     "dropUngroup": "拖到此处移出文件夹",

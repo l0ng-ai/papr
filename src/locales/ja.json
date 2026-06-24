@@ -505,6 +505,8 @@
     "feeds": "フィード",
     "addFeed": "フィードを追加",
     "emptyHint": "フィードがまだありません。+ をクリックして追加してください。",
+    "unreadOnly": "未読のみ表示",
+    "allReadHint": "未読のフィードはありません — すべて既読です。",
     "feedError": "更新に失敗しました",
     "uncategorized": "未分類",
     "dropUngroup": "ここにドロップしてフォルダから外す",
