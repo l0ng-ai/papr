@@ -314,6 +314,8 @@
       "refresh12h": "每 12 小时",
       "refresh1d": "每天",
       "refreshOff": "从不",
+      "autoTranslate": "自动翻译",
+      "autoTranslateDesc": "打开此订阅源的文章时自动翻译",
       "unsubscribe": "退订",
       "noMatch": "没有匹配的订阅源。",
       "opmlExported": "OPML 已导出到下载文件夹",

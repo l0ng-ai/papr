@@ -234,6 +234,7 @@ pub fn run() {
             commands::delete_feed,
             commands::move_feed,
             commands::set_feed_refresh_interval,
+            commands::set_feed_auto_translate,
             commands::rename_feed,
             commands::refresh_feeds,
             commands::list_articles,

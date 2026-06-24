@@ -1706,6 +1706,7 @@ button { font-family: inherit; }
 .s-feed-row .url { color: var(--muted); font-size: 12px; font-family: var(--mono); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .s-feed-row .actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .s-feed-row .actions .s-select { padding-top: 3px; padding-bottom: 3px; }
+.s-feed-row .s-feed-autotr { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; }
 .s-feed-row .icon-btn {
   width: 26px; height: 26px;
   background: none; border: 0;

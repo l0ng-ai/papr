@@ -819,6 +819,14 @@ function SubscriptionsSection({
       .then(() => qc.invalidateQueries({ queryKey: ["feeds"] }))
       .catch((e) => reportError(e));
   };
+  // Per-feed auto-translate: opening an article from a feed with this on
+  // translates it into the configured target language straight away.
+  const updateAutoTranslate = (f: Feed, enabled: boolean) => {
+    api
+      .setFeedAutoTranslate(f.id, enabled)
+      .then(() => qc.invalidateQueries({ queryKey: ["feeds"] }))
+      .catch((e) => reportError(e));
+  };
 
   const exportOpml = async () => {
     try {
@@ -922,6 +930,17 @@ function SubscriptionsSection({
               <span className="name">{f.title}</span>
               <span className="url">{feedHost(f)}</span>
               <div className="actions">
+                <label
+                  className="s-feed-autotr"
+                  title={t("settings.subscriptions.autoTranslateDesc")}
+                >
+                  <Icon name="globe" size={13} color="var(--muted)" />
+                  <Toggle
+                    checked={f.autoTranslate}
+                    onChange={(v) => updateAutoTranslate(f, v)}
+                    aria-label={t("settings.subscriptions.autoTranslate")}
+                  />
+                </label>
                 <Select
                   value={intervalValue(f.refreshIntervalMin)}
                   options={intervalOptions}

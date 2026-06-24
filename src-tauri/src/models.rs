@@ -58,6 +58,10 @@ pub struct Feed {
     /// Per-feed refresh interval in minutes. `None` follows the global
     /// `refresh_interval_min` setting; the `525_600` sentinel means "never".
     pub refresh_interval_min: Option<i64>,
+    /// When `true`, opening an article from this feed automatically starts a
+    /// translation into the configured target language. Off by default, so
+    /// existing feeds keep showing the original text.
+    pub auto_translate: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

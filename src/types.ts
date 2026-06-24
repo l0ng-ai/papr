@@ -61,6 +61,9 @@ export interface Feed {
   /** Per-feed refresh interval in minutes. `null` follows the global
    *  setting; the `525600` sentinel means "never". */
   refreshIntervalMin: number | null;
+  /** When true, opening an article from this feed auto-translates it into the
+   *  configured target language. Defaults to false (show the original). */
+  autoTranslate: boolean;
 }
 
 export interface Enclosure {

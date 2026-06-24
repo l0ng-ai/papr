@@ -197,6 +197,7 @@ pub async fn add_feed(
         fetch_error: None,
         unread_count: unread,
         refresh_interval_min: None,
+        auto_translate: false,
     })
 }
 
@@ -275,6 +276,18 @@ pub async fn set_feed_refresh_interval(
 ) -> AppResult<()> {
     let conn = state.db.lock().await;
     db::set_feed_refresh_interval(&conn, id, minutes)
+}
+
+/// Toggle a feed's auto-translate flag. When on, opening any article from this
+/// feed automatically translates it into the configured target language.
+#[tauri::command]
+pub async fn set_feed_auto_translate(
+    state: State<'_, AppState>,
+    id: i64,
+    enabled: bool,
+) -> AppResult<()> {
+    let conn = state.db.lock().await;
+    db::set_feed_auto_translate(&conn, id, enabled)
 }
 
 #[tauri::command]
@@ -1275,6 +1288,7 @@ pub async fn add_newsletter_source(
         fetch_error: None,
         unread_count: unread,
         refresh_interval_min: None,
+        auto_translate: false,
     })
 }
 

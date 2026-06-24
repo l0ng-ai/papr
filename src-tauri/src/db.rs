@@ -245,6 +245,12 @@ static MIGRATIONS: LazyLock<Migrations> = LazyLock::new(|| {
         // v15 — per-feed refresh interval (minutes). NULL follows the global
         // `refresh_interval_min` setting; the 525_600 sentinel means "never".
         M::up("ALTER TABLE feeds ADD COLUMN refresh_interval_min INTEGER;"),
+        // v16 — per-feed auto-translate. 0 (the default) shows the original
+        // text; 1 translates an article into the configured target language the
+        // moment it is opened.
+        M::up(
+            "ALTER TABLE feeds ADD COLUMN auto_translate INTEGER NOT NULL DEFAULT 0;",
+        ),
     ])
 });
 
@@ -462,7 +468,7 @@ pub fn list_feeds(conn: &Connection) -> AppResult<Vec<Feed>> {
         "SELECT f.id, f.feed_url, f.site_url, f.title, f.description, f.favicon_url,
                 f.folder_id, f.source_type, f.last_fetched_at, f.fetch_error,
                 (SELECT COUNT(*) FROM articles a WHERE a.feed_id = f.id AND a.is_read = 0),
-                f.refresh_interval_min
+                f.refresh_interval_min, f.auto_translate
          FROM feeds f ORDER BY f.title COLLATE NOCASE",
     )?;
     let rows = stmt
@@ -480,6 +486,7 @@ pub fn list_feeds(conn: &Connection) -> AppResult<Vec<Feed>> {
                 fetch_error: r.get(9)?,
                 unread_count: r.get(10)?,
                 refresh_interval_min: r.get(11)?,
+                auto_translate: r.get::<_, i64>(12)? != 0,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -545,6 +552,16 @@ pub fn set_feed_refresh_interval(
     conn.execute(
         "UPDATE feeds SET refresh_interval_min = ?2 WHERE id = ?1",
         params![id, minutes],
+    )?;
+    Ok(())
+}
+
+/// Toggle a feed's per-feed auto-translate flag. When on, opening an article
+/// from this feed starts a translation into the configured target language.
+pub fn set_feed_auto_translate(conn: &Connection, id: i64, enabled: bool) -> AppResult<()> {
+    conn.execute(
+        "UPDATE feeds SET auto_translate = ?2 WHERE id = ?1",
+        params![id, enabled as i64],
     )?;
     Ok(())
 }

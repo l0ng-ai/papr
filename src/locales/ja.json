@@ -314,6 +314,8 @@
       "refresh12h": "12時間ごと",
       "refresh1d": "1日ごと",
       "refreshOff": "なし",
+      "autoTranslate": "自動翻訳",
+      "autoTranslateDesc": "このフィードの記事を開いたときに自動的に翻訳します",
       "unsubscribe": "購読解除",
       "noMatch": "一致するフィードがありません。",
       "opmlExported": "OPML をダウンロードフォルダにエクスポートしました",
