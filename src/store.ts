@@ -114,6 +114,11 @@ interface UiState {
   // transient view modes
   focusMode: boolean;
   aiOpen: boolean;
+  /** A covering modal (subscribe / settings / explore …) is open. The reader's
+   *  original-page view is a native child webview that floats above the whole
+   *  DOM — including modals — so it must be torn down while one is up, or it
+   *  occludes the dialog (issue #54). The reader effect watches this flag. */
+  modalOpen: boolean;
 
   select: (query: ArticleQuery, label: string) => void;
   openArticle: (id: number | null) => void;
@@ -132,6 +137,7 @@ interface UiState {
 
   setFocusMode: (v: boolean) => void;
   setAiOpen: (v: boolean) => void;
+  setModalOpen: (v: boolean) => void;
 }
 
 const PREF_KEYS: (keyof Prefs)[] = [
@@ -222,6 +228,7 @@ export const useUi = create<UiState>((set) => ({
 
   focusMode: false,
   aiOpen: false,
+  modalOpen: false,
 
   select: (query, label) => {
     // Remember the selection so the "open on startup: last view" preference
@@ -271,6 +278,7 @@ export const useUi = create<UiState>((set) => ({
 
   setFocusMode: (focusMode) => set({ focusMode }),
   setAiOpen: (aiOpen) => set({ aiOpen }),
+  setModalOpen: (modalOpen) => set({ modalOpen }),
 }));
 
 // Seed the backend's theme copy on startup so an existing install — whose

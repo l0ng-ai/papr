@@ -233,9 +233,16 @@ export default function Reader({ onToast }: Props) {
   // webview aligned to it across window/sidebar resizes. (Switching articles
   // resets viewMode to "reader" above, so a.url is stable within a session.)
   const articleUrl = a?.url ?? null;
+  // Anything that floats over the reading area suspends the page view: the
+  // child webview floats above the whole DOM, so it would otherwise occlude a
+  // covering modal (subscribe / settings / explore — issue #54) or the AI
+  // drawer that slides over the reader's right edge. When the overlay closes
+  // this effect re-runs and re-opens the view at the current bounds.
+  const modalOpen = useUi((s) => s.modalOpen);
+  const overlayOpen = modalOpen || aiOpen;
   useEffect(() => {
     const host = pageHostRef.current;
-    if (viewMode !== "web" || !articleUrl || !host) return;
+    if (viewMode !== "web" || !articleUrl || !host || overlayOpen) return;
 
     const bounds = () => {
       const r = host.getBoundingClientRect();
@@ -267,7 +274,7 @@ export default function Reader({ onToast }: Props) {
       window.removeEventListener("resize", sync);
       api.closePageView().catch(() => {});
     };
-  }, [viewMode, articleUrl]);
+  }, [viewMode, articleUrl, overlayOpen]);
 
   // Recover article-body images the webview fails to load, then hide the
   // stragglers. The webview sends no Referer (see sanitize.rs) — right for
