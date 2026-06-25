@@ -772,6 +772,11 @@ button { font-family: inherit; }
   align-items: center;
   gap: 6px;
   text-decoration: none;
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: inherit;
+  cursor: pointer;
 }
 .article-feed:hover { text-decoration: underline; }
 .article-title {

@@ -190,6 +190,7 @@
     "episodePlay": "Play episode",
     "episodePlaying": "Now playing",
     "readMinutes": "{{count}} min read",
+    "viewAllFromFeed": "View all articles from this feed",
     "extractingFullText": "Extracting full text…",
     "noContent": "No content available.",
     "aiSummaryTitle": "AI summary",

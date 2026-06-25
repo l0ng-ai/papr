@@ -856,10 +856,17 @@ export default function Reader({ onToast }: Props) {
         }}
       >
         <article className="article reader-content" key={a.id}>
-          <span className="article-feed">
+          <button
+            type="button"
+            className="article-feed"
+            title={t("reader.viewAllFromFeed")}
+            onClick={() =>
+              useUi.getState().select({ kind: "feed", value: a.feedId }, a.feedTitle)
+            }
+          >
             <Icon name="rss" size={13} />
             {a.feedTitle}
-          </span>
+          </button>
           <h1 className="article-title">{a.title}</h1>
           <div className="article-meta">
             {a.author && <span className="author">{a.author}</span>}

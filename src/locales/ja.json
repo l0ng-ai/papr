@@ -190,6 +190,7 @@
     "episodePlay": "エピソードを再生",
     "episodePlaying": "再生中",
     "readMinutes": "{{count}} 分で読了",
+    "viewAllFromFeed": "このフィードの記事をすべて表示",
     "extractingFullText": "全文を抽出中…",
     "noContent": "本文がありません。",
     "aiSummaryTitle": "AI要約",

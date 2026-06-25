@@ -190,6 +190,7 @@
     "episodePlay": "播放音频",
     "episodePlaying": "正在播放",
     "readMinutes": "{{count}} 分钟阅读",
+    "viewAllFromFeed": "查看该订阅源的全部文章",
     "extractingFullText": "正在提取全文…",
     "noContent": "暂无正文内容。",
     "aiSummaryTitle": "AI 摘要",
