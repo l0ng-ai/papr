@@ -6,9 +6,8 @@
 // `papr-core` (shared with the agent CLI). Re-export them under their original
 // crate paths so the rest of the app keeps referring to `crate::db`,
 // `crate::ingestion`, etc. unchanged.
-pub use papr_core::{db, error, extraction, ingestion, models, opml, sanitize};
+pub use papr_core::{ai, db, error, extraction, ingestion, models, opml, sanitize};
 
-mod ai;
 mod commands;
 mod notify;
 mod page_view;
