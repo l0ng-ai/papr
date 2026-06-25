@@ -264,13 +264,13 @@ export default function App() {
   // twice under StrictMode, which previously fired the refresh twice in dev.
   // `refreshing` state is kept purely to drive the sidebar spinner.
   const refreshingRef = useRef(false);
-  const doRefresh = useCallback(() => {
+  const doRefresh = useCallback((scope?: { feedId?: number; folderId?: number }) => {
     if (refreshingRef.current) return;
     refreshingRef.current = true;
     setRefreshing(true);
     showToast(t("app.refreshing"));
     api
-      .refreshFeeds()
+      .refreshFeeds(undefined, scope)
       .then((n) => {
         // Refresh only the caches a feed fetch can actually change — a bare
         // `invalidateQueries()` would also refetch unrelated queries (rules,

@@ -436,6 +436,22 @@ button { font-family: inherit; }
   cursor: pointer;
   white-space: nowrap;
 }
+.sb-folder { border-radius: 7px; transition: background .12s, color .12s; }
+.sb-folder:hover { background: var(--hover); }
+.sb-folder.active { background: var(--accent-soft); color: var(--accent-ink); }
+.sb-folder.active .sb-count { color: var(--accent-ink); }
+.sb-folder-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  flex-shrink: 0;
+}
 .sb-folder svg { transition: transform .2s; }
 .sb-folder.collapsed svg { transform: rotate(-90deg); }
 .sb-folder .sb-folder-name {

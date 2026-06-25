@@ -542,6 +542,39 @@ pub fn feeds_due_for_refresh(
     Ok(rows)
 }
 
+/// Non-newsletter feeds for a single feed id — the per-feed manual refresh.
+/// An empty result means the id is unknown or names a newsletter source (which
+/// is polled over IMAP, not fetched here).
+pub fn feeds_to_refresh_for_feed(conn: &Connection, feed_id: i64) -> AppResult<Vec<FeedToRefresh>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, feed_url, etag, last_modified FROM feeds
+         WHERE source_type != 'newsletter' AND id = ?1",
+    )?;
+    let rows = stmt
+        .query_map(params![feed_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// Non-newsletter feeds in a folder — the per-folder manual refresh.
+pub fn feeds_to_refresh_in_folder(
+    conn: &Connection,
+    folder_id: i64,
+) -> AppResult<Vec<FeedToRefresh>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, feed_url, etag, last_modified FROM feeds
+         WHERE source_type != 'newsletter' AND folder_id = ?1",
+    )?;
+    let rows = stmt
+        .query_map(params![folder_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 /// Set (or clear) a feed's per-feed refresh interval. `None` reverts the feed
 /// to the global interval; `Some(REFRESH_OFF_MINUTES)` opts it out entirely.
 pub fn set_feed_refresh_interval(
@@ -836,6 +869,63 @@ pub fn newsletter_sources_due_to_poll(
     )?;
     let rows = stmt
         .query_map(params![global_min, REFRESH_OFF_MINUTES], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                NewsletterConfig {
+                    host: r.get::<_, String>(1)?,
+                    port: r.get::<_, i64>(2)? as u16,
+                    username: r.get::<_, String>(3)?,
+                    password: r.get::<_, String>(4)?,
+                    folder: r.get::<_, String>(5)?,
+                },
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// `(feed_id, IMAP config)` for a single newsletter source — the per-feed
+/// manual refresh. Empty when the feed id is not a newsletter source.
+pub fn newsletter_sources_for_feed(
+    conn: &Connection,
+    feed_id: i64,
+) -> AppResult<Vec<(i64, crate::ingestion::newsletter::NewsletterConfig)>> {
+    use crate::ingestion::newsletter::NewsletterConfig;
+    let mut stmt = conn.prepare(
+        "SELECT feed_id, host, port, username, password, folder
+         FROM newsletter_sources WHERE feed_id = ?1",
+    )?;
+    let rows = stmt
+        .query_map(params![feed_id], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                NewsletterConfig {
+                    host: r.get::<_, String>(1)?,
+                    port: r.get::<_, i64>(2)? as u16,
+                    username: r.get::<_, String>(3)?,
+                    password: r.get::<_, String>(4)?,
+                    folder: r.get::<_, String>(5)?,
+                },
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
+/// `(feed_id, IMAP config)` for the newsletter sources in a folder — the
+/// per-folder manual refresh.
+pub fn newsletter_sources_in_folder(
+    conn: &Connection,
+    folder_id: i64,
+) -> AppResult<Vec<(i64, crate::ingestion::newsletter::NewsletterConfig)>> {
+    use crate::ingestion::newsletter::NewsletterConfig;
+    let mut stmt = conn.prepare(
+        "SELECT s.feed_id, s.host, s.port, s.username, s.password, s.folder
+         FROM newsletter_sources s JOIN feeds f ON f.id = s.feed_id
+         WHERE f.folder_id = ?1",
+    )?;
+    let rows = stmt
+        .query_map(params![folder_id], |r| {
             Ok((
                 r.get::<_, i64>(0)?,
                 NewsletterConfig {

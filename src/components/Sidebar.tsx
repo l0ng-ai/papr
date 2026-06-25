@@ -19,7 +19,9 @@ interface Props {
   onExplore: () => void;
   onOpenSettings: (section?: string) => void;
   onSearchClick: () => void;
-  onRefresh: () => void;
+  /** Refresh feeds. With no scope refreshes everything (the toolbar button);
+   *  pass `{ feedId }` or `{ folderId }` for the per-source context menus. */
+  onRefresh: (scope?: { feedId?: number; folderId?: number }) => void;
   refreshing: boolean;
   onToast: (msg: string) => void;
 }
@@ -252,6 +254,12 @@ export default function Sidebar({
       });
     return [
       {
+        icon: "refresh",
+        label: t("sidebar.refreshFeed"),
+        onClick: () => onRefresh({ feedId: f.id }),
+      },
+      { separator: true },
+      {
         icon: "check-all",
         label: t("sidebar.markAllRead"),
         onClick: () =>
@@ -290,6 +298,12 @@ export default function Sidebar({
   };
 
   const folderMenu = (folder: Folder): MenuEntry[] => [
+    {
+      icon: "refresh",
+      label: t("sidebar.refreshFolder"),
+      onClick: () => onRefresh({ folderId: folder.id }),
+    },
+    { separator: true },
     {
       icon: "check-all",
       label: t("sidebar.markAllRead"),
@@ -638,9 +652,11 @@ export default function Sidebar({
           if (unreadOnly && dragId == null && inFolder.length === 0)
             return null;
           const isCollapsed = collapsed[folder.id];
-          // Aggregate unread for the folder. Shown only while collapsed —
-          // expanded, the per-feed badges already carry the same signal, and a
-          // header total would just duplicate them.
+          const folderActive = isActive({ kind: "folder", value: folder.id });
+          // Aggregate unread for the folder. Shown while collapsed or when the
+          // folder is the active view — expanded *and* not selected, the
+          // per-feed badges already carry the same signal and a header total
+          // would just duplicate them.
           const folderUnread = inFolder.reduce((n, f) => n + f.unreadCount, 0);
           return (
             <div
@@ -659,24 +675,39 @@ export default function Sidebar({
               }
             >
               <div
-                className={`sb-folder ${isCollapsed ? "collapsed" : ""}`}
+                className={`sb-folder ${isCollapsed ? "collapsed" : ""} ${
+                  folderActive ? "active" : ""
+                }`}
                 role="button"
                 tabIndex={0}
-                aria-expanded={!isCollapsed}
-                onClick={() =>
-                  setCollapsed((s) => ({ ...s, [folder.id]: !isCollapsed }))
-                }
+                aria-current={folderActive || undefined}
+                onClick={() => select({ kind: "folder", value: folder.id }, folder.name)}
                 onKeyDown={onActivate(() =>
-                  setCollapsed((s) => ({ ...s, [folder.id]: !isCollapsed })),
+                  select({ kind: "folder", value: folder.id }, folder.name),
                 )}
                 onContextMenu={(e) => {
                   e.preventDefault();
                   setMenu({ x: e.clientX, y: e.clientY, kind: "folder", folder });
                 }}
               >
-                <Icon name="chevron-down" size={11} />
+                {/* The chevron is the expand/collapse affordance; clicking the
+                    folder name selects the folder's combined article view. */}
+                <button
+                  type="button"
+                  className="sb-folder-toggle"
+                  aria-label={t(
+                    isCollapsed ? "sidebar.expandFolder" : "sidebar.collapseFolder",
+                  )}
+                  aria-expanded={!isCollapsed}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setCollapsed((s) => ({ ...s, [folder.id]: !isCollapsed }));
+                  }}
+                >
+                  <Icon name="chevron-down" size={11} />
+                </button>
                 <span className="sb-folder-name">{folder.name}</span>
-                {showCounts && isCollapsed && folderUnread > 0 && (
+                {showCounts && (isCollapsed || folderActive) && folderUnread > 0 && (
                   <span className="sb-count">{folderUnread}</span>
                 )}
               </div>
@@ -767,7 +798,7 @@ export default function Sidebar({
         <button
           title={t("sidebar.refreshAll")}
           aria-label={t("sidebar.refreshAll")}
-          onClick={onRefresh}
+          onClick={() => onRefresh()}
           disabled={refreshing}
           className={refreshing ? "spinning" : ""}
         >

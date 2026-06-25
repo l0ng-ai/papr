@@ -302,8 +302,17 @@ pub async fn rename_feed(state: State<'_, AppState>, id: i64, title: String) -> 
 pub async fn refresh_feeds(
     app: AppHandle,
     on_progress: Channel<RefreshProgress>,
+    feed_id: Option<i64>,
+    folder_id: Option<i64>,
 ) -> AppResult<usize> {
-    scheduler::refresh_all(&app, Some(on_progress), false, scheduler::RefreshScope::All).await
+    // A single feed wins over a folder when both are passed; with neither, this
+    // is the whole-library manual refresh.
+    let scope = match (feed_id, folder_id) {
+        (Some(id), _) => scheduler::RefreshScope::Feed(id),
+        (_, Some(id)) => scheduler::RefreshScope::Folder(id),
+        _ => scheduler::RefreshScope::All,
+    };
+    scheduler::refresh_all(&app, Some(on_progress), false, scope).await
 }
 
 // ─────────────────────────── articles ───────────────────────────

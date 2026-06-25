@@ -94,6 +94,10 @@ pub enum RefreshScope {
     /// Only sources whose per-feed (or global) interval has elapsed — the
     /// background scheduler. An empty due-set skips the whole pipeline.
     Due,
+    /// A single feed (or newsletter source) — the per-feed manual refresh.
+    Feed(i64),
+    /// Every feed in one folder — the per-folder manual refresh.
+    Folder(i64),
 }
 
 /// Refresh feeds (bounded concurrency) selected by `scope`. Streams per-feed
@@ -147,6 +151,14 @@ pub async fn refresh_all(
             RefreshScope::Due => (
                 db::feeds_due_for_refresh(&conn, global_min)?,
                 db::newsletter_sources_due_to_poll(&conn, global_min).unwrap_or_default(),
+            ),
+            RefreshScope::Feed(id) => (
+                db::feeds_to_refresh_for_feed(&conn, id)?,
+                db::newsletter_sources_for_feed(&conn, id).unwrap_or_default(),
+            ),
+            RefreshScope::Folder(id) => (
+                db::feeds_to_refresh_in_folder(&conn, id)?,
+                db::newsletter_sources_in_folder(&conn, id).unwrap_or_default(),
             ),
         };
         let concurrency =

@@ -68,13 +68,20 @@ export const setFeedRefreshInterval = (id: number, minutes: number | null) =>
 export const setFeedAutoTranslate = (id: number, enabled: boolean) =>
   invoke<void>("set_feed_auto_translate", { id, enabled });
 
-/** Refresh all feeds, reporting progress through the supplied callback. */
+/** Refresh feeds, reporting progress through the supplied callback. With no
+ *  `scope` this refreshes every feed; pass `{ feedId }` for a single feed or
+ *  `{ folderId }` for every feed in one folder. */
 export function refreshFeeds(
   onProgress?: (p: RefreshProgress) => void,
+  scope?: { feedId?: number; folderId?: number },
 ): Promise<number> {
   const channel = new Channel<RefreshProgress>();
   if (onProgress) channel.onmessage = onProgress;
-  return invoke<number>("refresh_feeds", { onProgress: channel });
+  return invoke<number>("refresh_feeds", {
+    onProgress: channel,
+    feedId: scope?.feedId ?? null,
+    folderId: scope?.folderId ?? null,
+  });
 }
 
 // ── articles ──
