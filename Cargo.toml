@@ -27,6 +27,7 @@ chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
 thiserror = "2"
 log = "0.4"
+clap = { version = "4", features = ["derive", "env"] }
 
 # The desktop bundle is size-optimized and stripped; the agent CLI inherits the
 # same release profile (one static binary to drop on an agent's PATH).

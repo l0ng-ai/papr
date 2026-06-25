@@ -49,6 +49,9 @@ pub enum RefreshScope {
     /// Only sources whose per-feed (or global) interval has elapsed — the
     /// background scheduler. An empty due-set skips the whole pipeline.
     Due,
+    /// A single feed by id (and its newsletter mailbox, if any) — the CLI's
+    /// targeted `refresh --feed <id>`. Always runs the pipeline.
+    One(i64),
 }
 
 /// Insert a batch of articles for one feed in bounded chunks, releasing the
@@ -145,6 +148,20 @@ pub async fn refresh_core(
                 db::feeds_due_for_refresh(&conn, global_min)?,
                 db::newsletter_sources_due_to_poll(&conn, global_min).unwrap_or_default(),
             ),
+            RefreshScope::One(id) => {
+                let feeds = conn
+                    .prepare("SELECT id, feed_url, etag, last_modified FROM feeds WHERE id = ?1")?
+                    .query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+                    .collect::<Result<Vec<db::FeedToRefresh>, _>>()?;
+                // A newsletter feed has a row in `newsletter_sources`; filter the
+                // full poll set down to this one id (small N, no extra query).
+                let newsletters = db::newsletter_sources_to_poll(&conn)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|(fid, _)| *fid == id)
+                    .collect();
+                (feeds, newsletters)
+            }
         };
         let concurrency =
             db::setting_parsed::<i64>(&conn, "net_concurrency", 6).clamp(1, 16) as usize;
