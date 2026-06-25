@@ -9,6 +9,14 @@ edition = "2021"
 name = "papr_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+# Distinct binary name so the desktop app's cargo output (`papr-desktop`) does
+# not collide with the agent CLI's `papr` binary in the shared workspace target
+# dir. The bundled product is still "Papr" (see tauri.conf.json productName /
+# mainBinaryName); only the intermediate cargo binary name changes.
+[[bin]]
+name = "papr-desktop"
+path = "src/main.rs"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 

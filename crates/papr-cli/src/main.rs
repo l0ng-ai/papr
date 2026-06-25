@@ -6,6 +6,7 @@
 //! pre-computed aggregates, definitive empty states, idempotent mutations, and
 //! structured errors (also on stdout). Diagnostics go to stderr.
 
+mod setup;
 mod toon;
 
 use clap::{Parser, Subcommand};
@@ -179,6 +180,13 @@ enum Cmd {
     Admin {
         #[command(subcommand)]
         cmd: AdminCmd,
+    },
+    /// Register a SessionStart integration so agents see your unread state at
+    /// the start of every conversation (Claude Code / Codex / OpenCode).
+    Setup {
+        /// Which agent host to wire up.
+        #[arg(long, default_value = "all", value_parser = ["all", "claude", "codex", "opencode"])]
+        app: String,
     },
 }
 
@@ -466,6 +474,8 @@ async fn run(cli: Cli) -> Result<String, AxiError> {
         Some(Cmd::Settings { cmd }) => cmd_settings(&path, cmd),
         Some(Cmd::Stats) => cmd_stats(&path),
         Some(Cmd::Admin { cmd }) => cmd_admin(&path, cmd),
+        // Setup writes agent config files, not the DB — it never opens `path`.
+        Some(Cmd::Setup { app }) => setup::run(&app),
     }
 }
 

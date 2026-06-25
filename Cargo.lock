@@ -3448,6 +3448,7 @@ dependencies = [
  "papr-core",
  "reqwest 0.12.28",
  "rusqlite",
+ "serde_json",
  "tokio",
 ]
 
