@@ -72,7 +72,7 @@ pub async fn refresh_all(
     // Reconcile read/starred state with the sync server, if one is connected.
     // A sync mutates article state and may add feeds, so emit `feeds-updated`
     // again afterwards — the first emit fired before the sync touched the DB.
-    match sync::run_if_connected(app).await {
+    match sync::run_if_connected(&state.db, &client).await {
         Ok(true) => {
             let _ = app.emit("feeds-updated", 0);
         }

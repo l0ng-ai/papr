@@ -14,6 +14,7 @@ use papr_core::ai::{self, AiConfig};
 use papr_core::db;
 use papr_core::ingestion::{fetch, parse, refresh};
 use papr_core::models::ArticleQuery;
+use papr_core::sync;
 use rusqlite::Connection;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -219,6 +220,35 @@ enum Cmd {
         #[arg(long)]
         lang: String,
     },
+    /// FreshRSS / GReader sync (status / connect / disconnect / run).
+    Sync {
+        #[command(subcommand)]
+        cmd: Option<SyncCmd>,
+    },
+}
+
+#[derive(Subcommand)]
+enum SyncCmd {
+    /// Show the current sync connection (default).
+    Status,
+    /// Connect to a FreshRSS / Miniflux server (verifies credentials).
+    Connect {
+        #[arg(long)]
+        url: String,
+        #[arg(long)]
+        user: String,
+        #[arg(long)]
+        password: String,
+        #[arg(long, value_parser = ["freshrss", "miniflux"])]
+        provider: Option<String>,
+    },
+    /// Forget the stored sync credentials.
+    Disconnect {
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Run a full sync now (push queued changes, pull subscriptions & state).
+    Run,
 }
 
 /// A view selector shared by `mark-all` (and reusable by other bulk verbs).
@@ -511,6 +541,7 @@ async fn run(cli: Cli) -> Result<String, AxiError> {
         Some(Cmd::Ask { question, limit }) => cmd_ask(&path, &question, limit).await,
         Some(Cmd::Digest { limit }) => cmd_digest(&path, limit).await,
         Some(Cmd::Translate { id, lang }) => cmd_translate(&path, id, &lang).await,
+        Some(Cmd::Sync { cmd }) => cmd_sync(&path, cmd.unwrap_or(SyncCmd::Status)).await,
     }
 }
 
@@ -961,6 +992,70 @@ async fn cmd_refresh(path: &Path, feed: Option<i64>) -> Result<String, AxiError>
         out.help(&["Run `papr list` to see what's new".into()]);
     }
     Ok(out.into_string())
+}
+
+// ─────────────────────────────── sync ───────────────────────────────
+
+async fn cmd_sync(path: &Path, cmd: SyncCmd) -> Result<String, AxiError> {
+    let conn = db::open(path).map_err(db_err)?;
+    let dbm = tokio::sync::Mutex::new(conn);
+    let client = http_client()?;
+    match cmd {
+        SyncCmd::Status => {
+            let info = sync::connected_url(&dbm)
+                .await
+                .map_err(|e| AxiError::runtime(format!("{e}")))?;
+            let mut out = Out::new();
+            out.header(0, "sync");
+            match info {
+                Some((url, provider)) => {
+                    out.kv(1, "connected", "true");
+                    out.kv(1, "provider", &provider);
+                    out.kv(1, "url", &url);
+                    out.help(&["Run `papr sync run` to reconcile now".into()]);
+                }
+                None => {
+                    out.kv(1, "connected", "false");
+                    out.help(&[
+                        "Run `papr sync connect --url <u> --user <u> --password <p>` to connect"
+                            .into(),
+                    ]);
+                }
+            }
+            Ok(out.into_string())
+        }
+        SyncCmd::Connect { url, user, password, provider } => {
+            sync::connect(&dbm, &client, &url, &user, &password, provider.as_deref())
+                .await
+                .map_err(|e| AxiError::runtime(format!("connect failed: {e}")))?;
+            let mut out = Out::new();
+            out.line(0, &format!("sync: connected to {url}"));
+            out.help(&["Run `papr sync run` to reconcile now".into()]);
+            Ok(out.into_string())
+        }
+        SyncCmd::Disconnect { yes } => {
+            require_yes(yes, "sync disconnect", "papr sync disconnect")?;
+            sync::disconnect(&dbm).await.map_err(db_err)?;
+            ok_line("sync: disconnected".into())
+        }
+        SyncCmd::Run => {
+            let connected = sync::connected_url(&dbm).await.map_err(db_err)?.is_some();
+            if !connected {
+                let mut out = Out::new();
+                out.line(0, "sync: not connected (no-op)");
+                out.help(&["Run `papr sync connect ...` first".into()]);
+                return Ok(out.into_string());
+            }
+            eprintln!("syncing…");
+            let n = sync::sync_now(&dbm, &client)
+                .await
+                .map_err(|e| AxiError::runtime(format!("sync failed: {e}")))?;
+            let mut out = Out::new();
+            out.header(0, "sync");
+            out.kv(1, "reconciled", &n.to_string());
+            Ok(out.into_string())
+        }
+    }
 }
 
 // ─────────────────────────────── AI ───────────────────────────────

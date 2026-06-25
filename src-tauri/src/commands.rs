@@ -993,17 +993,19 @@ pub async fn freshrss_connect(
     password: String,
     provider: Option<String>,
 ) -> AppResult<()> {
-    crate::sync::connect(&app, &url, &username, &password, provider.as_deref()).await
+    let state = app.state::<AppState>();
+    crate::sync::connect(&state.db, &state.http(), &url, &username, &password, provider.as_deref())
+        .await
 }
 
 #[tauri::command]
 pub async fn freshrss_disconnect(app: AppHandle) -> AppResult<()> {
-    crate::sync::disconnect(&app).await
+    crate::sync::disconnect(&app.state::<AppState>().db).await
 }
 
 #[tauri::command]
 pub async fn freshrss_status(app: AppHandle) -> AppResult<FreshRssStatus> {
-    let info = crate::sync::connected_url(&app).await?;
+    let info = crate::sync::connected_url(&app.state::<AppState>().db).await?;
     let (url, provider) = match info {
         Some((u, p)) => (Some(u), p),
         None => (None, "freshrss".to_string()),
@@ -1018,7 +1020,10 @@ pub async fn freshrss_status(app: AppHandle) -> AppResult<FreshRssStatus> {
 /// Run a full FreshRSS sync now; returns the number of reconciled articles.
 #[tauri::command]
 pub async fn freshrss_sync(app: AppHandle) -> AppResult<usize> {
-    let n = crate::sync::sync_now(&app).await?;
+    let n = {
+        let state = app.state::<AppState>();
+        crate::sync::sync_now(&state.db, &state.http()).await?
+    };
     let _ = app.emit("feeds-updated", 0);
     refresh_unread_surfaces(&app).await;
     Ok(n)

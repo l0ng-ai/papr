@@ -6,7 +6,7 @@
 // `papr-core` (shared with the agent CLI). Re-export them under their original
 // crate paths so the rest of the app keeps referring to `crate::db`,
 // `crate::ingestion`, etc. unchanged.
-pub use papr_core::{ai, db, error, extraction, ingestion, models, opml, sanitize};
+pub use papr_core::{ai, db, error, extraction, ingestion, models, opml, sanitize, sync};
 
 mod commands;
 mod notify;
@@ -15,7 +15,6 @@ mod page_view;
 // top of `papr_core::ingestion`. Was `ingestion::scheduler` before the split.
 mod scheduler;
 mod state;
-mod sync;
 mod translate;
 mod tray;
 
