@@ -687,11 +687,14 @@ fn cmd_list(path: &Path, args: ListArgs) -> Result<String, AxiError> {
             "Run `papr mark read <id>` to mark an article read".into(),
         ];
         if args.offset + (shown as i64) < total {
-            help.push(format!(
-                "Run `papr list --offset {} {}` for the next page",
-                args.offset + args.limit,
-                replay_filters(&args)
-            ));
+            let next = args.offset + args.limit;
+            let filters = replay_filters(&args);
+            let cmd = if filters.is_empty() {
+                format!("papr list --offset {next}")
+            } else {
+                format!("papr list --offset {next} {filters}")
+            };
+            help.push(format!("Run `{cmd}` for the next page"));
         }
         help
     };
@@ -1059,7 +1062,7 @@ fn response_language(conn: &Connection) -> &'static str {
 }
 
 /// Emit an AI text result as a `text:` block, with a small header.
-fn ai_output(header_kv: &[(&str, String)], text: &str) -> String {
+fn ai_output(header_kv: &[(&str, Value)], text: &str) -> String {
     let mut d = Doc::new();
     for (k, v) in header_kv {
         d.set(k, v.clone());
@@ -1090,7 +1093,7 @@ async fn cmd_summarize(path: &Path, id: i64, save: bool) -> Result<String, AxiEr
     if save && !text.trim().is_empty() {
         db::set_ai_summary(&conn, id, text.trim()).map_err(db_err)?;
     }
-    Ok(ai_output(&[("id", id.to_string()), ("model", cfg.model().to_string())], &text))
+    Ok(ai_output(&[("id", json!(id)), ("model", json!(cfg.model()))], &text))
 }
 
 async fn cmd_ask(path: &Path, question: &str, limit: i64) -> Result<String, AxiError> {
@@ -1120,7 +1123,7 @@ async fn cmd_ask(path: &Path, question: &str, limit: i64) -> Result<String, AxiE
         .await
         .map_err(|e| AxiError::runtime(format!("AI request failed: {e}")))?;
     Ok(ai_output(
-        &[("sources", if cited.is_empty() { "none".into() } else { cited.join(",") })],
+        &[("sources", if cited.is_empty() { json!("none") } else { json!(cited.join(",")) })],
         &text,
     ))
 }
@@ -1147,7 +1150,7 @@ async fn cmd_digest(path: &Path, limit: i64) -> Result<String, AxiError> {
     let text = ai::complete_chat(&client, &cfg, &system, &user, ai::MAX_TOKENS)
         .await
         .map_err(|e| AxiError::runtime(format!("AI request failed: {e}")))?;
-    Ok(ai_output(&[("articles", articles.len().to_string())], &text))
+    Ok(ai_output(&[("articles", json!(articles.len()))], &text))
 }
 
 async fn cmd_translate(path: &Path, id: i64, lang: &str) -> Result<String, AxiError> {
@@ -1167,7 +1170,7 @@ async fn cmd_translate(path: &Path, id: i64, lang: &str) -> Result<String, AxiEr
     let text = ai::complete_chat(&client, &cfg, &system, &user, ai::TRANSLATE_MAX_TOKENS)
         .await
         .map_err(|e| AxiError::runtime(format!("AI request failed: {e}")))?;
-    Ok(ai_output(&[("id", id.to_string()), ("lang", lang.to_string())], &text))
+    Ok(ai_output(&[("id", json!(id)), ("lang", json!(lang))], &text))
 }
 
 // ─────────────────────── feeds / folders management ───────────────────────
