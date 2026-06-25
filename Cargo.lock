@@ -3356,6 +3356,7 @@ dependencies = [
  "encoding_rs",
  "feed-rs",
  "imap",
+ "log",
  "lol_html",
  "mail-parser",
  "opml",
@@ -3366,6 +3367,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
  "url",
 ]
 
