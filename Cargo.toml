@@ -7,7 +7,10 @@ resolver = "2"
 # the desktop app and the agent CLI link the exact same code.
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `preserve_order` keeps JSON object keys in insertion order, so the TOON the
+# agent CLI emits lists fields in the deliberate order each handler builds them
+# (toon-format encodes objects in map order).
+serde_json = { version = "1", features = ["preserve_order"] }
 rusqlite = { version = "0.32", features = ["bundled", "functions"] }
 rusqlite_migration = "1"
 feed-rs = "2"
@@ -28,6 +31,10 @@ anyhow = "1"
 thiserror = "2"
 log = "0.4"
 clap = { version = "4", features = ["derive", "env"] }
+# Official TOON (Token-Oriented Object Notation) encoder. `default-features =
+# false` drops its bundled TUI/CLI (clap, ratatui, tiktoken, …) — we only want
+# the library encoder at the agent CLI's output boundary.
+toon-format = { version = "0.5", default-features = false }
 
 # The desktop bundle is size-optimized and stripped; the agent CLI inherits the
 # same release profile (one static binary to drop on an agent's PATH).

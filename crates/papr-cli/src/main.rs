@@ -16,9 +16,10 @@ use papr_core::ingestion::{fetch, parse, refresh};
 use papr_core::models::ArticleQuery;
 use papr_core::sync;
 use rusqlite::Connection;
+use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use toon::{opt, scalar, Out};
+use toon::Doc;
 
 const APP_IDENTIFIER: &str = "com.thomas.papr";
 const DESCRIPTION: &str = "Read, search and triage your Papr RSS feeds from the shell.";
@@ -573,10 +574,10 @@ fn filter_query(f: &FilterArgs) -> ArticleQuery {
     }
 }
 
+/// A single-line confirmation, carried in an `ok` field so an agent reads the
+/// outcome from a stable key (AXI: idempotent mutations acknowledge and exit 0).
 fn ok_line(text: String) -> Result<String, AxiError> {
-    let mut out = Out::new();
-    out.line(0, &text);
-    Ok(out.into_string())
+    Ok(Doc::new().set("ok", text).into_toon())
 }
 
 // ───────────────────────────── commands ─────────────────────────────
@@ -598,33 +599,27 @@ fn cmd_home(path: &Path) -> Result<String, AxiError> {
         recent
     };
 
-    let mut out = Out::new();
-    out.kv(0, "bin", &collapse_home(&current_exe_path()));
-    out.kv(0, "description", DESCRIPTION);
-    out.kv(0, "db", &collapse_home(&path.display().to_string()));
-    out.line(
-        0,
-        &format!("unread: {unread} · starred: {starred} · later: {later}"),
-    );
-    out.kv(0, "feeds", &feeds.len().to_string());
-
+    let mut d = Doc::new();
+    d.set("bin", collapse_home(&current_exe_path()));
+    d.set("description", DESCRIPTION);
+    d.set("db", collapse_home(&path.display().to_string()));
+    d.set("unread", unread);
+    d.set("starred", starred);
+    d.set("later", later);
+    d.set("feeds", feeds.len());
     if inbox_clear {
-        out.line(0, "inbox: 0 unread — all caught up");
-        out.header(0, &format!("recent[{}]", recent.len()));
+        d.set("inbox", "0 unread — all caught up");
+        d.set("recent", article_rows(&recent));
+    } else {
+        d.set("articles", article_rows(&recent));
     }
-    article_table(
-        &mut out,
-        if inbox_clear { "recent" } else { "unread" },
-        &recent,
-    );
-
-    out.help(&[
+    d.help(vec![
         "Run `papr read <id>` to read an article's full text".into(),
         "Run `papr list --feed <id>` to list one feed's articles".into(),
         "Run `papr search \"<query>\"` to search every article".into(),
         "Run `papr refresh` to fetch new articles".into(),
     ]);
-    Ok(out.into_string())
+    Ok(d.into_toon())
 }
 
 fn cmd_feeds(path: &Path) -> Result<String, AxiError> {
@@ -633,49 +628,40 @@ fn cmd_feeds(path: &Path) -> Result<String, AxiError> {
     let folders = db::list_folders(&conn).map_err(db_err)?;
 
     if feeds.is_empty() {
-        let mut out = Out::new();
-        out.line(0, "feeds: 0 subscriptions yet");
-        out.help(&["Run `papr subscribe <url>` to add your first feed".into()]);
-        return Ok(out.into_string());
+        let mut d = Doc::new();
+        d.set("feeds", json!([]));
+        d.help(vec!["Run `papr subscribe <url>` to add your first feed".into()]);
+        return Ok(d.into_toon());
     }
 
     let total_unread: i64 = feeds.iter().map(|f| f.unread_count).sum();
-    let mut out = Out::new();
-    out.line(
-        0,
-        &format!("count: {} feeds · {total_unread} unread", feeds.len()),
-    );
+    let mut d = Doc::new();
+    d.set("feeds", feeds.len());
+    d.set("unread", total_unread);
 
     // Group by folder so an agent sees the organisation; folderless feeds last.
     let folder_name = |id: Option<i64>| -> Option<String> {
         id.and_then(|fid| folders.iter().find(|f| f.id == fid).map(|f| f.name.clone()))
     };
-    let mut printed_any_group = false;
+    let mut groups = serde_json::Map::new();
     for folder in &folders {
         let group: Vec<_> = feeds.iter().filter(|f| f.folder_id == Some(folder.id)).collect();
-        if group.is_empty() {
-            continue;
+        if !group.is_empty() {
+            groups.insert(folder.name.clone(), feed_rows(&group));
         }
-        printed_any_group = true;
-        out.header(0, &scalar(&folder.name));
-        feed_table(&mut out, 1, &group);
     }
     let loose: Vec<_> = feeds.iter().filter(|f| folder_name(f.folder_id).is_none()).collect();
     if !loose.is_empty() {
-        if printed_any_group {
-            out.header(0, "(no folder)");
-            feed_table(&mut out, 1, &loose);
-        } else {
-            feed_table(&mut out, 0, &loose);
-        }
+        groups.insert("(no folder)".to_string(), feed_rows(&loose));
     }
+    d.set("by_folder", Value::Object(groups));
 
-    out.help(&[
+    d.help(vec![
         "Run `papr list --feed <id>` to list a feed's articles".into(),
         "Run `papr refresh --feed <id>` to fetch one feed".into(),
         "Run `papr subscribe <url>` to add a feed".into(),
     ]);
-    Ok(out.into_string())
+    Ok(d.into_toon())
 }
 
 fn cmd_list(path: &Path, args: ListArgs) -> Result<String, AxiError> {
@@ -685,37 +671,32 @@ fn cmd_list(path: &Path, args: ListArgs) -> Result<String, AxiError> {
         .map_err(db_err)?;
     let total = count_articles(&conn, &query, unread_only).map_err(db_err)?;
 
-    if rows.is_empty() {
-        let mut out = Out::new();
-        out.line(0, &format!("articles: 0 {} found", scope_label(&query, unread_only)));
-        out.help(&["Run `papr refresh` to fetch new articles".into()]);
-        return Ok(out.into_string());
-    }
-
-    let mut out = Out::new();
     let shown = rows.len();
-    out.line(
-        0,
-        &format!(
-            "count: {shown} of {total} {}",
-            scope_label(&query, unread_only)
-        ),
+    let mut d = Doc::new();
+    d.set(
+        "count",
+        format!("{shown} of {total} {}", scope_label(&query, unread_only)),
     );
-    article_table(&mut out, "articles", &rows);
+    d.set("articles", article_rows(&rows));
 
-    let mut help = vec![
-        "Run `papr read <id>` to read an article's full text".into(),
-        "Run `papr mark read <id>` to mark an article read".into(),
-    ];
-    if args.offset + (shown as i64) < total {
-        help.push(format!(
-            "Run `papr list --offset {} {}` for the next page",
-            args.offset + args.limit,
-            replay_filters(&args)
-        ));
-    }
-    out.help(&help);
-    Ok(out.into_string())
+    let help = if rows.is_empty() {
+        vec!["Run `papr refresh` to fetch new articles".into()]
+    } else {
+        let mut help = vec![
+            "Run `papr read <id>` to read an article's full text".into(),
+            "Run `papr mark read <id>` to mark an article read".into(),
+        ];
+        if args.offset + (shown as i64) < total {
+            help.push(format!(
+                "Run `papr list --offset {} {}` for the next page",
+                args.offset + args.limit,
+                replay_filters(&args)
+            ));
+        }
+        help
+    };
+    d.help(help);
+    Ok(d.into_toon())
 }
 
 fn cmd_read(path: &Path, args: ReadArgs) -> Result<String, AxiError> {
@@ -748,42 +729,27 @@ fn cmd_read(path: &Path, args: ReadArgs) -> Result<String, AxiError> {
     };
 
     if ids.is_empty() {
-        let mut out = Out::new();
-        out.line(0, "articles: 0 matched that filter");
-        out.help(&["Run `papr list` to find article ids".into()]);
-        return Ok(out.into_string());
+        let mut d = Doc::new();
+        d.set("articles", json!([]));
+        d.help(vec!["Run `papr list` to find article ids".into()]);
+        return Ok(d.into_toon());
     }
 
     let batch = ids.len() > 1;
     let budget = if batch { BATCH_TRUNCATE } else { READ_TRUNCATE };
-    let mut out = Out::new();
-    if batch {
-        out.line(0, &format!("count: {} articles", ids.len()));
-    }
     let mut any_truncated = false;
+    let mut articles: Vec<Value> = Vec::new();
     for id in &ids {
         let detail = match db::get_article(&conn, *id) {
             Ok(d) => d,
             Err(_) => {
-                out.header(0, "article");
-                out.kv(1, "id", &id.to_string());
-                out.kv(1, "error", "not found");
+                // `tags` as an array (here empty) keeps every element non-tabular
+                // so the encoder renders an expanded block, not a one-row table.
+                articles.push(json!({ "id": id, "error": "not found", "tags": [] }));
                 continue;
             }
         };
         let (_title, text) = db::article_text(&conn, *id).map_err(db_err)?;
-        out.header(0, "article");
-        out.kv(1, "id", &detail.id.to_string());
-        out.kv(1, "feed", &detail.feed_title);
-        out.kv(1, "title", &detail.title);
-        out.kv(1, "author", &opt(detail.author.as_deref()));
-        out.kv(1, "url", &opt(detail.url.as_deref()));
-        out.kv(1, "published", &opt(detail.published_at.as_deref()));
-        out.kv(1, "state", &detail_flags(&detail));
-        if !detail.tags.is_empty() {
-            let names: Vec<String> = detail.tags.iter().map(|t| t.name.clone()).collect();
-            out.kv(1, "tags", &names.join(", "));
-        }
         let (shown, total_chars, truncated) = truncate(&text, if args.full { usize::MAX } else { budget });
         any_truncated |= truncated;
         let body = if truncated {
@@ -791,46 +757,60 @@ fn cmd_read(path: &Path, args: ReadArgs) -> Result<String, AxiError> {
         } else {
             shown
         };
-        out.block(1, "text", &body);
+        let tags: Vec<String> = detail.tags.iter().map(|t| t.name.clone()).collect();
+        articles.push(json!({
+            "id": detail.id,
+            "feed": detail.feed_title,
+            "title": detail.title,
+            "author": detail.author,
+            "url": detail.url,
+            "published": detail.published_at,
+            "state": detail_flags(&detail),
+            "tags": tags,
+            "text": body,
+        }));
     }
 
-    if any_truncated && !args.full {
-        out.help(&["Run `papr read <id> --full` to see the complete text".into()]);
+    let mut d = Doc::new();
+    if batch {
+        d.set("count", ids.len());
     }
-    Ok(out.into_string())
+    d.set("articles", Value::Array(articles));
+    if any_truncated && !args.full {
+        d.help(vec!["Run `papr read <id> --full` to see the complete text".into()]);
+    }
+    Ok(d.into_toon())
 }
 
 fn cmd_search(path: &Path, query: &str, limit: i64) -> Result<String, AxiError> {
     let conn = open_ro(path)?;
     let hits = db::search_articles_for_rag(&conn, query, limit).map_err(db_err)?;
-    if hits.is_empty() {
-        let mut out = Out::new();
-        out.line(0, &format!("search: 0 matches for {}", scalar(query)));
-        out.help(&["Run `papr refresh` to fetch new articles, then search again".into()]);
-        return Ok(out.into_string());
-    }
-    let mut out = Out::new();
-    out.line(0, &format!("count: {} matches", hits.len()));
-    let rows: Vec<Vec<String>> = hits
+    let mut d = Doc::new();
+    d.set("query", query);
+    d.set("count", hits.len());
+    let rows: Vec<Value> = hits
         .iter()
-        .map(|(id, title, feed)| vec![id.to_string(), scalar(feed), scalar(&cap(title, 80))])
+        .map(|(id, title, feed)| json!({ "id": id, "feed": feed, "title": cap(title, 80) }))
         .collect();
-    out.table(0, "matches", &["id", "feed", "title"], &rows);
-    out.help(&["Run `papr read <id>` to read a match in full".into()]);
-    Ok(out.into_string())
+    d.set("matches", Value::Array(rows));
+    d.help(vec![if hits.is_empty() {
+        "Run `papr refresh` to fetch new articles, then search again".into()
+    } else {
+        "Run `papr read <id>` to read a match in full".into()
+    }]);
+    Ok(d.into_toon())
 }
 
 fn cmd_mark(path: &Path, state: &str, ids: &[i64]) -> Result<String, AxiError> {
     let conn = open_rw(path)?;
-    let mut out = Out::new();
-    let mut lines = Vec::new();
+    let mut rows: Vec<Value> = Vec::new();
     for &id in ids {
         // Read current state for idempotency: an already-applied change is a
         // no-op with exit 0, not an error.
         let current = match db::get_article(&conn, id) {
             Ok(d) => d,
             Err(_) => {
-                lines.push(format!("#{id}: not found"));
+                rows.push(json!({ "id": id, "result": "not found" }));
                 continue;
             }
         };
@@ -844,36 +824,29 @@ fn cmd_mark(path: &Path, state: &str, ids: &[i64]) -> Result<String, AxiError> {
             _ => unreachable!("clap restricts the state value"),
         };
         result.map_err(db_err)?;
-        if already {
-            lines.push(format!("#{id}: already {state} (no-op)"));
+        let outcome = if already {
+            format!("already {state} (no-op)")
         } else {
-            lines.push(format!("#{id}: {state}"));
-        }
+            state.to_string()
+        };
+        rows.push(json!({ "id": id, "result": outcome }));
     }
-    out.header(0, &format!("marked[{}]", lines.len()));
-    for l in &lines {
-        out.line(1, l);
-    }
-    Ok(out.into_string())
+    Ok(Doc::new().set("marked", Value::Array(rows)).into_toon())
 }
 
 fn cmd_tags(path: &Path) -> Result<String, AxiError> {
     let conn = open_ro(path)?;
     let tags = db::list_tags(&conn).map_err(db_err)?;
-    if tags.is_empty() {
-        let mut out = Out::new();
-        out.line(0, "tags: 0 defined");
-        return Ok(out.into_string());
-    }
-    let mut out = Out::new();
-    out.line(0, &format!("count: {} tags", tags.len()));
-    let rows: Vec<Vec<String>> = tags
+    let mut d = Doc::new();
+    let rows: Vec<Value> = tags
         .iter()
-        .map(|t| vec![t.id.to_string(), scalar(&t.name), t.article_count.to_string()])
+        .map(|t| json!({ "id": t.id, "name": t.name, "articles": t.article_count }))
         .collect();
-    out.table(0, "tags", &["id", "name", "articles"], &rows);
-    out.help(&["Run `papr list --tag <id>` to list a tag's articles".into()]);
-    Ok(out.into_string())
+    d.set("tags", Value::Array(rows));
+    if !tags.is_empty() {
+        d.help(vec!["Run `papr list --tag <id>` to list a tag's articles".into()]);
+    }
+    Ok(d.into_toon())
 }
 
 async fn cmd_subscribe(path: &Path, url: &str, folder: Option<i64>) -> Result<String, AxiError> {
@@ -909,10 +882,10 @@ async fn cmd_subscribe(path: &Path, url: &str, folder: Option<i64>) -> Result<St
 
     // Idempotent: re-subscribing to a known feed is a no-op, not an error.
     if let Some(existing) = db::find_feed_by_url(&conn, &feed_url).map_err(db_err)? {
-        let mut out = Out::new();
-        out.line(0, &format!("feed: #{existing} already subscribed (no-op)"));
-        out.help(&[format!("Run `papr list --feed {existing}` to read it")]);
-        return Ok(out.into_string());
+        let mut d = Doc::new();
+        d.set("ok", format!("feed #{existing} already subscribed (no-op)"));
+        d.help(vec![format!("Run `papr list --feed {existing}` to read it")]);
+        return Ok(d.into_toon());
     }
 
     let source_type =
@@ -943,18 +916,19 @@ async fn cmd_subscribe(path: &Path, url: &str, folder: Option<i64>) -> Result<St
     }
     let _ = db::touch_feed(&conn, feed_id);
 
-    let mut out = Out::new();
-    out.header(0, "feed");
-    out.kv(1, "id", &feed_id.to_string());
-    out.kv(1, "title", &title);
-    out.kv(1, "url", &feed_url);
-    out.kv(1, "type", source_type.as_str());
-    out.kv(1, "articles", &new_count.to_string());
-    out.help(&[
+    let mut d = Doc::new();
+    d.set("feed", json!({
+        "id": feed_id,
+        "title": title,
+        "url": feed_url,
+        "type": source_type.as_str(),
+        "articles": new_count,
+    }));
+    d.help(vec![
         format!("Run `papr list --feed {feed_id}` to read it"),
         format!("Run `papr refresh --feed {feed_id}` to fetch more later"),
     ]);
-    Ok(out.into_string())
+    Ok(d.into_toon())
 }
 
 async fn cmd_refresh(path: &Path, feed: Option<i64>) -> Result<String, AxiError> {
@@ -984,14 +958,15 @@ async fn cmd_refresh(path: &Path, feed: Option<i64>) -> Result<String, AxiError>
     .await
     .map_err(db_err)?;
 
-    let mut out = Out::new();
-    out.header(0, "refresh");
-    out.kv(1, "scope", &feed.map(|f| format!("feed {f}")).unwrap_or_else(|| "all".into()));
-    out.kv(1, "new", &summary.new_articles.to_string());
+    let mut d = Doc::new();
+    d.set("refresh", json!({
+        "scope": feed.map(|f| format!("feed {f}")).unwrap_or_else(|| "all".into()),
+        "new": summary.new_articles,
+    }));
     if summary.new_articles > 0 {
-        out.help(&["Run `papr list` to see what's new".into()]);
+        d.help(vec!["Run `papr list` to see what's new".into()]);
     }
-    Ok(out.into_string())
+    Ok(d.into_toon())
 }
 
 // ─────────────────────────────── sync ───────────────────────────────
@@ -1005,33 +980,30 @@ async fn cmd_sync(path: &Path, cmd: SyncCmd) -> Result<String, AxiError> {
             let info = sync::connected_url(&dbm)
                 .await
                 .map_err(|e| AxiError::runtime(format!("{e}")))?;
-            let mut out = Out::new();
-            out.header(0, "sync");
+            let mut d = Doc::new();
             match info {
                 Some((url, provider)) => {
-                    out.kv(1, "connected", "true");
-                    out.kv(1, "provider", &provider);
-                    out.kv(1, "url", &url);
-                    out.help(&["Run `papr sync run` to reconcile now".into()]);
+                    d.set("sync", json!({ "connected": true, "provider": provider, "url": url }));
+                    d.help(vec!["Run `papr sync run` to reconcile now".into()]);
                 }
                 None => {
-                    out.kv(1, "connected", "false");
-                    out.help(&[
+                    d.set("sync", json!({ "connected": false }));
+                    d.help(vec![
                         "Run `papr sync connect --url <u> --user <u> --password <p>` to connect"
                             .into(),
                     ]);
                 }
             }
-            Ok(out.into_string())
+            Ok(d.into_toon())
         }
         SyncCmd::Connect { url, user, password, provider } => {
             sync::connect(&dbm, &client, &url, &user, &password, provider.as_deref())
                 .await
                 .map_err(|e| AxiError::runtime(format!("connect failed: {e}")))?;
-            let mut out = Out::new();
-            out.line(0, &format!("sync: connected to {url}"));
-            out.help(&["Run `papr sync run` to reconcile now".into()]);
-            Ok(out.into_string())
+            let mut d = Doc::new();
+            d.set("ok", format!("connected to {url}"));
+            d.help(vec!["Run `papr sync run` to reconcile now".into()]);
+            Ok(d.into_toon())
         }
         SyncCmd::Disconnect { yes } => {
             require_yes(yes, "sync disconnect", "papr sync disconnect")?;
@@ -1041,19 +1013,16 @@ async fn cmd_sync(path: &Path, cmd: SyncCmd) -> Result<String, AxiError> {
         SyncCmd::Run => {
             let connected = sync::connected_url(&dbm).await.map_err(db_err)?.is_some();
             if !connected {
-                let mut out = Out::new();
-                out.line(0, "sync: not connected (no-op)");
-                out.help(&["Run `papr sync connect ...` first".into()]);
-                return Ok(out.into_string());
+                let mut d = Doc::new();
+                d.set("ok", "not connected (no-op)");
+                d.help(vec!["Run `papr sync connect ...` first".into()]);
+                return Ok(d.into_toon());
             }
             eprintln!("syncing…");
             let n = sync::sync_now(&dbm, &client)
                 .await
                 .map_err(|e| AxiError::runtime(format!("sync failed: {e}")))?;
-            let mut out = Out::new();
-            out.header(0, "sync");
-            out.kv(1, "reconciled", &n.to_string());
-            Ok(out.into_string())
+            Ok(Doc::new().set("sync", json!({ "reconciled": n })).into_toon())
         }
     }
 }
@@ -1091,14 +1060,12 @@ fn response_language(conn: &Connection) -> &'static str {
 
 /// Emit an AI text result as a `text:` block, with a small header.
 fn ai_output(header_kv: &[(&str, String)], text: &str) -> String {
-    let mut out = Out::new();
-    if !header_kv.is_empty() {
-        for (k, v) in header_kv {
-            out.kv(0, k, v);
-        }
+    let mut d = Doc::new();
+    for (k, v) in header_kv {
+        d.set(k, v.clone());
     }
-    out.block(0, "text", text.trim());
-    out.into_string()
+    d.set("text", text.trim());
+    d.into_toon()
 }
 
 async fn cmd_summarize(path: &Path, id: i64, save: bool) -> Result<String, AxiError> {
@@ -1244,33 +1211,29 @@ async fn cmd_extract(path: &Path, id: i64) -> Result<String, AxiError> {
     let image = papr_core::extraction::lead_image(&html, &final_url);
     db::set_extracted_html(&conn, id, &cleaned, image.as_deref()).map_err(db_err)?;
     let chars = papr_core::sanitize::html_to_text(&cleaned).chars().count();
-    let mut out = Out::new();
-    out.header(0, "extracted");
-    out.kv(1, "id", &id.to_string());
-    out.kv(1, "chars", &chars.to_string());
-    out.help(&[format!("Run `papr read {id} --full` to read the extracted text")]);
-    Ok(out.into_string())
+    let mut d = Doc::new();
+    d.set("extracted", json!({ "id": id, "chars": chars }));
+    d.help(vec![format!("Run `papr read {id} --full` to read the extracted text")]);
+    Ok(d.into_toon())
 }
 
 fn cmd_folders(path: &Path) -> Result<String, AxiError> {
     let conn = open_ro(path)?;
     let folders = db::list_folders(&conn).map_err(db_err)?;
     let feeds = db::list_feeds(&conn).map_err(db_err)?;
-    if folders.is_empty() {
-        return ok_line("folders: 0 defined".into());
-    }
-    let mut out = Out::new();
-    out.line(0, &format!("count: {} folders", folders.len()));
-    let rows: Vec<Vec<String>> = folders
+    let rows: Vec<Value> = folders
         .iter()
         .map(|f| {
             let n = feeds.iter().filter(|x| x.folder_id == Some(f.id)).count();
-            vec![f.id.to_string(), scalar(&f.name), n.to_string()]
+            json!({ "id": f.id, "name": f.name, "feeds": n })
         })
         .collect();
-    out.table(0, "folders", &["id", "name", "feeds"], &rows);
-    out.help(&["Run `papr list --folder <id>` to list a folder's articles".into()]);
-    Ok(out.into_string())
+    let mut d = Doc::new();
+    d.set("folders", Value::Array(rows));
+    if !folders.is_empty() {
+        d.help(vec!["Run `papr list --folder <id>` to list a folder's articles".into()]);
+    }
+    Ok(d.into_toon())
 }
 
 fn cmd_folder(path: &Path, cmd: FolderCmd) -> Result<String, AxiError> {
@@ -1359,36 +1322,28 @@ fn cmd_tag(path: &Path, cmd: TagCmd) -> Result<String, AxiError> {
 fn cmd_rules(path: &Path) -> Result<String, AxiError> {
     let conn = open_ro(path)?;
     let rules = db::list_rules(&conn).map_err(db_err)?;
-    if rules.is_empty() {
-        let mut out = Out::new();
-        out.line(0, "rules: 0 defined");
-        out.help(&["Run `papr rule create <name> <keywords>` to add one".into()]);
-        return Ok(out.into_string());
-    }
-    let mut out = Out::new();
-    out.line(0, &format!("count: {} rules", rules.len()));
-    let rows: Vec<Vec<String>> = rules
+    let rows: Vec<Value> = rules
         .iter()
         .map(|r| {
-            vec![
-                r.id.to_string(),
-                scalar(&r.name),
-                if r.enabled { "on".into() } else { "off".into() },
-                r.field.clone(),
-                scalar(&r.query),
-                r.action.clone(),
-                r.feed_id.map(|f| f.to_string()).unwrap_or_else(|| "all".into()),
-            ]
+            json!({
+                "id": r.id,
+                "name": r.name,
+                "enabled": r.enabled,
+                "field": r.field,
+                "query": r.query,
+                "action": r.action,
+                "feed": r.feed_id.map(|f| f.to_string()).unwrap_or_else(|| "all".into()),
+            })
         })
         .collect();
-    out.table(
-        0,
-        "rules",
-        &["id", "name", "enabled", "field", "query", "action", "feed"],
-        &rows,
-    );
-    out.help(&["Run `papr rule disable <id>` to turn a rule off".into()]);
-    Ok(out.into_string())
+    let mut d = Doc::new();
+    d.set("rules", Value::Array(rows));
+    d.help(vec![if rules.is_empty() {
+        "Run `papr rule create <name> <keywords>` to add one".into()
+    } else {
+        "Run `papr rule disable <id>` to turn a rule off".into()
+    }]);
+    Ok(d.into_toon())
 }
 
 fn cmd_rule(path: &Path, cmd: RuleCmd) -> Result<String, AxiError> {
@@ -1432,25 +1387,19 @@ fn cmd_highlights(path: &Path, article: Option<i64>) -> Result<String, AxiError>
         Some(id) => db::list_highlights(&conn, id).map_err(db_err)?,
         None => db::list_all_highlights(&conn).map_err(db_err)?,
     };
-    if items.is_empty() {
-        return ok_line("highlights: 0 found".into());
-    }
-    let mut out = Out::new();
-    out.line(0, &format!("count: {} highlights", items.len()));
-    let rows: Vec<Vec<String>> = items
+    let rows: Vec<Value> = items
         .iter()
         .map(|h| {
-            vec![
-                h.id.to_string(),
-                h.article_id.to_string(),
-                scalar(&cap(&h.quote, 60)),
-                h.color.clone(),
-                scalar(&cap(&h.note, 40)),
-            ]
+            json!({
+                "id": h.id,
+                "article": h.article_id,
+                "quote": cap(&h.quote, 60),
+                "color": h.color,
+                "note": cap(&h.note, 40),
+            })
         })
         .collect();
-    out.table(0, "highlights", &["id", "article", "quote", "color", "note"], &rows);
-    Ok(out.into_string())
+    Ok(Doc::new().set("highlights", Value::Array(rows)).into_toon())
 }
 
 fn cmd_highlight(path: &Path, cmd: HighlightCmd) -> Result<String, AxiError> {
@@ -1490,28 +1439,26 @@ fn cmd_highlight(path: &Path, cmd: HighlightCmd) -> Result<String, AxiError> {
 fn cmd_newsletters(path: &Path) -> Result<String, AxiError> {
     let conn = open_ro(path)?;
     let rows = db::list_newsletter_sources(&conn).map_err(db_err)?;
-    if rows.is_empty() {
-        let mut out = Out::new();
-        out.line(0, "newsletters: 0 configured");
-        out.help(&["Run `papr newsletter add --title .. --host .. --user .. --password ..` to add one".into()]);
-        return Ok(out.into_string());
-    }
-    let mut out = Out::new();
-    out.line(0, &format!("count: {} newsletter sources", rows.len()));
-    let table: Vec<Vec<String>> = rows
+    let table: Vec<Value> = rows
         .iter()
         .map(|n| {
-            vec![
-                n.feed_id.to_string(),
-                scalar(&cap(&n.title, 32)),
-                scalar(&format!("{}:{}", n.host, n.port)),
-                scalar(&n.username),
-                scalar(&n.folder),
-            ]
+            json!({
+                "feed": n.feed_id,
+                "title": cap(&n.title, 32),
+                "host": format!("{}:{}", n.host, n.port),
+                "user": n.username,
+                "folder": n.folder,
+            })
         })
         .collect();
-    out.table(0, "newsletters", &["feed", "title", "host", "user", "folder"], &table);
-    Ok(out.into_string())
+    let mut d = Doc::new();
+    d.set("newsletters", Value::Array(table));
+    if rows.is_empty() {
+        d.help(vec![
+            "Run `papr newsletter add --title .. --host .. --user .. --password ..` to add one".into(),
+        ]);
+    }
+    Ok(d.into_toon())
 }
 
 fn cmd_newsletter(path: &Path, cmd: NewsletterCmd) -> Result<String, AxiError> {
@@ -1531,13 +1478,10 @@ fn cmd_newsletter(path: &Path, cmd: NewsletterCmd) -> Result<String, AxiError> {
                 return ok_line(format!("newsletter: #{existing} already configured (no-op)"));
             }
             let id = db::insert_newsletter_source(&conn, &feed_url, &title, &cfg).map_err(db_err)?;
-            let mut out = Out::new();
-            out.header(0, "newsletter");
-            out.kv(1, "feed", &id.to_string());
-            out.kv(1, "title", &title);
-            out.kv(1, "host", &format!("{host}:{port}"));
-            out.help(&[format!("Run `papr refresh --feed {id}` to poll it now")]);
-            Ok(out.into_string())
+            let mut d = Doc::new();
+            d.set("newsletter", json!({ "feed": id, "title": title, "host": format!("{host}:{port}") }));
+            d.help(vec![format!("Run `papr refresh --feed {id}` to poll it now")]);
+            Ok(d.into_toon())
         }
         NewsletterCmd::Remove { feed_id, yes } => {
             require_yes(yes, "newsletter remove", &format!("papr newsletter remove {feed_id}"))?;
@@ -1582,14 +1526,12 @@ fn cmd_opml(path: &Path, cmd: OpmlCmd) -> Result<String, AxiError> {
                 .map_err(db_err)?;
                 added += 1;
             }
-            let mut out = Out::new();
-            out.header(0, "import");
-            out.kv(1, "added", &added.to_string());
-            out.kv(1, "skipped", &skipped.to_string());
+            let mut d = Doc::new();
+            d.set("import", json!({ "added": added, "skipped": skipped }));
             if added > 0 {
-                out.help(&["Run `papr refresh` to fetch the imported feeds".into()]);
+                d.help(vec!["Run `papr refresh` to fetch the imported feeds".into()]);
             }
-            Ok(out.into_string())
+            Ok(d.into_toon())
         }
         OpmlCmd::Export { out } => {
             let conn = open_ro(path)?;
@@ -1614,12 +1556,12 @@ fn cmd_settings(path: &Path, cmd: SettingsCmd) -> Result<String, AxiError> {
         SettingsCmd::Get { key } => {
             let conn = open_ro(path)?;
             let value = db::get_setting(&conn, &key).map_err(db_err)?;
-            let mut out = Out::new();
+            let mut d = Doc::new();
             match value {
-                Some(v) => out.kv(0, &key, &v),
-                None => out.line(0, &format!("{key}: (unset)")),
+                Some(v) => d.set(&key, v),
+                None => d.set(&key, Value::Null),
             };
-            Ok(out.into_string())
+            Ok(d.into_toon())
         }
         SettingsCmd::Set { key, value } => {
             let conn = open_rw(path)?;
@@ -1633,15 +1575,16 @@ fn cmd_stats(path: &Path) -> Result<String, AxiError> {
     let conn = open_ro(path)?;
     let (bytes, articles, feeds) = db::storage_stats(&conn).map_err(db_err)?;
     let (unread, starred, later) = db::smart_counts(&conn).map_err(db_err)?;
-    let mut out = Out::new();
-    out.header(0, "stats");
-    out.kv(1, "db_size", &human_bytes(bytes));
-    out.kv(1, "articles", &articles.to_string());
-    out.kv(1, "feeds", &feeds.to_string());
-    out.kv(1, "unread", &unread.to_string());
-    out.kv(1, "starred", &starred.to_string());
-    out.kv(1, "read_later", &later.to_string());
-    Ok(out.into_string())
+    Ok(Doc::new()
+        .set("stats", json!({
+            "db_size": human_bytes(bytes),
+            "articles": articles,
+            "feeds": feeds,
+            "unread": unread,
+            "starred": starred,
+            "read_later": later,
+        }))
+        .into_toon())
 }
 
 fn cmd_admin(path: &Path, cmd: AdminCmd) -> Result<String, AxiError> {
@@ -1683,36 +1626,38 @@ fn human_bytes(n: i64) -> String {
 // ───────────────────────────── rendering helpers ─────────────────────────────
 
 /// `{id,feed,title,flags,date}` — the minimal schema an agent needs to pick a
-/// next action without a follow-up call.
-fn article_table(out: &mut Out, name: &str, rows: &[papr_core::models::ArticleSummary]) {
-    let table_rows: Vec<Vec<String>> = rows
-        .iter()
-        .map(|a| {
-            vec![
-                a.id.to_string(),
-                scalar(&cap(&a.feed_title, 28)),
-                scalar(&cap(&a.title, 80)),
-                summary_flags(a),
-                short_date(a.published_at.as_deref()),
-            ]
-        })
-        .collect();
-    out.table(0, name, &["id", "feed", "title", "flags", "date"], &table_rows);
+/// next action without a follow-up call. Returns a JSON array the encoder lays
+/// out as a tabular TOON array.
+fn article_rows(rows: &[papr_core::models::ArticleSummary]) -> Value {
+    Value::Array(
+        rows.iter()
+            .map(|a| {
+                json!({
+                    "id": a.id,
+                    "feed": cap(&a.feed_title, 28),
+                    "title": cap(&a.title, 80),
+                    "flags": summary_flags(a),
+                    "date": short_date(a.published_at.as_deref()),
+                })
+            })
+            .collect(),
+    )
 }
 
-fn feed_table(out: &mut Out, depth: usize, feeds: &[&papr_core::models::Feed]) {
-    let rows: Vec<Vec<String>> = feeds
-        .iter()
-        .map(|f| {
-            vec![
-                f.id.to_string(),
-                scalar(&cap(&f.title, 40)),
-                f.unread_count.to_string(),
-                f.source_type.clone(),
-            ]
-        })
-        .collect();
-    out.table(depth, "feeds", &["id", "title", "unread", "type"], &rows);
+fn feed_rows(feeds: &[&papr_core::models::Feed]) -> Value {
+    Value::Array(
+        feeds
+            .iter()
+            .map(|f| {
+                json!({
+                    "id": f.id,
+                    "title": cap(&f.title, 40),
+                    "unread": f.unread_count,
+                    "type": f.source_type,
+                })
+            })
+            .collect(),
+    )
 }
 
 fn summary_flags(a: &papr_core::models::ArticleSummary) -> String {
@@ -1868,7 +1813,7 @@ fn cap(s: &str, n: usize) -> String {
 fn short_date(published: Option<&str>) -> String {
     match published {
         Some(s) if s.len() >= 10 => s[..10].to_string(),
-        Some(s) => scalar(s),
+        Some(s) => s.to_string(),
         None => "-".to_string(),
     }
 }
@@ -1998,8 +1943,8 @@ fn db_err(e: papr_core::error::AppError) -> AxiError {
 }
 
 fn render_error(e: &AxiError) -> String {
-    let mut out = Out::new();
-    out.kv(0, "error", &e.message);
-    out.help(&e.help);
-    out.into_string()
+    let mut d = Doc::new();
+    d.set("error", e.message.clone());
+    d.help(e.help.clone());
+    d.into_toon()
 }

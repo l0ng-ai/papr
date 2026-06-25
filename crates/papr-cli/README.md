@@ -8,7 +8,9 @@ all without a GUI.
 
 It follows the [AXI](https://agentskills.io) ergonomics standard:
 
-- **[TOON](https://toonformat.dev) on stdout** — ~40% fewer tokens than JSON.
+- **[TOON](https://toonformat.dev) on stdout** — ~40% fewer tokens than JSON,
+  encoded by the official [`toon-format`](https://crates.io/crates/toon-format)
+  crate, so quoting and tabular layout follow the spec exactly.
 - **Minimal schemas** — lists return an id, a title and a status, not 12 columns.
 - **Truncated long text** — article bodies preview by default; `--full` for all.
 - **Pre-computed aggregates** — every list states a definitive `count: N of M`.
@@ -24,16 +26,14 @@ $ papr
 bin: ~/.local/bin/papr
 description: Read, search and triage your Papr RSS feeds from the shell.
 db: ~/Library/Application Support/com.thomas.papr/papr.db
-unread: 206 · starred: 17 · later: 0
+unread: 206
+starred: 17
+later: 0
 feeds: 15
-unread[10]{id,feed,title,flags,date}:
-  3664,V2EX,[Java] 使用 kkRepo 搭建 Maven 私服,unread.star,2026-06-25
+articles[10]{id,feed,title,flags,date}:
+  3664,V2EX,[Java] 使用 kkRepo 搭建 Maven 私服,unread.star,"2026-06-25"
   ...
-help[4]:
-  Run `papr read <id>` to read an article's full text
-  Run `papr list --feed <id>` to list one feed's articles
-  Run `papr search "<query>"` to search every article
-  Run `papr refresh` to fetch new articles
+help[4]: Run `papr read <id>` to read an article's full text,...
 ```
 
 ## Install

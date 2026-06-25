@@ -3,7 +3,8 @@
 //! §7). Supports Claude Code, Codex and OpenCode; installs are idempotent and
 //! repair a stale binary path on re-run.
 
-use crate::{AxiError, Out};
+use crate::{AxiError, Doc};
+use serde_json::{json, Value};
 use std::path::PathBuf;
 
 /// Which agent host(s) to wire up.
@@ -35,27 +36,28 @@ pub fn run(app: &str) -> Result<String, AxiError> {
     })?;
     let bin = resolve_bin();
 
-    let mut out = Out::new();
-    out.header(0, "setup");
-    out.kv(1, "bin", &bin);
-    let mut statuses = Vec::new();
+    let mut apps_rows: Vec<Value> = Vec::new();
     for a in apps {
         let (name, result) = match a {
             App::Claude => ("claude", install_claude(&bin)),
             App::Codex => ("codex", install_codex(&bin)),
             App::OpenCode => ("opencode", install_opencode(&bin)),
         };
-        match result {
-            Ok(status) => statuses.push(vec![name.into(), "ok".into(), crate::toon::scalar(&status)]),
-            Err(e) => statuses.push(vec![name.into(), "error".into(), crate::toon::scalar(&e)]),
-        }
+        let row = match result {
+            Ok(status) => json!({ "app": name, "status": "ok", "detail": status }),
+            Err(e) => json!({ "app": name, "status": "error", "detail": e }),
+        };
+        apps_rows.push(row);
     }
-    out.table(1, "apps", &["app", "status", "detail"], &statuses);
-    out.help(&[
+
+    let mut d = Doc::new();
+    d.set("setup", json!({ "bin": bin }));
+    d.set("apps", Value::Array(apps_rows));
+    d.help(vec![
         "Start a new agent session — the unread dashboard loads automatically".into(),
         "Run `papr` to preview the context that will be injected".into(),
     ]);
-    Ok(out.into_string())
+    Ok(d.into_toon())
 }
 
 /// The command an integration should invoke. Prefer the bare name `papr` when it

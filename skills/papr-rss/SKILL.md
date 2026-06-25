@@ -13,8 +13,8 @@ description: >-
 
 `papr` is a token-efficient, agent-facing CLI over the user's local Papr RSS
 database. It emits [TOON](https://toonformat.dev) on stdout (≈40% cheaper than
-JSON), keeps diagnostics on stderr, and returns structured errors with exit
-codes (0 success/no-op, 1 runtime, 2 usage). Reads are token-minimal by default;
+JSON, via the official `toon-format` encoder), keeps diagnostics on stderr, and
+returns structured errors with exit codes (0 success/no-op, 1 runtime, 2 usage). Reads are token-minimal by default;
 long article bodies are truncated with a `--full` escape hatch.
 
 Run `papr` with no arguments first — it prints the unread dashboard plus the
