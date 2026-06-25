@@ -79,6 +79,8 @@ cost. Use it in any agent that supports the skill format.
 | Subscriptions | `subscribe`, `unsubscribe`, `feed`, `folder`, `folders`, `opml` |
 | Organise | `tags`, `tag`, `rules`, `rule`, `highlights`, `highlight` |
 | Newsletters | `newsletters`, `newsletter add/remove` |
+| AI | `summarize`, `ask`, `digest`, `translate` |
+| Sync | `sync status/connect/disconnect/run` (FreshRSS / Miniflux) |
 | System | `settings`, `stats`, `admin`, `setup` |
 
 Every command supports `--help`. Point at a non-default database with
@@ -86,8 +88,8 @@ Every command supports `--help`. Point at a non-default database with
 
 ## Scope
 
-Reads, triage, refresh (RSS + newsletters) and the full management surface run
-headlessly here. The AI helpers (summaries, ask-the-article, digests,
-translation) and FreshRSS sync currently remain in the desktop app — they are
-coupled to the app's streaming/runtime layer; porting them is tracked as
-follow-up work.
+The CLI covers the desktop app's full capability surface — reads, triage,
+refresh (RSS + newsletters), subscription/feed/folder/tag/rule/highlight
+management, OPML, AI helpers (summaries, ask-the-article, digests, translation,
+reading provider config from settings), and FreshRSS/Miniflux sync — all driven
+headlessly through the shared `papr-core` crate.

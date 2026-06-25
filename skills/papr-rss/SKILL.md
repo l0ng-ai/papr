@@ -56,6 +56,19 @@ papr settings get <key> | papr settings set <key> <value>
 papr stats
 ```
 
+## AI & sync (use the user's configured provider / server)
+
+```sh
+papr summarize <id> [--save]       # TL;DR + bullets for one article
+papr ask "<question>"              # answer from the user's feeds (RAG over FTS5), cited
+papr digest [--limit 30]           # themed briefing of recent articles
+papr translate <id> --lang "English"
+papr sync status | papr sync run   # reconcile read/starred + subscriptions with FreshRSS/Miniflux
+```
+
+AI commands read the provider/key from settings; if none is configured they
+fail with exit 1 and tell you which `papr settings set` to run.
+
 Destructive verbs (`unsubscribe`, `*delete`, `admin cleanup|vacuum|reset`) require
 `--yes`; without it they fail with exit 2 and tell you the exact command to re-run.
 
