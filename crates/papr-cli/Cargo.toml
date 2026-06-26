@@ -1,6 +1,6 @@
 [package]
 name = "papr-cli"
-version = "0.12.0-beta.1"
+version = "0.12.0"
 edition = "2021"
 description = "papr — an agent-facing CLI over your Papr RSS feeds: read, search, triage and refresh from the shell."
 

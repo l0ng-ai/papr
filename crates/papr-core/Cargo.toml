@@ -1,6 +1,6 @@
 [package]
 name = "papr-core"
-version = "0.12.0-beta.1"
+version = "0.12.0"
 edition = "2021"
 description = "Papr's UI-free core: SQLite data layer, feed ingestion, and content sanitization. Shared by the desktop app and the agent CLI."
 
