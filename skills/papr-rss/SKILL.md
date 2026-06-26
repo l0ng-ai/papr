@@ -9,7 +9,7 @@ description: >-
   for X", "mark these read", "subscribe to <url>", "refresh my feeds".
 ---
 
-# Papr RSS (AXI CLI)
+# Papr RSS CLI
 
 `papr` is a token-efficient, agent-facing CLI over the user's local Papr RSS
 database. It emits [TOON](https://toonformat.dev) on stdout (≈40% cheaper than

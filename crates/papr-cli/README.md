@@ -1,4 +1,4 @@
-# papr — an Agent eXperience Interface for your RSS
+# papr — an agent-facing CLI for your RSS
 
 `papr` is a command-line companion to the [Papr](../../README.md) desktop RSS
 reader, built for **autonomous agents** to drive over shell execution. It reads
@@ -6,7 +6,7 @@ the same local SQLite database the app maintains, so an agent can catch you up o
 your feeds, search your subscriptions, triage unread items, and pull new posts —
 all without a GUI.
 
-It follows the [AXI](https://agentskills.io) ergonomics standard:
+It follows a small set of agent-facing ergonomics conventions:
 
 - **[TOON](https://toonformat.dev) on stdout** — ~40% fewer tokens than JSON,
   encoded by the official [`toon-format`](https://crates.io/crates/toon-format)

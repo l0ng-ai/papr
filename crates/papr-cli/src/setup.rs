@@ -1,6 +1,6 @@
 //! `papr setup` — register an ambient SessionStart integration so every agent
-//! conversation starts with the current unread state already in context (AXI
-//! §7). Supports Claude Code, Codex and OpenCode; installs are idempotent and
+//! conversation starts with the current unread state already in context.
+//! Supports Claude Code, Codex and OpenCode; installs are idempotent and
 //! repair a stale binary path on re-run.
 
 use crate::{AxiError, Doc};

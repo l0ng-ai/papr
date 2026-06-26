@@ -1,4 +1,4 @@
-//! papr — an Agent eXperience Interface (AXI) over a local Papr RSS database.
+//! papr — an agent-facing CLI over a local Papr RSS database.
 //!
 //! Reads, searches, triages and refreshes your feeds from the shell, emitting
 //! token-efficient TOON on stdout. Designed to be driven by autonomous agents:
@@ -590,7 +590,7 @@ fn mask_secret(value: &str) -> String {
 }
 
 /// A single-line confirmation, carried in an `ok` field so an agent reads the
-/// outcome from a stable key (AXI: idempotent mutations acknowledge and exit 0).
+/// outcome from a stable key; idempotent mutations acknowledge and exit 0.
 fn ok_line(text: String) -> Result<String, AxiError> {
     Ok(Doc::new().set("ok", text).into_toon())
 }
@@ -598,7 +598,7 @@ fn ok_line(text: String) -> Result<String, AxiError> {
 // ───────────────────────────── commands ─────────────────────────────
 
 /// No-args home view: identify the tool, then show live unread state so an
-/// agent can act immediately (AXI "content first").
+/// agent can act immediately (content first: live state, not a manual).
 fn cmd_home(path: &Path) -> Result<String, AxiError> {
     let conn = open_ro(path)?;
     let (unread, starred, later) = db::smart_counts(&conn).map_err(db_err)?;

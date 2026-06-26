@@ -4,7 +4,7 @@
 //! this module renders it to spec-correct [TOON](https://toonformat.dev) via the
 //! official `toon-format` encoder — so quoting, escaping, number/boolean
 //! disambiguation and tabular-array layout all come from the reference
-//! implementation rather than hand-rolled string formatting (AXI §1).
+//! implementation rather than hand-rolled string formatting.
 //!
 //! [`Doc`] is a thin insertion-ordered object builder: with serde_json's
 //! `preserve_order` feature, fields appear in the TOON in the exact order each
