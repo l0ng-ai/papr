@@ -116,11 +116,18 @@ jobs:
           # tauri-action tears down its own keychain after its step, so stand up
           # a fresh one to sign the bare CLI binary with the Developer ID cert.
           KEYCHAIN="$RUNNER_TEMP/papr-cli.keychain-db"
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+          # Scrub the decoded cert + temp keychain on any exit path.
+          cleanup() {
+            security delete-keychain "$KEYCHAIN" >/dev/null 2>&1 || true
+            rm -f "$CERT_PATH" "$RUNNER_TEMP/papr-cli.zip"
+          }
+          trap cleanup EXIT
           security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           security set-keychain-settings -lut 21600 "$KEYCHAIN"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
-          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-          security import "$RUNNER_TEMP/cert.p12" -P "$APPLE_CERTIFICATE_PASSWORD" \
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
+          security import "$CERT_PATH" -P "$APPLE_CERTIFICATE_PASSWORD" \
             -A -t cert -f pkcs12 -k "$KEYCHAIN"
           security set-key-partition-list -S apple-tool:,apple:,codesign: \
             -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
@@ -157,9 +164,12 @@ jobs:
         shell: bash
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Passed through env, not interpolated into the script, so a crafted
+          # tag name can't break out into shell syntax (template injection).
+          RELEASE_TAG: ${{ github.ref_name }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
           # Exactly one of .tar.gz (Unix) / .zip (Windows) exists for this target.
           asset=$(echo papr-${{ matrix.cli_target }}.*)
-          gh release upload "${{ github.ref_name }}" "$asset" --clobber \
-            --repo "${{ github.repository }}"
+          gh release upload "$RELEASE_TAG" "$asset" --clobber --repo "$GH_REPO"
