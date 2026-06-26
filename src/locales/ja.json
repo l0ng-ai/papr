@@ -99,6 +99,8 @@
     "resizeSidebar": "サイドバーの幅を調整",
     "resizeList": "記事リストの幅を調整",
     "refreshing": "すべてのフィードを更新中…",
+    "refreshingFeed": "このフィードを更新中…",
+    "refreshingFolder": "このフォルダを更新中…",
     "foundNew": "新着記事 {{count}} 件",
     "upToDate": "最新です",
     "markedRead": "{{count}} 件の記事を既読にしました",

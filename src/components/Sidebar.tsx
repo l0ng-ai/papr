@@ -254,12 +254,6 @@ export default function Sidebar({
       });
     return [
       {
-        icon: "refresh",
-        label: t("sidebar.refreshFeed"),
-        onClick: () => onRefresh({ feedId: f.id }),
-      },
-      { separator: true },
-      {
         icon: "check-all",
         label: t("sidebar.markAllRead"),
         onClick: () =>
@@ -268,6 +262,12 @@ export default function Sidebar({
             t("sidebar.toastMarkedAllRead"),
           ),
       },
+      {
+        icon: "refresh",
+        label: t("sidebar.refreshFeed"),
+        onClick: () => onRefresh({ feedId: f.id }),
+      },
+      { separator: true },
       {
         icon: "settings",
         label: t("sidebar.renameMenu"),
@@ -299,12 +299,6 @@ export default function Sidebar({
 
   const folderMenu = (folder: Folder): MenuEntry[] => [
     {
-      icon: "refresh",
-      label: t("sidebar.refreshFolder"),
-      onClick: () => onRefresh({ folderId: folder.id }),
-    },
-    { separator: true },
-    {
       icon: "check-all",
       label: t("sidebar.markAllRead"),
       onClick: () =>
@@ -313,6 +307,12 @@ export default function Sidebar({
           t("sidebar.toastMarkedAllRead"),
         ),
     },
+    {
+      icon: "refresh",
+      label: t("sidebar.refreshFolder"),
+      onClick: () => onRefresh({ folderId: folder.id }),
+    },
+    { separator: true },
     {
       icon: "settings",
       label: t("sidebar.renameMenu"),

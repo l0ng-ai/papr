@@ -268,7 +268,13 @@ export default function App() {
     if (refreshingRef.current) return;
     refreshingRef.current = true;
     setRefreshing(true);
-    showToast(t("app.refreshing"));
+    showToast(
+      scope?.feedId != null
+        ? t("app.refreshingFeed")
+        : scope?.folderId != null
+          ? t("app.refreshingFolder")
+          : t("app.refreshing"),
+    );
     api
       .refreshFeeds(undefined, scope)
       .then((n) => {

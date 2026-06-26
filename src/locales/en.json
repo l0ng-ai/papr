@@ -99,6 +99,8 @@
     "resizeSidebar": "Resize sidebar",
     "resizeList": "Resize article list",
     "refreshing": "Refreshing all feeds…",
+    "refreshingFeed": "Refreshing feed…",
+    "refreshingFolder": "Refreshing folder…",
     "foundNew": "Found {{count}} new articles",
     "upToDate": "Up to date",
     "markedRead": "Marked {{count}} articles as read",

@@ -99,6 +99,8 @@
     "resizeSidebar": "调整侧栏宽度",
     "resizeList": "调整文章列表宽度",
     "refreshing": "正在刷新所有订阅源…",
+    "refreshingFeed": "正在刷新该订阅源…",
+    "refreshingFolder": "正在刷新该文件夹…",
     "foundNew": "发现 {{count}} 篇新文章",
     "upToDate": "已是最新",
     "markedRead": "已将 {{count}} 篇标为已读",
