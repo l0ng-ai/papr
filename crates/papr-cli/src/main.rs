@@ -508,6 +508,12 @@ struct ReadArgs {
 // ───────────────────────────── dispatch ─────────────────────────────
 
 async fn run(cli: Cli) -> Result<String, AxiError> {
+    // `setup` writes agent config files, never the database — dispatch it
+    // before resolving the DB path so it still works in environments without
+    // HOME/APPDATA (where `db_path` would otherwise fail first).
+    if let Some(Cmd::Setup { app }) = &cli.cmd {
+        return setup::run(app);
+    }
     let path = db_path(&cli)?;
     match cli.cmd {
         None => cmd_home(&path),
@@ -536,8 +542,7 @@ async fn run(cli: Cli) -> Result<String, AxiError> {
         Some(Cmd::Settings { cmd }) => cmd_settings(&path, cmd),
         Some(Cmd::Stats) => cmd_stats(&path),
         Some(Cmd::Admin { cmd }) => cmd_admin(&path, cmd),
-        // Setup writes agent config files, not the DB — it never opens `path`.
-        Some(Cmd::Setup { app }) => setup::run(&app),
+        Some(Cmd::Setup { .. }) => unreachable!("setup is dispatched before db_path"),
         Some(Cmd::Summarize { id, save }) => cmd_summarize(&path, id, save).await,
         Some(Cmd::Ask { question, limit }) => cmd_ask(&path, &question, limit).await,
         Some(Cmd::Digest { limit }) => cmd_digest(&path, limit).await,
@@ -571,6 +576,53 @@ fn filter_query(f: &FilterArgs) -> ArticleQuery {
         ArticleQuery::ReadLater
     } else {
         ArticleQuery::All
+    }
+}
+
+/// A SQLite `LIMIT` of a negative value means "no limit" and zero returns
+/// nothing — both footguns for an agent that mistyped a flag. Clamp to `>= 1`.
+fn clamp_limit(n: i64) -> i64 {
+    n.max(1)
+}
+
+/// Pagination offsets below zero are meaningless; clamp to `>= 0`.
+fn clamp_offset(n: i64) -> i64 {
+    n.max(0)
+}
+
+/// The view selectors resolve to a single `ArticleQuery` via a first-match
+/// chain, so passing several silently honours just one — broadening a `list`
+/// and, worse, the set a `mark-all` mutates. Reject the ambiguity outright.
+fn ensure_single_filter(selectors: &[(&str, bool)]) -> Result<(), AxiError> {
+    let set: Vec<&str> = selectors.iter().filter(|(_, on)| *on).map(|(n, _)| *n).collect();
+    if set.len() > 1 {
+        return Err(AxiError::usage(
+            format!("filters {} cannot be combined", set.join(" + ")),
+            vec!["Pass exactly one of --feed / --folder / --tag / --starred / --later".into()],
+        ));
+    }
+    Ok(())
+}
+
+/// Whether a settings key holds a credential, so its value is masked in `get`
+/// and not echoed back by `set` — keeping secrets out of agent transcripts and
+/// terminal scrollback.
+fn is_secret_key(key: &str) -> bool {
+    let k = key.to_ascii_lowercase();
+    ["api_key", "password", "secret", "token"].iter().any(|needle| k.contains(needle))
+}
+
+/// A masked preview of a secret: enough to confirm *which* value is set
+/// without disclosing it.
+fn mask_secret(value: &str) -> String {
+    let n = value.chars().count();
+    match n {
+        0 => "(empty)".to_string(),
+        1..=6 => format!("(set, {n} chars)"),
+        _ => {
+            let tail: String = value.chars().skip(n - 4).collect();
+            format!("…{tail} (set, {n} chars)")
+        }
     }
 }
 
@@ -665,9 +717,18 @@ fn cmd_feeds(path: &Path) -> Result<String, AxiError> {
 }
 
 fn cmd_list(path: &Path, args: ListArgs) -> Result<String, AxiError> {
+    ensure_single_filter(&[
+        ("--feed", args.feed.is_some()),
+        ("--folder", args.folder.is_some()),
+        ("--tag", args.tag.is_some()),
+        ("--starred", args.starred),
+        ("--later", args.later),
+    ])?;
     let conn = open_ro(path)?;
     let (query, unread_only) = resolve_query(&args);
-    let rows = db::list_articles(&conn, &query, unread_only, None, false, args.limit, args.offset)
+    let limit = clamp_limit(args.limit);
+    let offset = clamp_offset(args.offset);
+    let rows = db::list_articles(&conn, &query, unread_only, None, false, limit, offset)
         .map_err(db_err)?;
     let total = count_articles(&conn, &query, unread_only).map_err(db_err)?;
 
@@ -686,8 +747,8 @@ fn cmd_list(path: &Path, args: ListArgs) -> Result<String, AxiError> {
             "Run `papr read <id>` to read an article's full text".into(),
             "Run `papr mark read <id>` to mark an article read".into(),
         ];
-        if args.offset + (shown as i64) < total {
-            let next = args.offset + args.limit;
+        if offset + (shown as i64) < total {
+            let next = offset + limit;
             let filters = replay_filters(&args);
             let cmd = if filters.is_empty() {
                 format!("papr list --offset {next}")
@@ -703,6 +764,11 @@ fn cmd_list(path: &Path, args: ListArgs) -> Result<String, AxiError> {
 }
 
 fn cmd_read(path: &Path, args: ReadArgs) -> Result<String, AxiError> {
+    ensure_single_filter(&[
+        ("--feed", args.feed.is_some()),
+        ("--folder", args.folder.is_some()),
+        ("--tag", args.tag.is_some()),
+    ])?;
     let conn = open_ro(path)?;
 
     // Resolve the id set: explicit ids win; otherwise pull the latest by filter.
@@ -716,7 +782,7 @@ fn cmd_read(path: &Path, args: ReadArgs) -> Result<String, AxiError> {
         } else {
             ArticleQuery::Tag(args.tag.unwrap())
         };
-        db::list_articles(&conn, &query, args.unread, None, false, args.limit, 0)
+        db::list_articles(&conn, &query, args.unread, None, false, clamp_limit(args.limit), 0)
             .map_err(db_err)?
             .into_iter()
             .map(|a| a.id)
@@ -787,7 +853,7 @@ fn cmd_read(path: &Path, args: ReadArgs) -> Result<String, AxiError> {
 
 fn cmd_search(path: &Path, query: &str, limit: i64) -> Result<String, AxiError> {
     let conn = open_ro(path)?;
-    let hits = db::search_articles_for_rag(&conn, query, limit).map_err(db_err)?;
+    let hits = db::search_articles_for_rag(&conn, query, clamp_limit(limit)).map_err(db_err)?;
     let mut d = Doc::new();
     d.set("query", query);
     d.set("count", hits.len());
@@ -909,24 +975,34 @@ async fn cmd_subscribe(path: &Path, url: &str, folder: Option<i64>) -> Result<St
     .map_err(db_err)?;
 
     // Initial population: ingest the articles we already parsed.
-    let rules = db::active_rules(&conn).unwrap_or_default();
+    // A failure to load rules is a real DB error — surface it rather than
+    // silently ingesting with no rules applied.
+    let rules = db::active_rules(&conn).map_err(db_err)?;
     let dedup = db::setting_flag(&conn, "dedup_enabled", false);
     let mut new_count = 0usize;
+    let mut failed = 0usize;
     for article in &parsed.articles {
-        if let Ok(true) = db::upsert_article(&conn, feed_id, article, dedup, &rules) {
-            new_count += 1;
+        // A single malformed item shouldn't abort the whole subscription, but
+        // its failure is counted and reported, not hidden behind a clean total.
+        match db::upsert_article(&conn, feed_id, article, dedup, &rules) {
+            Ok(true) => new_count += 1,
+            Ok(false) => {}
+            Err(_) => failed += 1,
         }
     }
     let _ = db::touch_feed(&conn, feed_id);
 
     let mut d = Doc::new();
-    d.set("feed", json!({
-        "id": feed_id,
-        "title": title,
-        "url": feed_url,
-        "type": source_type.as_str(),
-        "articles": new_count,
-    }));
+    let mut feed = serde_json::Map::new();
+    feed.insert("id".into(), json!(feed_id));
+    feed.insert("title".into(), json!(title));
+    feed.insert("url".into(), json!(feed_url));
+    feed.insert("type".into(), json!(source_type.as_str()));
+    feed.insert("articles".into(), json!(new_count));
+    if failed > 0 {
+        feed.insert("failed".into(), json!(failed));
+    }
+    d.set("feed", Value::Object(feed));
     d.help(vec![
         format!("Run `papr list --feed {feed_id}` to read it"),
         format!("Run `papr refresh --feed {feed_id}` to fetch more later"),
@@ -1100,7 +1176,7 @@ async fn cmd_ask(path: &Path, question: &str, limit: i64) -> Result<String, AxiE
     let conn = open_ro(path)?;
     let cfg = load_ai(&conn)?;
     let lang = response_language(&conn);
-    let hits = db::search_articles_for_rag(&conn, question, limit).map_err(db_err)?;
+    let hits = db::search_articles_for_rag(&conn, question, clamp_limit(limit)).map_err(db_err)?;
     let mut context = String::new();
     let mut cited = Vec::new();
     for (aid, _title, feed_title) in &hits {
@@ -1132,7 +1208,7 @@ async fn cmd_digest(path: &Path, limit: i64) -> Result<String, AxiError> {
     let conn = open_ro(path)?;
     let cfg = load_ai(&conn)?;
     let lang = response_language(&conn);
-    let articles = db::digest_source(&conn, limit).map_err(db_err)?;
+    let articles = db::digest_source(&conn, clamp_limit(limit)).map_err(db_err)?;
     if articles.is_empty() {
         return ok_line("digest: 0 recent articles to brief on".into());
     }
@@ -1191,6 +1267,13 @@ fn cmd_unsubscribe(path: &Path, id: i64, yes: bool) -> Result<String, AxiError> 
 }
 
 fn cmd_mark_all(path: &Path, f: &FilterArgs) -> Result<String, AxiError> {
+    ensure_single_filter(&[
+        ("--feed", f.feed.is_some()),
+        ("--folder", f.folder.is_some()),
+        ("--tag", f.tag.is_some()),
+        ("--starred", f.starred),
+        ("--later", f.later),
+    ])?;
     let conn = open_rw(path)?;
     let query = filter_query(f);
     let n = db::mark_all_read(&conn, &query, true).map_err(db_err)?;
@@ -1561,6 +1644,9 @@ fn cmd_settings(path: &Path, cmd: SettingsCmd) -> Result<String, AxiError> {
             let value = db::get_setting(&conn, &key).map_err(db_err)?;
             let mut d = Doc::new();
             match value {
+                // Mask credential values so a `get` never spills a key into the
+                // agent's transcript or the terminal scrollback.
+                Some(v) if is_secret_key(&key) => d.set(&key, mask_secret(&v)),
                 Some(v) => d.set(&key, v),
                 None => d.set(&key, Value::Null),
             };
@@ -1569,7 +1655,12 @@ fn cmd_settings(path: &Path, cmd: SettingsCmd) -> Result<String, AxiError> {
         SettingsCmd::Set { key, value } => {
             let conn = open_rw(path)?;
             db::set_setting(&conn, &key, &value).map_err(db_err)?;
-            ok_line(format!("{key}: {value}"))
+            // Don't echo a secret back; confirm the write without disclosing it.
+            if is_secret_key(&key) {
+                ok_line(format!("{key}: {}", mask_secret(&value)))
+            } else {
+                ok_line(format!("{key}: {value}"))
+            }
         }
     }
 }
@@ -1594,6 +1685,12 @@ fn cmd_admin(path: &Path, cmd: AdminCmd) -> Result<String, AxiError> {
     let conn = open_rw(path)?;
     match cmd {
         AdminCmd::Cleanup { days, yes } => {
+            if days < 0 {
+                return Err(AxiError::usage(
+                    format!("cleanup window must be >= 0 days, got {days}"),
+                    vec!["Run `papr admin cleanup <days>` with a non-negative day count".into()],
+                ));
+            }
             require_yes(yes, "cleanup", &format!("papr admin cleanup {days}"))?;
             let n = db::cleanup_old_articles(&conn, days).map_err(db_err)?;
             ok_line(format!("cleanup: removed {n} article(s) older than {days} days"))
@@ -1824,8 +1921,14 @@ fn short_date(published: Option<&str>) -> String {
 // ───────────────────────────── infrastructure ─────────────────────────────
 
 fn http_client() -> Result<reqwest::Client, AxiError> {
+    use std::time::Duration;
     reqwest::Client::builder()
         .user_agent(USER_AGENT)
+        // Bound network waits so a stalled connection or unresponsive server
+        // can't hang the CLI forever. The total budget is generous enough for a
+        // slow AI completion while still failing eventually.
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(180))
         .build()
         .map_err(|e| AxiError::runtime(format!("http client: {e}")))
 }

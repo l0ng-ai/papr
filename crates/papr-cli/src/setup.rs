@@ -37,6 +37,7 @@ pub fn run(app: &str) -> Result<String, AxiError> {
     let bin = resolve_bin();
 
     let mut apps_rows: Vec<Value> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
     for a in apps {
         let (name, result) = match a {
             App::Claude => ("claude", install_claude(&bin)),
@@ -45,9 +46,21 @@ pub fn run(app: &str) -> Result<String, AxiError> {
         };
         let row = match result {
             Ok(status) => json!({ "app": name, "status": "ok", "detail": status }),
-            Err(e) => json!({ "app": name, "status": "error", "detail": e }),
+            Err(e) => {
+                errors.push(format!("{name}: {e}"));
+                json!({ "app": name, "status": "error", "detail": e })
+            }
         };
         apps_rows.push(row);
+    }
+
+    // A failed install must surface as a non-zero exit, not a clean table — the
+    // caller (and the agent) would otherwise read a broken setup as success.
+    if !errors.is_empty() {
+        return Err(AxiError::runtime_help(
+            format!("setup failed for {} target(s)", errors.len()),
+            errors,
+        ));
     }
 
     let mut d = Doc::new();
@@ -197,12 +210,7 @@ fn install_codex(bin: &str) -> Result<String, String> {
     // Enable the hooks feature in config.toml (text-level, to avoid a TOML dep).
     let cfg = dir.join("config.toml");
     let existing = std::fs::read_to_string(&cfg).unwrap_or_default();
-    if !existing.contains("hooks = true") {
-        let mut next = existing.clone();
-        if !next.is_empty() && !next.ends_with('\n') {
-            next.push('\n');
-        }
-        next.push_str("\n[features]\nhooks = true\n");
+    if let Some(next) = ensure_codex_hooks(&existing) {
         std::fs::write(&cfg, next).map_err(|e| format!("write config.toml: {e}"))?;
     }
     Ok(format!(
@@ -210,6 +218,54 @@ fn install_codex(bin: &str) -> Result<String, String> {
         if found { "updated" } else { "installed" },
         collapse(&file)
     ))
+}
+
+/// Ensure `[features].hooks = true` in a Codex `config.toml`'s text, returning
+/// the content to write, or `None` when it is already enabled. A line-level edit
+/// (no TOML dependency) that only touches the `[features]` section: it never
+/// appends a duplicate section, replaces an existing `hooks = <other>` in place,
+/// and ignores commented lines so a `# hooks = true` can't masquerade as set.
+fn ensure_codex_hooks(existing: &str) -> Option<String> {
+    if existing.trim().is_empty() {
+        return Some("[features]\nhooks = true\n".to_string());
+    }
+    let active = |l: &str| !l.trim_start().starts_with('#');
+    let is_header = |l: &str| active(l) && l.trim_start().starts_with('[');
+    let is_features = |l: &str| active(l) && l.trim() == "[features]";
+    // A `hooks` assignment, whitespace-insensitive: `hooks=true`, `hooks = true`.
+    let hooks_kv = |l: &str| active(l) && l.trim_start().replace(' ', "").starts_with("hooks=");
+
+    let lines: Vec<&str> = existing.lines().collect();
+    let Some(start) = lines.iter().position(|l| is_features(l)) else {
+        // No [features] section — append one.
+        let mut next = existing.to_string();
+        if !next.ends_with('\n') {
+            next.push('\n');
+        }
+        next.push_str("\n[features]\nhooks = true\n");
+        return Some(next);
+    };
+
+    // Scan the section body (until the next header) for an existing hooks key.
+    let end = lines
+        .iter()
+        .enumerate()
+        .skip(start + 1)
+        .find(|(_, l)| is_header(l))
+        .map(|(i, _)| i)
+        .unwrap_or(lines.len());
+
+    let mut out: Vec<String> = lines.iter().map(|s| s.to_string()).collect();
+    if let Some(rel) = lines[start + 1..end].iter().position(|l| hooks_kv(l)) {
+        let idx = start + 1 + rel;
+        if lines[idx].replace(' ', "").trim_end() == "hooks=true" {
+            return None; // already enabled
+        }
+        out[idx] = "hooks = true".to_string();
+    } else {
+        out.insert(start + 1, "hooks = true".to_string());
+    }
+    Some(out.join("\n") + "\n")
 }
 
 // ────────────────────────────── OpenCode ──────────────────────────────
@@ -252,4 +308,56 @@ fn collapse(p: &std::path::Path) -> String {
         }
     }
     s
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ensure_codex_hooks;
+
+    #[test]
+    fn empty_config_gets_a_clean_features_section() {
+        assert_eq!(ensure_codex_hooks(""), Some("[features]\nhooks = true\n".to_string()));
+        assert_eq!(ensure_codex_hooks("   \n"), Some("[features]\nhooks = true\n".to_string()));
+    }
+
+    #[test]
+    fn appends_section_when_absent_without_clobbering() {
+        let cfg = "model = \"gpt-5\"\n[ui]\ntheme = \"dark\"\n";
+        let out = ensure_codex_hooks(cfg).unwrap();
+        assert!(out.starts_with(cfg));
+        assert!(out.contains("[features]\nhooks = true\n"));
+        // Exactly one [features] section — never a duplicate.
+        assert_eq!(out.matches("[features]").count(), 1);
+    }
+
+    #[test]
+    fn inserts_hooks_into_existing_features_section() {
+        let cfg = "[features]\nweb_search = true\n";
+        let out = ensure_codex_hooks(cfg).unwrap();
+        assert_eq!(out.matches("[features]").count(), 1);
+        assert!(out.contains("hooks = true"));
+        assert!(out.contains("web_search = true"));
+    }
+
+    #[test]
+    fn already_enabled_is_a_noop() {
+        assert_eq!(ensure_codex_hooks("[features]\nhooks = true\n"), None);
+        assert_eq!(ensure_codex_hooks("[features]\nhooks=true\n"), None);
+    }
+
+    #[test]
+    fn flips_an_explicitly_disabled_hooks_value() {
+        let out = ensure_codex_hooks("[features]\nhooks = false\n").unwrap();
+        assert!(out.contains("hooks = true"));
+        assert!(!out.contains("hooks = false"));
+    }
+
+    #[test]
+    fn commented_hooks_does_not_count_as_enabled() {
+        // A `# hooks = true` comment must not suppress the real write.
+        let out = ensure_codex_hooks("[features]\n# hooks = true\n").unwrap();
+        assert!(out.matches("hooks = true").count() >= 1);
+        // The active (non-comment) line is present.
+        assert!(out.lines().any(|l| l.trim() == "hooks = true"));
+    }
 }

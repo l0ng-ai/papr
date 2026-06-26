@@ -4,6 +4,11 @@ version = "0.10.0"
 description = "Papr — a modern RSS reader"
 authors = ["you"]
 edition = "2021"
+# Disable binary auto-discovery so Cargo does not also infer a `papr` binary
+# from `src/main.rs` (package-named) alongside the explicit `papr-desktop`
+# target below. Without this, the workspace target dir could contain a stray
+# `papr` that collides with the agent CLI's binary.
+autobins = false
 
 [lib]
 name = "papr_lib"

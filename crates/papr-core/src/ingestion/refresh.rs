@@ -149,17 +149,25 @@ pub async fn refresh_core(
                 db::newsletter_sources_due_to_poll(&conn, global_min).unwrap_or_default(),
             ),
             RefreshScope::One(id) => {
-                let feeds = conn
-                    .prepare("SELECT id, feed_url, etag, last_modified FROM feeds WHERE id = ?1")?
-                    .query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
-                    .collect::<Result<Vec<db::FeedToRefresh>, _>>()?;
                 // A newsletter feed has a row in `newsletter_sources`; filter the
                 // full poll set down to this one id (small N, no extra query).
-                let newsletters = db::newsletter_sources_to_poll(&conn)
+                let newsletters: Vec<_> = db::newsletter_sources_to_poll(&conn)
                     .unwrap_or_default()
                     .into_iter()
                     .filter(|(fid, _)| *fid == id)
                     .collect();
+                // A newsletter source is polled over IMAP, not fetched over HTTP:
+                // its synthetic `newsletter://` URL would otherwise be handed to
+                // `fetch_one` and emit a false RSS failure before the mailbox
+                // poll runs. So only build the HTTP fetch set for non-newsletter
+                // feeds.
+                let feeds = if newsletters.is_empty() {
+                    conn.prepare("SELECT id, feed_url, etag, last_modified FROM feeds WHERE id = ?1")?
+                        .query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+                        .collect::<Result<Vec<db::FeedToRefresh>, _>>()?
+                } else {
+                    Vec::new()
+                };
                 (feeds, newsletters)
             }
         };
