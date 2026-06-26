@@ -63,8 +63,5 @@ Install it in one line with [`skills`](https://github.com/vercel-labs/skills):
 npx skills add https://github.com/l0ng-ai/papr/tree/main/skills/papr-rss
 ```
 
-It loads **on demand** when a feed task comes up, with **zero per-session token
-cost** — the agent discovers the commands itself.
-
 See **[docs/cli.md](docs/cli.md)** for the full command reference and install
 options.
