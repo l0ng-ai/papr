@@ -62,25 +62,23 @@
 
 [data-theme="dark"] {
   color-scheme: dark;
-  /* "Editorial Quiet", dark. The chrome (window, sidebar, list) stays cool and
-     near-neutral; warmth is reserved for the reading surface so the page reads
-     as a sheet of lamp-lit paper and the rest recedes. Crucially the surfaces
-     now STEP in lightness — sidebar darkest, list lighter, reader lightest —
-     instead of sitting at one flat tone, so the three panes read as depth, not
-     a single grey field. The reader also carries roughly double the chroma so
-     it alone feels like paper, not metal.
-     Hue note: every surface sits at oklch hue ~40-42 (red-leaning terracotta),
-     NOT 55-66. On a near-black field a warm hue past ~50 reads as dirty yellow/
-     khaki ("淡淡的黄") — keeping the tint red-leaning and very low-chroma gives
-     warmth without ever going yellow. Do not raise these hues back toward 60. */
+  /* "Editorial Quiet", dark. ALL surfaces are one cohesive NEUTRAL graphite
+     family (hue ~250, chroma ≈0). They STEP in lightness — window floor
+     darkest, sidebar, list, reader lightest — so the panes read as depth, not
+     one flat grey. An earlier scheme warmed the chrome (hue 40) and the reader
+     separately; the reader read as a milk-coffee patch and, once neutralised,
+     left the warm chrome looking mismatched beside it. Keeping every surface
+     neutral graphite is what makes the three panes finally sit together.
+     Warmth now lives ONLY in the terracotta accent (below) — one accent, used
+     rarely. Keep surface chroma ≈0; do not re-warm any pane toward hue 40. */
   /* hex, not oklch: this var paints the root `html` background, and a
      root-propagated oklch viewport background flashes white in the strip
      WebKit exposes during a live window resize. The other surfaces below stay
      oklch — they sit on child elements, not the viewport, so they're unaffected. */
-  --paper: #0e0c0b;                 /* window floor, deepest */
-  --panel: oklch(0.190 0.005 40);   /* #161312 — sidebar, recedes */
-  --panel-2: oklch(0.230 0.005 40); /* #1f1c1b — list rows + floating menus */
-  --reader: oklch(0.250 0.008 42);  /* #25201f — reading surface, warm & lit */
+  --paper: #0A0B0C;                 /* window floor, deepest */
+  --panel: oklch(0.190 0.002 250);  /* #131415 — sidebar, recedes */
+  --panel-2: oklch(0.215 0.002 250);/* #19191a — list rows + floating menus */
+  --reader: oklch(0.235 0.002 250); /* #1d1e1f — reading surface, lightest */
 
   --ink: oklch(0.930 0.006 50);     /* #ebe7e4 — soft warm white, never #fff */
   --ink-2: oklch(0.800 0.006 48);
@@ -114,24 +112,6 @@
   --shadow-pop: 0 14px 38px oklch(0.05 0.006 40 / 0.6);
   --shadow-modal: 0 26px 64px oklch(0.04 0.005 40 / 0.68);
   --shadow-ring: 0 0 0 1px oklch(0 0 0 / 0.3);
-}
-
-/* Dark-shade overrides — only the surface colours change, keeping the warm
-   hue; ink, accents and borders stay as the base dark theme defines them.
-   "default" needs no block (it uses the values above). */
-[data-theme="dark"][data-dark-shade="dimmer"] {
-  --paper: #060504;                 /* hex — root background, see note above */
-  --panel: oklch(0.150 0.005 40);   /* #0d0a0a */
-  --panel-2: oklch(0.190 0.005 40); /* #161312 */
-  --reader: oklch(0.210 0.008 42);  /* #1c1715 — reader stays warm & lifted */
-}
-[data-theme="dark"][data-dark-shade="black"] {
-  /* True-black window for OLED — but the panes keep stepping up and the reader
-     stays a warm lit sheet, so it never collapses into flat grey-on-black. */
-  --paper: #000000;
-  --panel: oklch(0.105 0.004 40);   /* #050403 */
-  --panel-2: oklch(0.150 0.005 40); /* #0d0a0a */
-  --reader: oklch(0.180 0.008 42);  /* #15100f */
 }
 
 /* ── Dark theme: accent as a mark, not a fill ──────────────────────────────

@@ -7,7 +7,6 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import * as api from "./api";
 import { useUi, READER_FONTS } from "./store";
-import type { DarkShade } from "./store";
 import { useArticleActions } from "./hooks/articleActions";
 import { readCurrentItems } from "./lib/currentList";
 import { checkForUpdates } from "./lib/updater";
@@ -34,25 +33,19 @@ const ACCENT = {
   dAccent: "oklch(0.74 0.13 45)", dSoft: "oklch(0.32 0.06 40)", dInk: "oklch(0.80 0.10 45)",
 };
 
-// Native window backing per dark-shade. The webview is made non-opaque in
+// Native window backing for the dark theme. The webview is made non-opaque in
 // lib.rs (to kill the white resize flash), so a resize exposes THIS colour in
-// the strip the webview hasn't repainted yet. Use each shade's `--reader`
-// (the widest pane, 1fr, and the right/bottom edge a resize is dragged from)
-// rather than the darker `--paper` floor — otherwise the exposed strip flashes
-// a shade darker than the reader content it sits next to. Mirrors `--reader`
-// in styles.css.
-const DARK_BACKING: Record<DarkShade, string> = {
-  default: "#25201F",
-  dimmer: "#1C1715",
-  black: "#15100F",
-};
+// the strip the webview hasn't repainted yet. Use `--reader` (the widest pane,
+// 1fr, and the right/bottom edge a resize is dragged from) rather than the
+// darker `--paper` floor — otherwise the exposed strip flashes a shade darker
+// than the reader content it sits next to. Mirrors `--reader` in styles.css.
+const DARK_BACKING = "#1D1E1F";
 
 export default function App() {
   const { t } = useTranslation();
   const qc = useQueryClient();
 
   const theme = useUi((s) => s.theme);
-  const darkShade = useUi((s) => s.darkShade);
   const density = useUi((s) => s.density);
   const readerFont = useUi((s) => s.readerFont);
   const readerSize = useUi((s) => s.readerSize);
@@ -91,7 +84,6 @@ export default function App() {
   useEffect(() => {
     const root = document.documentElement;
     root.dataset.theme = theme;
-    root.dataset.darkShade = darkShade;
     root.dataset.density = density;
     const a = ACCENT;
     const dark = theme === "dark";
@@ -104,10 +96,10 @@ export default function App() {
     // that strip blends with the reader pane it sits next to. (On Win/Linux the
     // webview is opaque, so setBackgroundColor here mainly covers their own
     // resize/overscroll; harmless on macOS where it's the NSWindow colour.)
-    const backing = dark ? DARK_BACKING[darkShade] : "#FBF9F3";
+    const backing = dark ? DARK_BACKING : "#FBF9F3";
     getCurrentWindow().setBackgroundColor(backing).catch(() => {});
     getCurrentWebview().setBackgroundColor(backing).catch(() => {});
-  }, [theme, darkShade, density]);
+  }, [theme, density]);
 
   // ── dismiss the boot splash once the app shell has mounted ──
   useEffect(() => {

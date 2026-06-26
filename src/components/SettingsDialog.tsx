@@ -553,8 +553,6 @@ function AppearanceSection() {
   const { t, i18n } = useTranslation();
   const theme = useUi((s) => s.theme);
   const setTheme = useUi((s) => s.setTheme);
-  const darkShade = useUi((s) => s.darkShade);
-  const setDarkShade = useUi((s) => s.setDarkShade);
   const density = useUi((s) => s.density);
   const setDensity = useUi((s) => s.setDensity);
   const viewMode = useUi((s) => s.viewMode);
@@ -592,22 +590,6 @@ function AppearanceSection() {
             onChange={setTheme}
           />
         </Row>
-        {theme === "dark" && (
-          <Row
-            label={t("settings.appearance.darkShade")}
-            desc={t("settings.appearance.darkShadeDesc")}
-          >
-            <Segmented
-              value={darkShade}
-              options={[
-                { value: "default", label: t("settings.appearance.darkShadeDefault") },
-                { value: "dimmer", label: t("settings.appearance.darkShadeDimmer") },
-                { value: "black", label: t("settings.appearance.darkShadeBlack") },
-              ]}
-              onChange={setDarkShade}
-            />
-          </Row>
-        )}
       </div>
       <div className="settings-group">
         <h3 className="settings-group-title">{t("settings.appearance.layout")}</h3>
@@ -1560,10 +1542,12 @@ function DangerZone({ onToast }: { onToast: (m: string) => void }) {
         if (
           k.startsWith("pref.") ||
           [
-            // "accent" is intentionally still cleared: it removes any value
-            // persisted by older builds that exposed an accent picker.
-            "theme", "accent", "density", "viewMode", "readerFont", "useSerif",
-            "readerSize", "readerLeading", "readerWidth", "collapsedFolders",
+            // "accent" / "darkShade" are intentionally still cleared: they
+            // remove any value persisted by older builds that exposed an
+            // accent picker / dark-shade picker.
+            "theme", "accent", "darkShade", "density", "viewMode", "readerFont",
+            "useSerif", "readerSize", "readerLeading", "readerWidth",
+            "collapsedFolders",
           ].includes(k)
         ) {
           localStorage.removeItem(k);

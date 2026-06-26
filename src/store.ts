@@ -10,7 +10,6 @@ import type { ArticleQuery } from "./types";
 export type Theme = "light" | "dark";
 /** Background depth for the dark theme. Only meaningful while `theme` is
  *  "dark"; lets users pick a darker paper than the default warm charcoal. */
-export type DarkShade = "default" | "dimmer" | "black";
 export type Density = "compact" | "cozy" | "spacious";
 export type ViewMode = "list" | "card";
 export type StartupView = "all" | "unread" | "starred" | "last";
@@ -119,7 +118,6 @@ interface UiState {
 
   // appearance preferences
   theme: Theme;
-  darkShade: DarkShade;
   density: Density;
   viewMode: ViewMode;
   readerFont: ReaderFont;
@@ -156,7 +154,6 @@ interface UiState {
   setListAnchor: (offset: number) => void;
 
   setTheme: (t: Theme) => void;
-  setDarkShade: (s: DarkShade) => void;
   setDensity: (d: Density) => void;
   setViewMode: (v: ViewMode) => void;
   setReaderFont: (v: ReaderFont) => void;
@@ -194,10 +191,12 @@ function mirrorTheme(theme: Theme): void {
   api.setSetting("theme", theme).catch(() => {});
 }
 
-/** Mirror the dark-shade choice to the backend so the native window can be
- *  painted in the matching colour before the first webview frame (lib.rs). */
-function mirrorDarkShade(shade: DarkShade): void {
-  api.setSetting("dark_shade", shade).catch(() => {});
+/** Pin the backend's `dark_shade` to the single shipped shade so the native
+ *  window paints the matching colour before the first webview frame (lib.rs),
+ *  and any value persisted by an older build that exposed a shade picker is
+ *  normalised back to "default". */
+function mirrorDarkShade(): void {
+  api.setSetting("dark_shade", "default").catch(() => {});
 }
 
 /** Resolve the persisted reader font, migrating the pre-0.2 boolean
@@ -236,11 +235,6 @@ export const useUi = create<UiState>((set) => ({
   listAnchor: 0,
 
   theme: ls.oneOf<Theme>("theme", ["light", "dark"], "light"),
-  darkShade: ls.oneOf<DarkShade>(
-    "darkShade",
-    ["default", "dimmer", "black"],
-    "default",
-  ),
   density: ls.oneOf<Density>(
     "density",
     ["compact", "cozy", "spacious"],
@@ -282,7 +276,6 @@ export const useUi = create<UiState>((set) => ({
   setListAnchor: (listAnchor) => set({ listAnchor }),
 
   setTheme: (theme) => { ls.set("theme", theme); mirrorTheme(theme); set({ theme }); },
-  setDarkShade: (darkShade) => { ls.set("darkShade", darkShade); mirrorDarkShade(darkShade); set({ darkShade }); },
   setDensity: (density) => { ls.set("density", density); set({ density }); },
   setViewMode: (viewMode) => { ls.set("viewMode", viewMode); set({ viewMode }); },
   setReaderFont: (readerFont) => { ls.set("readerFont", readerFont); set({ readerFont }); },
@@ -345,4 +338,4 @@ export const useUi = create<UiState>((set) => ({
 // theme has lived only in localStorage until now — still gets the native
 // launch background themed correctly from the next launch onward.
 mirrorTheme(useUi.getState().theme);
-mirrorDarkShade(useUi.getState().darkShade);
+mirrorDarkShade();
