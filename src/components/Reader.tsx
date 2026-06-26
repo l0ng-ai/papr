@@ -244,13 +244,14 @@ export default function Reader({ onToast }: Props) {
   // Anything that floats over the reading area must suspend the page view: the
   // child webview floats above the whole DOM, so it would otherwise occlude a
   // covering modal (subscribe / settings / explore — issue #54), a context
-  // menu raised over the reader (issue #74), or the AI drawer that slides over
-  // the reader's right edge. We *hide* the webview rather than tear it down, so
-  // dismissing the overlay reveals the already-loaded page instantly instead of
-  // reloading it (the bounds keep syncing while hidden, below).
+  // menu raised over the reader (issue #74), the tag picker, or the AI drawer
+  // that slides over the reader's right edge. We *hide* the webview rather than
+  // tear it down, so dismissing the overlay reveals the already-loaded page
+  // instantly instead of reloading it (the bounds keep syncing while hidden,
+  // below).
   const modalOpen = useUi((s) => s.modalOpen);
   const menuOpen = useUi((s) => s.menuOpen);
-  const overlayOpen = modalOpen || menuOpen || aiOpen;
+  const overlayOpen = modalOpen || menuOpen || aiOpen || tagPick != null;
   // Read the latest value inside the lifecycle effect without making it a
   // dependency — overlays toggle visibility (below), never the webview's life.
   const overlayOpenRef = useRef(overlayOpen);
