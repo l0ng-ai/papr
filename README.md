@@ -62,7 +62,5 @@ unread RSS?"_, _"summarize this feed"_, or _"subscribe to &lt;url&gt;"_ — with
 **zero per-session token cost** and nothing to memorize: the agent discovers the
 commands itself.
 
-Prefer it always-on? `papr setup` installs an ambient SessionStart hook so every
-conversation opens with your unread dashboard already in context. See
-**[docs/cli.md](docs/cli.md)** for both paths, the full command reference, and
-install options.
+See **[docs/cli.md](docs/cli.md)** for the full command reference and install
+options.

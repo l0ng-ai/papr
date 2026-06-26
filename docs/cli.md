@@ -60,20 +60,25 @@ cp target/release/papr ~/.local/bin/   # or anywhere on PATH
 
 ## Giving an agent access
 
-You only need one of these; they are complementary.
+**Recommended: the installable skill.** The bundled
+[`skills/papr-rss`](../skills/papr-rss/SKILL.md) skill loads **on demand** when an
+agent recognizes a feed-related task, so it costs nothing until you actually use
+it. This is the right choice for almost everyone — use it in any agent that
+supports the skill format.
 
-**1. Ambient SessionStart hook (recommended).** Registers an integration so every
-agent conversation **opens with your unread dashboard already in context** — no
-invocation needed. Installs are idempotent and repair the binary path on re-run.
+**Optional: an ambient SessionStart hook.** If you want the agent to be
+*proactively* aware of your feeds — every conversation opening with your unread
+dashboard already in context, no prompt needed — `papr setup` wires that up.
 
 ```sh
 papr setup                # wires up Claude Code, Codex and OpenCode
 papr setup --app claude
 ```
 
-**2. Installable skill.** The bundled [`skills/papr-rss`](../skills/papr-rss/SKILL.md)
-skill loads on demand when an agent recognizes a feed-related task, with no
-per-session token cost. Use it in any agent that supports the skill format.
+The trade-off is a **per-session token cost in every conversation**, whether or
+not it's about RSS — so reach for this only when you're running a dedicated
+reading/news assistant, not a general-purpose agent. (Installs are idempotent and
+repair the binary path on re-run.)
 
 ## Command reference
 
