@@ -66,6 +66,15 @@ agent recognizes a feed-related task, so it costs nothing until you actually use
 it. This is the right choice for almost everyone — use it in any agent that
 supports the skill format.
 
+Install it with [`skills`](https://github.com/vercel-labs/skills):
+
+```sh
+npx skills add https://github.com/l0ng-ai/papr/tree/main/skills/papr-rss
+```
+
+Or point it at the whole repo (`npx skills add l0ng-ai/papr`) and it will discover
+the skill. Either way it lands in your agent's skills directory ready to load.
+
 **Optional: an ambient SessionStart hook.** If you want the agent to be
 *proactively* aware of your feeds — every conversation opening with your unread
 dashboard already in context, no prompt needed — `papr setup` wires that up.
