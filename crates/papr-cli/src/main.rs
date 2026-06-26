@@ -107,6 +107,9 @@ enum Cmd {
         /// Only refresh this feed id (default: all feeds).
         #[arg(long, value_name = "ID")]
         feed: Option<i64>,
+        /// Only refresh feeds in this folder id.
+        #[arg(long, value_name = "ID")]
+        folder: Option<i64>,
     },
     /// Unsubscribe from a feed, deleting it and all its articles.
     Unsubscribe {
@@ -491,7 +494,7 @@ async fn run(cli: Cli) -> Result<String, AxiError> {
         Some(Cmd::Mark { state, ids }) => cmd_mark(&path, &state, &ids),
         Some(Cmd::Tags) => cmd_tags(&path),
         Some(Cmd::Subscribe { url, folder }) => cmd_subscribe(&path, &url, folder).await,
-        Some(Cmd::Refresh { feed }) => cmd_refresh(&path, feed).await,
+        Some(Cmd::Refresh { feed, folder }) => cmd_refresh(&path, feed, folder).await,
         Some(Cmd::Unsubscribe { id, yes }) => cmd_unsubscribe(&path, id, yes),
         Some(Cmd::MarkAll(f)) => cmd_mark_all(&path, &f),
         Some(Cmd::Extract { id }) => cmd_extract(&path, id).await,
@@ -984,13 +987,19 @@ async fn cmd_subscribe(path: &Path, url: &str, folder: Option<i64>) -> Result<St
     Ok(d.into_toon())
 }
 
-async fn cmd_refresh(path: &Path, feed: Option<i64>) -> Result<String, AxiError> {
+async fn cmd_refresh(
+    path: &Path,
+    feed: Option<i64>,
+    folder: Option<i64>,
+) -> Result<String, AxiError> {
+    ensure_single_filter(&[("--feed", feed.is_some()), ("--folder", folder.is_some())])?;
     let conn = db::open(path).map_err(db_err)?;
     let dbm = tokio::sync::Mutex::new(conn);
     let client = http_client()?;
-    let scope = match feed {
-        Some(id) => refresh::RefreshScope::One(id),
-        None => refresh::RefreshScope::All,
+    let (scope, label) = match (feed, folder) {
+        (Some(id), _) => (refresh::RefreshScope::Feed(id), format!("feed {id}")),
+        (_, Some(id)) => (refresh::RefreshScope::Folder(id), format!("folder {id}")),
+        _ => (refresh::RefreshScope::All, "all".to_string()),
     };
 
     // Progress is diagnostic — it goes to stderr so stdout stays pure data.
@@ -1013,7 +1022,7 @@ async fn cmd_refresh(path: &Path, feed: Option<i64>) -> Result<String, AxiError>
 
     let mut d = Doc::new();
     d.set("refresh", json!({
-        "scope": feed.map(|f| format!("feed {f}")).unwrap_or_else(|| "all".into()),
+        "scope": label,
         "new": summary.new_articles,
     }));
     if summary.new_articles > 0 {

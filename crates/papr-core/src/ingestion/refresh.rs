@@ -49,9 +49,12 @@ pub enum RefreshScope {
     /// Only sources whose per-feed (or global) interval has elapsed — the
     /// background scheduler. An empty due-set skips the whole pipeline.
     Due,
-    /// A single feed by id (and its newsletter mailbox, if any) — the CLI's
-    /// targeted `refresh --feed <id>`. Always runs the pipeline.
-    One(i64),
+    /// A single feed by id (and its newsletter mailbox, if any) — the per-feed
+    /// manual refresh (`refresh --feed <id>`). Always runs the pipeline.
+    Feed(i64),
+    /// Every feed in one folder by id — the per-folder manual refresh. Always
+    /// runs the pipeline.
+    Folder(i64),
 }
 
 /// Insert a batch of articles for one feed in bounded chunks, releasing the
@@ -148,28 +151,18 @@ pub async fn refresh_core(
                 db::feeds_due_for_refresh(&conn, global_min)?,
                 db::newsletter_sources_due_to_poll(&conn, global_min).unwrap_or_default(),
             ),
-            RefreshScope::One(id) => {
-                // A newsletter feed has a row in `newsletter_sources`; filter the
-                // full poll set down to this one id (small N, no extra query).
-                let newsletters: Vec<_> = db::newsletter_sources_to_poll(&conn)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter(|(fid, _)| *fid == id)
-                    .collect();
-                // A newsletter source is polled over IMAP, not fetched over HTTP:
-                // its synthetic `newsletter://` URL would otherwise be handed to
-                // `fetch_one` and emit a false RSS failure before the mailbox
-                // poll runs. So only build the HTTP fetch set for non-newsletter
-                // feeds.
-                let feeds = if newsletters.is_empty() {
-                    conn.prepare("SELECT id, feed_url, etag, last_modified FROM feeds WHERE id = ?1")?
-                        .query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
-                        .collect::<Result<Vec<db::FeedToRefresh>, _>>()?
-                } else {
-                    Vec::new()
-                };
-                (feeds, newsletters)
-            }
+            // The HTTP fetch set excludes newsletter sources (`source_type !=
+            // 'newsletter'` in the query), so a newsletter feed's synthetic
+            // `newsletter://` URL is never handed to `fetch_one`; it is polled
+            // over IMAP via the separate newsletter set instead.
+            RefreshScope::Feed(id) => (
+                db::feeds_to_refresh_for_feed(&conn, id)?,
+                db::newsletter_sources_for_feed(&conn, id).unwrap_or_default(),
+            ),
+            RefreshScope::Folder(id) => (
+                db::feeds_to_refresh_in_folder(&conn, id)?,
+                db::newsletter_sources_in_folder(&conn, id).unwrap_or_default(),
+            ),
         };
         let concurrency =
             db::setting_parsed::<i64>(&conn, "net_concurrency", 6).clamp(1, 16) as usize;
