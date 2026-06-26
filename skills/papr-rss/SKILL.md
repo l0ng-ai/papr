@@ -27,6 +27,7 @@ papr                        # home: unread/starred counts + recent unread + next
 papr feeds                  # subscriptions grouped by folder, with unread counts
 papr list --feed <id>       # articles in a feed (defaults to unread; --all for read too)
 papr list --starred         # smart views: --starred / --later / --tag <id> / --folder <id>
+papr list --fields author,url   # add columns: author,url,snippet,type,feed_id,published
 papr read <id> [<id>...]    # plain-text body, truncated; pass several ids to batch
 papr read --feed <id> --unread --limit 5   # read a feed's latest unread in one call
 papr read <id> --full       # the complete body when truncation hid something
@@ -67,8 +68,14 @@ model, so read the text with `papr read <id>` (or gather candidates with
 `papr search`) and summarize, answer or translate it yourself — no second AI
 provider is involved.
 
-Destructive verbs (`unsubscribe`, `*delete`, `admin cleanup|vacuum|reset`) require
-`--yes`; without it they fail with exit 2 and tell you the exact command to re-run.
+Destructive verbs require `--yes`; without it they fail with exit 2 and tell you
+the exact command to re-run:
+
+```sh
+papr unsubscribe <id> --yes            # delete a feed and its articles
+papr admin cleanup <days> --yes        # also: admin vacuum / admin reset
+papr folder delete <id> --yes          # likewise tag/rule/highlight delete, newsletter remove
+```
 
 ## Notes
 

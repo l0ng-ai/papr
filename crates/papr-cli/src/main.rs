@@ -442,6 +442,10 @@ struct ListArgs {
     /// Skip this many rows (pagination).
     #[arg(long, default_value_t = 0)]
     offset: i64,
+    /// Extra columns beyond the default {id,feed,title,flags,date}, comma-
+    /// separated: author, url, snippet, type, feed_id, published.
+    #[arg(long, value_name = "F1,F2")]
+    fields: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -620,16 +624,23 @@ fn cmd_home(path: &Path) -> Result<String, AxiError> {
     d.set("feeds", feeds.len());
     if inbox_clear {
         d.set("inbox", "0 unread — all caught up");
-        d.set("recent", article_rows(&recent));
+        d.set("recent", article_rows(&recent, &[]));
     } else {
-        d.set("articles", article_rows(&recent));
+        d.set("articles", article_rows(&recent, &[]));
     }
-    d.help(vec![
+    let mut help = Vec::new();
+    // The home view shows only the most recent unread; if more exist, tell the
+    // agent how to see the rest instead of leaving the count ambiguous.
+    if !inbox_clear && unread > recent.len() as i64 {
+        help.push(format!("Run `papr list` to see all {unread} unread"));
+    }
+    help.extend([
         "Run `papr read <id>` to read an article's full text".into(),
         "Run `papr list --feed <id>` to list one feed's articles".into(),
         "Run `papr search \"<query>\"` to search every article".into(),
         "Run `papr refresh` to fetch new articles".into(),
     ]);
+    d.help(help);
     Ok(d.into_toon())
 }
 
@@ -683,6 +694,10 @@ fn cmd_list(path: &Path, args: ListArgs) -> Result<String, AxiError> {
         ("--starred", args.starred),
         ("--later", args.later),
     ])?;
+    let extra = match &args.fields {
+        Some(spec) => parse_fields(spec)?,
+        None => Vec::new(),
+    };
     let conn = open_ro(path)?;
     let (query, unread_only) = resolve_query(&args);
     let limit = clamp_limit(args.limit);
@@ -697,7 +712,7 @@ fn cmd_list(path: &Path, args: ListArgs) -> Result<String, AxiError> {
         "count",
         format!("{shown} of {total} {}", scope_label(&query, unread_only)),
     );
-    d.set("articles", article_rows(&rows));
+    d.set("articles", article_rows(&rows, &extra));
 
     let help = if rows.is_empty() {
         vec!["Run `papr refresh` to fetch new articles".into()]
@@ -885,7 +900,7 @@ async fn cmd_subscribe(path: &Path, url: &str, folder: Option<i64>) -> Result<St
     // it as an HTML page and auto-discover the feed link.
     let (bytes, _etag, final_url) = fetch::get(&client, url)
         .await
-        .map_err(|e| AxiError::runtime(format!("could not fetch {url}: {e}")))?;
+        .map_err(|e| clean_err(&format!("could not fetch {url}"), e))?;
 
     let (feed_url, parsed) = match parse::parse_feed(&bytes, &final_url) {
         Ok(parsed) => (final_url.clone(), parsed),
@@ -901,7 +916,7 @@ async fn cmd_subscribe(path: &Path, url: &str, folder: Option<i64>) -> Result<St
             };
             let (fbytes, _e, furl) = fetch::get(&client, &candidate)
                 .await
-                .map_err(|e| AxiError::runtime(format!("could not fetch {candidate}: {e}")))?;
+                .map_err(|e| clean_err(&format!("could not fetch {candidate}"), e))?;
             let parsed = parse::parse_feed(&fbytes, &furl)
                 .map_err(|e| AxiError::runtime(format!("discovered feed did not parse: {e}")))?;
             (furl, parsed)
@@ -1017,7 +1032,7 @@ async fn cmd_sync(path: &Path, cmd: SyncCmd) -> Result<String, AxiError> {
         SyncCmd::Status => {
             let info = sync::connected_url(&dbm)
                 .await
-                .map_err(|e| AxiError::runtime(format!("{e}")))?;
+                .map_err(|e| clean_err("sync status", e))?;
             let mut d = Doc::new();
             match info {
                 Some((url, provider)) => {
@@ -1037,7 +1052,7 @@ async fn cmd_sync(path: &Path, cmd: SyncCmd) -> Result<String, AxiError> {
         SyncCmd::Connect { url, user, password, provider } => {
             sync::connect(&dbm, &client, &url, &user, &password, provider.as_deref())
                 .await
-                .map_err(|e| AxiError::runtime(format!("connect failed: {e}")))?;
+                .map_err(|e| clean_err("sync connect failed", e))?;
             let mut d = Doc::new();
             d.set("ok", format!("connected to {url}"));
             d.help(vec!["Run `papr sync run` to reconcile now".into()]);
@@ -1059,7 +1074,7 @@ async fn cmd_sync(path: &Path, cmd: SyncCmd) -> Result<String, AxiError> {
             eprintln!("syncing…");
             let n = sync::sync_now(&dbm, &client)
                 .await
-                .map_err(|e| AxiError::runtime(format!("sync failed: {e}")))?;
+                .map_err(|e| clean_err("sync failed", e))?;
             Ok(Doc::new().set("sync", json!({ "reconciled": n })).into_toon())
         }
     }
@@ -1106,7 +1121,7 @@ async fn cmd_extract(path: &Path, id: i64) -> Result<String, AxiError> {
     let client = http_client()?;
     let (bytes, _e, final_url) = fetch::get(&client, &url)
         .await
-        .map_err(|e| AxiError::runtime(format!("could not fetch {url}: {e}")))?;
+        .map_err(|e| clean_err(&format!("could not fetch {url}"), e))?;
     let html = String::from_utf8_lossy(&bytes);
     let cleaned = papr_core::extraction::extract_article(&html, &final_url)
         .map_err(|e| AxiError::runtime(format!("extraction failed: {e}")))?;
@@ -1536,20 +1551,67 @@ fn human_bytes(n: i64) -> String {
 
 // ───────────────────────────── rendering helpers ─────────────────────────────
 
+/// An optional column an agent can request with `--fields` beyond the default
+/// `{id,feed,title,flags,date}` schema.
+#[derive(Clone, Copy)]
+enum ExtraField {
+    Author,
+    Url,
+    Snippet,
+    Type,
+    FeedId,
+    Published,
+}
+
+/// Parse a `--fields a,b,c` value into extra columns, rejecting unknown names
+/// with the valid set so the agent can correct in one step.
+fn parse_fields(spec: &str) -> Result<Vec<ExtraField>, AxiError> {
+    spec.split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| match s {
+            "author" => Ok(ExtraField::Author),
+            "url" => Ok(ExtraField::Url),
+            "snippet" => Ok(ExtraField::Snippet),
+            "type" => Ok(ExtraField::Type),
+            "feed_id" => Ok(ExtraField::FeedId),
+            "published" => Ok(ExtraField::Published),
+            other => Err(AxiError::usage(
+                format!("unknown field `{other}`"),
+                vec!["Valid --fields: author, url, snippet, type, feed_id, published".into()],
+            )),
+        })
+        .collect()
+}
+
 /// `{id,feed,title,flags,date}` — the minimal schema an agent needs to pick a
-/// next action without a follow-up call. Returns a JSON array the encoder lays
-/// out as a tabular TOON array.
-fn article_rows(rows: &[papr_core::models::ArticleSummary]) -> Value {
+/// next action without a follow-up call — plus any `extra` columns requested
+/// via `--fields`. Returns a JSON array the encoder lays out as a tabular TOON
+/// array (uniform keys across rows keep it tabular).
+fn article_rows(rows: &[papr_core::models::ArticleSummary], extra: &[ExtraField]) -> Value {
     Value::Array(
         rows.iter()
             .map(|a| {
-                json!({
-                    "id": a.id,
-                    "feed": cap(&a.feed_title, 28),
-                    "title": cap(&a.title, 80),
-                    "flags": summary_flags(a),
-                    "date": short_date(a.published_at.as_deref()),
-                })
+                let mut o = serde_json::Map::new();
+                o.insert("id".into(), json!(a.id));
+                o.insert("feed".into(), json!(cap(&a.feed_title, 28)));
+                o.insert("title".into(), json!(cap(&a.title, 80)));
+                o.insert("flags".into(), json!(summary_flags(a)));
+                o.insert("date".into(), json!(short_date(a.published_at.as_deref())));
+                for f in extra {
+                    let (k, v) = match f {
+                        ExtraField::Author => ("author", json!(a.author)),
+                        ExtraField::Url => ("url", json!(a.url)),
+                        ExtraField::Snippet => {
+                            ("snippet", json!(a.snippet.as_deref().map(|s| cap(s, 120))))
+                        }
+                        ExtraField::Type => ("type", json!(a.source_type)),
+                        ExtraField::FeedId => ("feed_id", json!(a.feed_id)),
+                        ExtraField::Published => ("published", json!(a.published_at)),
+                    };
+                    o.insert(k.into(), v);
+                }
+                Value::Object(o)
             })
             .collect(),
     )
@@ -1859,9 +1921,75 @@ fn db_err(e: papr_core::error::AppError) -> AxiError {
     AxiError::runtime(format!("{e}"))
 }
 
+/// Translate a network-facing core error into a clean, actionable message,
+/// `context` describing the operation. Raw `reqwest` failures (which embed the
+/// internal endpoint URL and a verbose chain) collapse to a short phrase, so no
+/// dependency name or internal path leaks into the agent's output.
+fn clean_err(context: &str, e: papr_core::error::AppError) -> AxiError {
+    use papr_core::error::AppError;
+    let detail = match &e {
+        AppError::Http(h) => {
+            if h.is_timeout() {
+                "the request timed out".to_string()
+            } else if h.is_connect() {
+                "could not reach the server".to_string()
+            } else if let Some(s) = h.status() {
+                format!("the server returned HTTP {}", s.as_u16())
+            } else {
+                "the network request failed".to_string()
+            }
+        }
+        // Our own typed errors (coded, parse, db) are already clean.
+        other => other.to_string(),
+    };
+    AxiError::runtime(format!("{context}: {detail}"))
+}
+
 fn render_error(e: &AxiError) -> String {
     let mut d = Doc::new();
     d.set("error", e.message.clone());
     d.help(e.help.clone());
     d.into_toon()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    /// CI guard against the installable skill drifting from the actual CLI
+    /// surface: every command must be documented as a `papr <name>` example, and
+    /// every `papr <name>` the doc references must be a real command (so a
+    /// removed command left behind in the skill fails the build).
+    #[test]
+    fn skill_doc_matches_cli_commands() {
+        let names: std::collections::HashSet<String> = Cli::command()
+            .get_subcommands()
+            .map(|c| c.get_name().to_string())
+            .collect();
+        let skill = include_str!("../../../skills/papr-rss/SKILL.md");
+
+        // Forward: every subcommand appears as a `papr <name>` invocation.
+        for n in &names {
+            assert!(
+                skill.contains(&format!("papr {n}")),
+                "SKILL.md has no `papr {n}` example — command is undocumented"
+            );
+        }
+        // Reverse: every `papr <token>` the doc shows is a real command.
+        for span in skill.split("papr ").skip(1) {
+            let token: String = span
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '-')
+                .collect();
+            // Skip bare `papr` (the home view) and any `papr --flag` usage.
+            if token.is_empty() || token.starts_with('-') {
+                continue;
+            }
+            assert!(
+                names.contains(&token),
+                "SKILL.md references `papr {token}`, which is not a CLI command"
+            );
+        }
+    }
 }

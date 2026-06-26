@@ -11,7 +11,9 @@ It follows the [AXI](https://agentskills.io) ergonomics standard:
 - **[TOON](https://toonformat.dev) on stdout** — ~40% fewer tokens than JSON,
   encoded by the official [`toon-format`](https://crates.io/crates/toon-format)
   crate, so quoting and tabular layout follow the spec exactly.
-- **Minimal schemas** — lists return an id, a title and a status, not 12 columns.
+- **Minimal schemas** — lists return an id, a title and a status, not 12
+  columns; `papr list --fields author,url,snippet,type,feed_id,published` adds
+  more on demand.
 - **Truncated long text** — article bodies preview by default; `--full` for all.
 - **Pre-computed aggregates** — every list states a definitive `count: N of M`.
 - **Definitive empty states** — a zero is stated, never an ambiguous blank.
