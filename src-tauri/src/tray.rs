@@ -5,8 +5,8 @@
 //! quick actions. It is rebuilt after every refresh and on language change.
 
 use crate::db;
-use crate::ingestion::scheduler;
 use crate::models::ArticleQuery;
+use crate::scheduler;
 use crate::notify;
 use crate::state::AppState;
 use chrono::{NaiveDateTime, Utc};

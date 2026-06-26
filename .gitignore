@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# Rust / Cargo build output (the Cargo workspace root target dir)
+/target
+
 # Stray compiler scratch output
 a.out
 

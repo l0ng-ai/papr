@@ -1,0 +1,45 @@
+[workspace]
+members = ["src-tauri", "crates/papr-core", "crates/papr-cli"]
+resolver = "2"
+
+# Shared dependency versions, inherited by the member crates via
+# `<dep>.workspace = true`. Keeping the data/ingestion stack pinned here means
+# the desktop app and the agent CLI link the exact same code.
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+# `preserve_order` keeps JSON object keys in insertion order, so the TOON the
+# agent CLI emits lists fields in the deliberate order each handler builds them
+# (toon-format encodes objects in map order).
+serde_json = { version = "1", features = ["preserve_order"] }
+rusqlite = { version = "0.32", features = ["bundled", "functions"] }
+rusqlite_migration = "1"
+feed-rs = "2"
+reqwest = { version = "0.12", features = ["gzip", "brotli", "json"] }
+tokio = { version = "1", features = ["full"] }
+scraper = "0.21"
+ego-tree = "0.9"
+url = "2"
+opml = "1"
+encoding_rs = "0.8"
+imap = { version = "=3.0.0-alpha.15", default-features = false, features = ["rustls-tls"] }
+mail-parser = "0.11"
+ammonia = "4.1.2"
+dom_smoothie = "0.17"
+lol_html = "2"
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1"
+thiserror = "2"
+log = "0.4"
+clap = { version = "4", features = ["derive", "env"] }
+# Official TOON (Token-Oriented Object Notation) encoder. `default-features =
+# false` drops its bundled TUI/CLI (clap, ratatui, tiktoken, …) — we only want
+# the library encoder at the agent CLI's output boundary.
+toon-format = { version = "0.5", default-features = false }
+
+# The desktop bundle is size-optimized and stripped; the agent CLI inherits the
+# same release profile (one static binary to drop on an agent's PATH).
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true

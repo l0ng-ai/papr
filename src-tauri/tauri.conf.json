@@ -3,6 +3,7 @@
   "productName": "Papr",
   "version": "0.11.0",
   "identifier": "com.thomas.papr",
+  "mainBinaryName": "papr-desktop",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1430",

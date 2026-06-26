@@ -2,19 +2,19 @@
 //! database, wires shared state, installs the macOS tray, and starts the
 //! background refresh scheduler.
 
-mod ai;
+// The data layer, ingestion building blocks, sanitization and OPML now live in
+// `papr-core` (shared with the agent CLI). Re-export them under their original
+// crate paths so the rest of the app keeps referring to `crate::db`,
+// `crate::ingestion`, etc. unchanged.
+pub use papr_core::{ai, db, error, extraction, ingestion, models, opml, sanitize, sync};
+
 mod commands;
-mod db;
-mod error;
-mod extraction;
-mod ingestion;
-mod models;
 mod notify;
-mod opml;
 mod page_view;
-mod sanitize;
+// The tauri-coupled refresh scheduler (progress channels, AppHandle) — built on
+// top of `papr_core::ingestion`. Was `ingestion::scheduler` before the split.
+mod scheduler;
 mod state;
-mod sync;
 mod translate;
 mod tray;
 
@@ -184,7 +184,7 @@ pub fn run() {
             tray::build(app.handle(), &lang, unread, latest_fetch.as_deref())?;
 
             // ── Background refresh scheduler ──────────────────────────
-            ingestion::scheduler::spawn_scheduler(app.handle().clone());
+            scheduler::spawn_scheduler(app.handle().clone());
 
             // Reflect the current unread count on the Dock badge at launch.
             let badge_handle = app.handle().clone();

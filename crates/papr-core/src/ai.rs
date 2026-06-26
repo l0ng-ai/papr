@@ -1,13 +1,25 @@
 //! AI features: cloud LLM streaming for article summaries and RAG Q&A.
 //! Provider-agnostic (Anthropic / OpenAI); a local backend can later implement
 //! the same `stream_chat` contract.
+//!
+//! UI-free: token deltas are delivered through a `FnMut(&str) -> bool` sink
+//! rather than a Tauri channel, so the desktop app (which wraps the sink to push
+//! to its webview) and the agent CLI (which accumulates the full text) share one
+//! implementation. The sink returns `false` to ask the stream to stop early —
+//! the desktop app maps that to "the user closed the AI panel".
 
 use crate::error::{AppError, AppResult};
 use reqwest::{Client, Response};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::time::Duration;
-use tauri::ipc::Channel;
+
+/// A token-delta sink. Returns `true` to keep streaming, `false` to stop early
+/// (e.g. the consumer went away). Used in place of a UI channel.
+///
+/// `Send` is required so the streaming future stays `Send` — Tauri's async
+/// command runtime (and any multi-threaded executor) demands it.
+pub type DeltaSink<'a> = dyn FnMut(&str) -> bool + Send + 'a;
 
 /// Map a non-success HTTP response to an `AppError` naming the service and
 /// carrying the response body; returns the response unchanged on success.
@@ -124,6 +136,12 @@ impl AiConfig {
             base_url,
         })
     }
+
+    /// The resolved model name (after defaults/trimming). The API key is never
+    /// exposed.
+    pub fn model(&self) -> &str {
+        &self.model
+    }
 }
 
 impl Provider {
@@ -157,36 +175,31 @@ pub struct ChatOutcome {
     pub completed: bool,
 }
 
-/// Stream a single-turn chat completion, forwarding each token to `channel`.
+/// Stream a single-turn chat completion, forwarding each token to `sink`.
 /// Returns the accumulated response text and whether the stream completed.
+///
+/// Unlike the old Tauri-channel version, this does NOT emit terminal
+/// done/error signals — the caller decides how to surface completion (the
+/// desktop app sends `AiEvent::Done` / `AiEvent::Error` to its channel after
+/// this returns).
 pub async fn stream_chat(
     client: &Client,
     cfg: &AiConfig,
     system: &str,
     user: &str,
-    channel: &Channel<AiEvent>,
+    sink: &mut DeltaSink<'_>,
     max_tokens: u32,
 ) -> AppResult<ChatOutcome> {
-    let result = if cfg.provider.is_openai_compatible() {
-        stream_openai(client, cfg, system, user, Some(channel), max_tokens).await
+    if cfg.provider.is_openai_compatible() {
+        stream_openai(client, cfg, system, user, sink, max_tokens).await
     } else {
-        stream_anthropic(client, cfg, system, user, Some(channel), max_tokens).await
-    };
-    match &result {
-        Ok(_) => {
-            let _ = channel.send(AiEvent::Done);
-        }
-        Err(e) => {
-            let _ = channel.send(AiEvent::Error(e.to_string()));
-        }
+        stream_anthropic(client, cfg, system, user, sink, max_tokens).await
     }
-    result
 }
 
 /// Run a completion to the end and return its full text WITHOUT forwarding
-/// per-token deltas to the frontend. Translation uses this and reports progress
-/// once per batch instead of once per token — token-level IPC over a full
-/// article would flood the webview's main thread and freeze the UI.
+/// per-token deltas anywhere. Translation and the agent CLI use this when they
+/// only want the final string.
 pub async fn complete_chat(
     client: &Client,
     cfg: &AiConfig,
@@ -194,10 +207,12 @@ pub async fn complete_chat(
     user: &str,
     max_tokens: u32,
 ) -> AppResult<String> {
+    // A sink that discards deltas; `consume_sse` still accumulates the full text.
+    let mut discard = |_: &str| true;
     let outcome = if cfg.provider.is_openai_compatible() {
-        stream_openai(client, cfg, system, user, None, max_tokens).await
+        stream_openai(client, cfg, system, user, &mut discard, max_tokens).await
     } else {
-        stream_anthropic(client, cfg, system, user, None, max_tokens).await
+        stream_anthropic(client, cfg, system, user, &mut discard, max_tokens).await
     }?;
     Ok(outcome.text)
 }
@@ -207,7 +222,7 @@ async fn stream_anthropic(
     cfg: &AiConfig,
     system: &str,
     user: &str,
-    channel: Option<&Channel<AiEvent>>,
+    sink: &mut DeltaSink<'_>,
     max_tokens: u32,
 ) -> AppResult<ChatOutcome> {
     let body = json!({
@@ -226,7 +241,7 @@ async fn stream_anthropic(
         .json(&body)
         .send()
         .await?;
-    consume_sse(resp, channel, Provider::Anthropic).await
+    consume_sse(resp, sink, Provider::Anthropic).await
 }
 
 async fn stream_openai(
@@ -234,7 +249,7 @@ async fn stream_openai(
     cfg: &AiConfig,
     system: &str,
     user: &str,
-    channel: Option<&Channel<AiEvent>>,
+    sink: &mut DeltaSink<'_>,
     max_tokens: u32,
 ) -> AppResult<ChatOutcome> {
     let body = json!({
@@ -253,7 +268,7 @@ async fn stream_openai(
         .json(&body)
         .send()
         .await?;
-    consume_sse(resp, channel, Provider::OpenAi).await
+    consume_sse(resp, sink, Provider::OpenAi).await
 }
 
 /// What to do after handling one SSE line.
@@ -272,7 +287,7 @@ fn handle_sse_line(
     line: &str,
     provider: Provider,
     full: &mut String,
-    channel: Option<&Channel<AiEvent>>,
+    sink: &mut DeltaSink<'_>,
 ) -> AppResult<LineOutcome> {
     let Some(data) = line.trim().strip_prefix("data:") else {
         return Ok(LineOutcome::Continue);
@@ -292,15 +307,13 @@ fn handle_sse_line(
     }
     if let Some(text) = extract_delta(&value, provider) {
         full.push_str(&text);
-        // When a token channel is present, a send failure means the frontend
-        // dropped it (the user closed the AI panel). Stop streaming instead of
-        // downloading the rest of the response into a void. The silent path
-        // (translation) passes `None` and simply accumulates into `full`.
-        if let Some(ch) = channel {
-            if ch.send(AiEvent::Delta(text)).is_err() {
-                log::debug!("AI stream channel closed; aborting early");
-                return Ok(LineOutcome::ChannelClosed);
-            }
+        // The sink returning `false` means the consumer went away (the desktop
+        // app's webview channel was dropped when the user closed the AI panel).
+        // Stop streaming instead of downloading the rest into a void. The silent
+        // path (translation / CLI) uses a sink that always returns `true`.
+        if !sink(&text) {
+            log::debug!("AI stream sink closed; aborting early");
+            return Ok(LineOutcome::ChannelClosed);
         }
     }
     Ok(LineOutcome::Continue)
@@ -309,7 +322,7 @@ fn handle_sse_line(
 /// Drive the Server-Sent-Events response, extracting text deltas per provider.
 async fn consume_sse(
     resp: reqwest::Response,
-    channel: Option<&Channel<AiEvent>>,
+    sink: &mut DeltaSink<'_>,
     provider: Provider,
 ) -> AppResult<ChatOutcome> {
     let mut resp = ensure_success(resp, "AI API").await?;
@@ -330,7 +343,7 @@ async fn consume_sse(
         while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
             let raw: Vec<u8> = buf.drain(..=pos).collect();
             let line = String::from_utf8_lossy(&raw);
-            match handle_sse_line(&line, provider, &mut full, channel)? {
+            match handle_sse_line(&line, provider, &mut full, &mut *sink)? {
                 LineOutcome::Continue => {}
                 LineOutcome::ChannelClosed => {
                     return Ok(ChatOutcome { text: full, completed: false });
@@ -346,7 +359,7 @@ async fn consume_sse(
     // response — would be left unprocessed in `buf` and silently dropped.
     if !buf.is_empty() {
         let line = String::from_utf8_lossy(&buf);
-        match handle_sse_line(&line, provider, &mut full, channel)? {
+        match handle_sse_line(&line, provider, &mut full, &mut *sink)? {
             LineOutcome::Continue => {}
             LineOutcome::ChannelClosed => {
                 return Ok(ChatOutcome { text: full, completed: false });
@@ -464,58 +477,57 @@ mod tests {
     // --- handle_sse_line: per-line parsing, including the final unterminated
     //     frame a non-compliant endpoint may close the stream on. ---
 
-    use super::{handle_sse_line, AiEvent, LineOutcome};
-    use std::sync::{Arc, Mutex};
-    use tauri::ipc::{Channel, InvokeResponseBody};
+    use super::{handle_sse_line, LineOutcome};
 
-    /// A `Channel<AiEvent>` whose every sent delta is recorded into the
-    /// returned buffer — lets the line parser be exercised without a webview.
-    fn recording_channel() -> (Channel<AiEvent>, Arc<Mutex<Vec<String>>>) {
-        let received = Arc::new(Mutex::new(Vec::new()));
-        let sink = received.clone();
-        let channel = Channel::new(move |body: InvokeResponseBody| {
-            let json = match body {
-                InvokeResponseBody::Json(s) => s,
-                InvokeResponseBody::Raw(b) => String::from_utf8_lossy(&b).into_owned(),
-            };
-            let v: serde_json::Value = serde_json::from_str(&json).unwrap();
-            if v["type"] == "delta" {
-                sink.lock().unwrap().push(v["data"].as_str().unwrap().to_string());
-            }
-            Ok(())
-        });
-        (channel, received)
+    /// A recording delta sink standing in for the desktop app's webview channel
+    /// — lets the line parser be exercised without any UI.
+    fn recording_sink(buf: &mut Vec<String>) -> impl FnMut(&str) -> bool + '_ {
+        move |s: &str| {
+            buf.push(s.to_string());
+            true
+        }
     }
 
     #[test]
     fn sse_line_forwards_a_delta() {
-        let (channel, got) = recording_channel();
+        let mut got = Vec::new();
         let mut full = String::new();
         let line = "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n";
-        let out = handle_sse_line(line, Provider::OpenAi, &mut full, Some(&channel)).unwrap();
+        let out = handle_sse_line(line, Provider::OpenAi, &mut full, &mut recording_sink(&mut got))
+            .unwrap();
         assert!(matches!(out, LineOutcome::Continue));
         assert_eq!(full, "hi");
-        assert_eq!(*got.lock().unwrap(), vec!["hi"]);
+        assert_eq!(got, vec!["hi"]);
     }
 
     #[test]
     fn sse_line_ignores_non_data_and_done_lines() {
-        let (channel, got) = recording_channel();
+        let mut got = Vec::new();
         let mut full = String::new();
         for line in [": keep-alive comment\n", "data: [DONE]\n", "\n"] {
-            handle_sse_line(line, Provider::OpenAi, &mut full, Some(&channel)).unwrap();
+            handle_sse_line(line, Provider::OpenAi, &mut full, &mut recording_sink(&mut got))
+                .unwrap();
         }
         assert!(full.is_empty());
-        assert!(got.lock().unwrap().is_empty());
+        assert!(got.is_empty());
     }
 
     #[test]
     fn sse_line_surfaces_a_mid_stream_error() {
-        let (channel, _got) = recording_channel();
         let mut full = String::new();
         let line = "data: {\"error\":{\"message\":\"rate limited\"}}\n";
-        let err = handle_sse_line(line, Provider::OpenAi, &mut full, Some(&channel)).unwrap_err();
+        let err = handle_sse_line(line, Provider::OpenAi, &mut full, &mut |_: &str| true)
+            .unwrap_err();
         assert!(err.to_string().contains("rate limited"));
+    }
+
+    #[test]
+    fn sse_sink_closing_aborts_the_stream() {
+        // A sink returning `false` (the consumer went away) must stop the stream.
+        let mut full = String::new();
+        let line = "data: {\"choices\":[{\"delta\":{\"content\":\"x\"}}]}\n";
+        let out = handle_sse_line(line, Provider::OpenAi, &mut full, &mut |_: &str| false).unwrap();
+        assert!(matches!(out, LineOutcome::ChannelClosed));
     }
 
     #[test]
@@ -524,12 +536,12 @@ mod tests {
         // after the last `data:` line with no trailing `\n`. The closing
         // token must still be parsed — `handle_sse_line` is fed the leftover
         // buffer verbatim, exactly as `consume_sse` does after the read loop.
-        let (channel, got) = recording_channel();
+        let mut got = Vec::new();
         let mut full = String::new();
         let last = "data: {\"choices\":[{\"delta\":{\"content\":\"!\"}}]}";
-        handle_sse_line(last, Provider::OpenAi, &mut full, Some(&channel)).unwrap();
+        handle_sse_line(last, Provider::OpenAi, &mut full, &mut recording_sink(&mut got)).unwrap();
         assert_eq!(full, "!");
-        assert_eq!(*got.lock().unwrap(), vec!["!"]);
+        assert_eq!(got, vec!["!"]);
     }
 
     // --- AiConfig::new: normalising pasted credentials. ---

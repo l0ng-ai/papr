@@ -8,8 +8,9 @@ use crate::extraction;
 use crate::ingestion::discovery::{self, DiscoveryResult};
 use crate::ingestion::newsletter::{self, NewsletterConfig};
 use crate::ingestion::sources::{self, Normalized};
-use crate::ingestion::{fetch, parse, scheduler};
+use crate::ingestion::{fetch, parse};
 use crate::models::*;
+use crate::scheduler;
 use crate::opml;
 use crate::sanitize;
 use crate::state::AppState;
@@ -614,6 +615,32 @@ fn load_ai_config(conn: &rusqlite::Connection) -> AppResult<AiConfig> {
     )
 }
 
+/// Stream a chat completion to the webview `on_token` channel, then emit the
+/// terminal `Done` / `Error` event. Bridges the UI-free
+/// [`ai::stream_chat`] sink (which only forwards text deltas) back to the
+/// `AiEvent` channel the frontend listens on; a dropped channel asks the stream
+/// to stop early (the sink returns `false`).
+async fn stream_to_channel(
+    http: &reqwest::Client,
+    cfg: &AiConfig,
+    system: &str,
+    user: &str,
+    on_token: &Channel<AiEvent>,
+    max_tokens: u32,
+) -> AppResult<ai::ChatOutcome> {
+    let mut sink = |delta: &str| on_token.send(AiEvent::Delta(delta.to_string())).is_ok();
+    let result = ai::stream_chat(http, cfg, system, user, &mut sink, max_tokens).await;
+    match &result {
+        Ok(_) => {
+            let _ = on_token.send(AiEvent::Done);
+        }
+        Err(e) => {
+            let _ = on_token.send(AiEvent::Error(e.to_string()));
+        }
+    }
+    result
+}
+
 /// Resolve a translation engine chosen by the caller (the reader's translate
 /// switcher) into what it needs. `engine` is one of `google` / `bing` / `deepl`
 /// / `llm`; anything else falls back to the LLM. Google, DeepL and Bing are
@@ -696,7 +723,7 @@ pub async fn ai_summarize(
     let user = format!("Title: {title}\n\n{}", truncate(&body, 8000));
 
     let http = state.http();
-    let outcome = ai::stream_chat(&http, &cfg, &system, &user, &on_token, ai::MAX_TOKENS).await?;
+    let outcome = stream_to_channel(&http, &cfg, &system, &user, &on_token, ai::MAX_TOKENS).await?;
     // Persist only a summary that streamed to completion. If the user closed
     // the AI panel mid-stream the channel was dropped and `outcome.text` holds
     // just a truncated fragment — caching that would make the next open show a
@@ -749,7 +776,7 @@ pub async fn ai_ask(
     };
 
     let http = state.http();
-    ai::stream_chat(&http, &cfg, &system, &user, &on_token, ai::MAX_TOKENS).await?;
+    stream_to_channel(&http, &cfg, &system, &user, &on_token, ai::MAX_TOKENS).await?;
     Ok(())
 }
 
@@ -785,7 +812,7 @@ pub async fn ai_digest(
     let user = format!("Recent articles from my feeds:\n\n{corpus}");
 
     let http = state.http();
-    ai::stream_chat(&http, &cfg, &system, &user, &on_token, ai::MAX_TOKENS).await?;
+    stream_to_channel(&http, &cfg, &system, &user, &on_token, ai::MAX_TOKENS).await?;
     Ok(())
 }
 
@@ -975,17 +1002,19 @@ pub async fn freshrss_connect(
     password: String,
     provider: Option<String>,
 ) -> AppResult<()> {
-    crate::sync::connect(&app, &url, &username, &password, provider.as_deref()).await
+    let state = app.state::<AppState>();
+    crate::sync::connect(&state.db, &state.http(), &url, &username, &password, provider.as_deref())
+        .await
 }
 
 #[tauri::command]
 pub async fn freshrss_disconnect(app: AppHandle) -> AppResult<()> {
-    crate::sync::disconnect(&app).await
+    crate::sync::disconnect(&app.state::<AppState>().db).await
 }
 
 #[tauri::command]
 pub async fn freshrss_status(app: AppHandle) -> AppResult<FreshRssStatus> {
-    let info = crate::sync::connected_url(&app).await?;
+    let info = crate::sync::connected_url(&app.state::<AppState>().db).await?;
     let (url, provider) = match info {
         Some((u, p)) => (Some(u), p),
         None => (None, "freshrss".to_string()),
@@ -1000,7 +1029,10 @@ pub async fn freshrss_status(app: AppHandle) -> AppResult<FreshRssStatus> {
 /// Run a full FreshRSS sync now; returns the number of reconciled articles.
 #[tauri::command]
 pub async fn freshrss_sync(app: AppHandle) -> AppResult<usize> {
-    let n = crate::sync::sync_now(&app).await?;
+    let n = {
+        let state = app.state::<AppState>();
+        crate::sync::sync_now(&state.db, &state.http()).await?
+    };
     let _ = app.emit("feeds-updated", 0);
     refresh_unread_surfaces(&app).await;
     Ok(n)

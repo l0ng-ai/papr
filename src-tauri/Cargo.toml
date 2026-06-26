@@ -4,10 +4,23 @@ version = "0.11.0"
 description = "Papr — a modern RSS reader"
 authors = ["you"]
 edition = "2021"
+# Disable binary auto-discovery so Cargo does not also infer a `papr` binary
+# from `src/main.rs` (package-named) alongside the explicit `papr-desktop`
+# target below. Without this, the workspace target dir could contain a stray
+# `papr` that collides with the agent CLI's binary.
+autobins = false
 
 [lib]
 name = "papr_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
+
+# Distinct binary name so the desktop app's cargo output (`papr-desktop`) does
+# not collide with the agent CLI's `papr` binary in the shared workspace target
+# dir. The bundled product is still "Papr" (see tauri.conf.json productName /
+# mainBinaryName); only the intermediate cargo binary name changes.
+[[bin]]
+name = "papr-desktop"
+path = "src/main.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -32,6 +45,10 @@ tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# The UI-free core: SQLite data layer, ingestion building blocks, sanitization.
+# Shared verbatim with the agent CLI so both link the same data code.
+papr-core = { path = "../crates/papr-core" }
 
 # data layer
 rusqlite = { version = "0.32", features = ["bundled", "functions"] }
@@ -81,9 +98,3 @@ log = "0.4"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-foundation = "0.3"
-
-[profile.release]
-codegen-units = 1
-lto = true
-opt-level = "s"
-strip = true

@@ -15,10 +15,15 @@
 use crate::db;
 use crate::error::{AppError, AppResult};
 use crate::ingestion::parse;
-use crate::state::AppState;
 use reqwest::{Client, RequestBuilder};
+use rusqlite::Connection;
 use serde::Deserialize;
-use tauri::{AppHandle, Manager};
+use tokio::sync::Mutex;
+
+/// The writer connection behind an async mutex — what every sync function reads
+/// and writes through. The desktop app passes `state.db`; the CLI passes the
+/// connection it opened. Paired with a shared [`Client`] for the HTTP calls.
+type Db = Mutex<Connection>;
 
 const READ_TAG: &str = "user/-/state/com.google/read";
 const STARRED_TAG: &str = "user/-/state/com.google/starred";
@@ -220,9 +225,8 @@ struct Creds {
 /// Stored GReader credentials, if a server is configured. The setting keys
 /// are still named `freshrss_*` for backwards compatibility with installs
 /// that predate multi-provider support — the values are provider-agnostic.
-async fn creds(app: &AppHandle) -> AppResult<Option<Creds>> {
-    let state = app.state::<AppState>();
-    let conn = state.db.lock().await;
+async fn creds(db: &Db) -> AppResult<Option<Creds>> {
+    let conn = db.lock().await;
     let url = db::get_setting(&conn, "freshrss_url")?.unwrap_or_default();
     let user = db::get_setting(&conn, "freshrss_user")?.unwrap_or_default();
     let nonempty = |k| db::get_setting(&conn, k).map(|v| v.filter(|s| !s.is_empty()));
@@ -239,21 +243,20 @@ async fn creds(app: &AppHandle) -> AppResult<Option<Creds>> {
 
 /// The configured GReader server URL and provider, or `None` when not
 /// connected.
-pub async fn connected_url(app: &AppHandle) -> AppResult<Option<(String, String)>> {
-    Ok(creds(app).await?.map(|c| (c.url, c.provider.as_str().to_string())))
+pub async fn connected_url(db: &Db) -> AppResult<Option<(String, String)>> {
+    Ok(creds(db).await?.map(|c| (c.url, c.provider.as_str().to_string())))
 }
 
 /// Persist a verified connection, storing the auth token and never the
 /// password (any legacy stored password is also cleared).
 async fn persist_session(
-    app: &AppHandle,
+    db: &Db,
     url: &str,
     user: &str,
     auth: &str,
     provider: Provider,
 ) -> AppResult<()> {
-    let state = app.state::<AppState>();
-    let conn = state.db.lock().await;
+    let conn = db.lock().await;
     db::set_setting(&conn, "freshrss_url", url.trim())?;
     db::set_setting(&conn, "freshrss_user", user)?;
     db::set_setting(&conn, "freshrss_auth", auth)?;
@@ -264,7 +267,8 @@ async fn persist_session(
 
 /// Verify credentials against the server and, on success, persist them.
 pub async fn connect(
-    app: &AppHandle,
+    db: &Db,
+    http: &Client,
     url: &str,
     user: &str,
     pass: &str,
@@ -272,15 +276,13 @@ pub async fn connect(
 ) -> AppResult<()> {
     let provider = Provider::from_setting(provider);
     let base = greader_base(url, provider);
-    let http = app.state::<AppState>().http();
-    let session = login(&http, &base, user, pass).await?; // verifies credentials
-    persist_session(app, url, user, &session.auth, provider).await
+    let session = login(http, &base, user, pass).await?; // verifies credentials
+    persist_session(db, url, user, &session.auth, provider).await
 }
 
 /// Forget the stored GReader credentials.
-pub async fn disconnect(app: &AppHandle) -> AppResult<()> {
-    let state = app.state::<AppState>();
-    let conn = state.db.lock().await;
+pub async fn disconnect(db: &Db) -> AppResult<()> {
+    let conn = db.lock().await;
     for key in [
         "freshrss_url",
         "freshrss_user",
@@ -295,9 +297,9 @@ pub async fn disconnect(app: &AppHandle) -> AppResult<()> {
 
 /// Run a full sync if a server is connected. Returns `true` when a sync
 /// actually ran, so the caller can refresh the UI for the reconciled state.
-pub async fn run_if_connected(app: &AppHandle) -> AppResult<bool> {
-    if creds(app).await?.is_some() {
-        sync_now(app).await.map(|_| true)
+pub async fn run_if_connected(db: &Db, http: &Client) -> AppResult<bool> {
+    if creds(db).await?.is_some() {
+        sync_now(db, http).await.map(|_| true)
     } else {
         Ok(false)
     }
@@ -319,20 +321,19 @@ fn feeds_to_push<'a>(
 
 /// Push queued changes, then pull subscriptions and read/starred state.
 /// Returns the number of local articles whose state was reconciled.
-pub async fn sync_now(app: &AppHandle) -> AppResult<usize> {
-    let creds = creds(app)
+pub async fn sync_now(db: &Db, http: &Client) -> AppResult<usize> {
+    let creds = creds(db)
         .await?
         .ok_or_else(|| AppError::code("freshrssNotConnected"))?;
     let base = greader_base(&creds.url, creds.provider);
-    let http = app.state::<AppState>().http();
     let session = match &creds.auth {
-        Some(auth) => session_with_token(&http, &base, auth.clone()).await?,
+        Some(auth) => session_with_token(http, &base, auth.clone()).await?,
         None => {
             // Legacy install: exchange the plaintext password for a token,
             // then migrate so the password is no longer kept on disk.
             let pass = creds.legacy_pass.as_deref().unwrap_or_default();
-            let session = login(&http, &base, &creds.user, pass).await?;
-            persist_session(app, &creds.url, &creds.user, &session.auth, creds.provider).await?;
+            let session = login(http, &base, &creds.user, pass).await?;
+            persist_session(db, &creds.url, &creds.user, &session.auth, creds.provider).await?;
             session
         }
     };
@@ -341,8 +342,7 @@ pub async fn sync_now(app: &AppHandle) -> AppResult<usize> {
     // removes the rows up front, so any push that fails must be re-queued —
     // otherwise a network blip silently drops the user's change forever.
     let queue = {
-        let state = app.state::<AppState>();
-        let conn = state.db.lock().await;
+        let conn = db.lock().await;
         db::take_sync_queue(&conn)?
     };
     let mut failed: Vec<db::SyncEntry> = Vec::new();
@@ -354,7 +354,7 @@ pub async fn sync_now(app: &AppHandle) -> AppResult<usize> {
         };
         let action = if entry.value { "a" } else { "r" };
         let pushed = session
-            .post(&http, "edit-tag")
+            .post(http, "edit-tag")
             .form(&[
                 ("i", entry.remote_id.as_str()),
                 (action, tag),
@@ -370,8 +370,7 @@ pub async fn sync_now(app: &AppHandle) -> AppResult<usize> {
     }
     if !failed.is_empty() {
         log::warn!("sync: {} change(s) failed to push, re-queued", failed.len());
-        let state = app.state::<AppState>();
-        let conn = state.db.lock().await;
+        let conn = db.lock().await;
         for entry in &failed {
             let _ = db::requeue_sync(&conn, entry.article_id, &entry.field, entry.value);
         }
@@ -379,7 +378,7 @@ pub async fn sync_now(app: &AppHandle) -> AppResult<usize> {
 
     // 2 ── pull subscriptions: subscribe locally to any feed we don't have.
     let subs: SubList = session
-        .get(&http, "subscription/list?output=json")
+        .get(http, "subscription/list?output=json")
         .send()
         .await?
         .error_for_status()?
@@ -392,8 +391,7 @@ pub async fn sync_now(app: &AppHandle) -> AppResult<usize> {
         .filter(|u| !u.is_empty())
         .collect();
     {
-        let state = app.state::<AppState>();
-        let conn = state.db.lock().await;
+        let conn = db.lock().await;
         for sub in subs.subscriptions {
             // Resolve the server-side folder (GReader "label") before moving
             // `url` out of `sub`, mapping it onto a local folder by name.
@@ -431,14 +429,13 @@ pub async fn sync_now(app: &AppHandle) -> AppResult<usize> {
     // instead of leaving the two sides to drift. Best-effort and idempotent —
     // re-subscribing a feed the server already has is a no-op there.
     let local_feeds = {
-        let state = app.state::<AppState>();
-        let conn = state.db.lock().await;
+        let conn = db.lock().await;
         db::feed_urls_for_sync(&conn)?
     };
     for url in feeds_to_push(&local_feeds, &server_urls) {
         let stream = format!("feed/{url}");
         let pushed = session
-            .post(&http, "subscription/edit")
+            .post(http, "subscription/edit")
             .form(&[
                 ("ac", "subscribe"),
                 ("s", stream.as_str()),
@@ -456,7 +453,7 @@ pub async fn sync_now(app: &AppHandle) -> AppResult<usize> {
     // 3 ── pull read/starred state for recent items, matched by URL.
     let contents: Contents = session
         .get(
-            &http,
+            http,
             &format!("stream/contents/{READING_LIST}?output=json&n=1000"),
         )
         .send()
@@ -467,8 +464,7 @@ pub async fn sync_now(app: &AppHandle) -> AppResult<usize> {
 
     let mut reconciled = 0usize;
     {
-        let state = app.state::<AppState>();
-        let conn = state.db.lock().await;
+        let conn = db.lock().await;
         // Articles with still-unsent local edits keep their local state; we
         // only assign their remote id so the next sync can push them.
         let pending: std::collections::HashSet<i64> =
