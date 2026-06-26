@@ -3321,7 +3321,7 @@ dependencies = [
 
 [[package]]
 name = "papr"
-version = "0.11.0"
+version = "0.12.0-beta.1"
 dependencies = [
  "ammonia",
  "anyhow",

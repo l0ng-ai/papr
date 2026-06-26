@@ -18,6 +18,9 @@ on:
 jobs:
   update-tap:
     runs-on: ubuntu-latest
+    # Never bump the stable tap from a pre-release. A manual workflow_dispatch
+    # has no release payload (prerelease is null), so it still runs.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.release.prerelease == false }}
     steps:
       - name: Resolve tag / version
         id: v
