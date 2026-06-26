@@ -11,7 +11,6 @@ export type Theme = "light" | "dark";
 /** Background depth for the dark theme. Only meaningful while `theme` is
  *  "dark"; lets users pick a darker paper than the default warm charcoal. */
 export type DarkShade = "default" | "dimmer" | "black";
-export type Accent = "clay" | "pine" | "indigo" | "ink";
 export type Density = "compact" | "cozy" | "spacious";
 export type ViewMode = "list" | "card";
 export type StartupView = "all" | "unread" | "starred" | "last";
@@ -113,7 +112,6 @@ interface UiState {
   // appearance preferences
   theme: Theme;
   darkShade: DarkShade;
-  accent: Accent;
   density: Density;
   viewMode: ViewMode;
   readerFont: ReaderFont;
@@ -137,6 +135,11 @@ interface UiState {
    *  DOM — including modals — so it must be torn down while one is up, or it
    *  occludes the dialog (issue #54). The reader effect watches this flag. */
   modalOpen: boolean;
+  /** A floating context menu is open. Same hazard as `modalOpen`: a context
+   *  menu raised over the reading area would be occluded by the native
+   *  original-page webview that floats above the DOM (issue #74), so the
+   *  reader suspends that view while a menu is up. */
+  menuOpen: boolean;
 
   select: (query: ArticleQuery, label: string) => void;
   openArticle: (id: number | null) => void;
@@ -145,7 +148,6 @@ interface UiState {
 
   setTheme: (t: Theme) => void;
   setDarkShade: (s: DarkShade) => void;
-  setAccent: (a: Accent) => void;
   setDensity: (d: Density) => void;
   setViewMode: (v: ViewMode) => void;
   setReaderFont: (v: ReaderFont) => void;
@@ -157,6 +159,7 @@ interface UiState {
   setFocusMode: (v: boolean) => void;
   setAiOpen: (v: boolean) => void;
   setModalOpen: (v: boolean) => void;
+  setMenuOpen: (v: boolean) => void;
 }
 
 const PREF_KEYS: (keyof Prefs)[] = [
@@ -228,7 +231,6 @@ export const useUi = create<UiState>((set) => ({
     ["default", "dimmer", "black"],
     "default",
   ),
-  accent: ls.oneOf<Accent>("accent", ["clay", "pine", "indigo", "ink"], "clay"),
   density: ls.oneOf<Density>(
     "density",
     ["compact", "cozy", "spacious"],
@@ -254,6 +256,7 @@ export const useUi = create<UiState>((set) => ({
   focusMode: false,
   aiOpen: false,
   modalOpen: false,
+  menuOpen: false,
 
   select: (query, label) => {
     // Remember the selection so the "open on startup: last view" preference
@@ -267,7 +270,6 @@ export const useUi = create<UiState>((set) => ({
 
   setTheme: (theme) => { ls.set("theme", theme); mirrorTheme(theme); set({ theme }); },
   setDarkShade: (darkShade) => { ls.set("darkShade", darkShade); mirrorDarkShade(darkShade); set({ darkShade }); },
-  setAccent: (accent) => { ls.set("accent", accent); set({ accent }); },
   setDensity: (density) => { ls.set("density", density); set({ density }); },
   setViewMode: (viewMode) => { ls.set("viewMode", viewMode); set({ viewMode }); },
   setReaderFont: (readerFont) => { ls.set("readerFont", readerFont); set({ readerFont }); },
@@ -323,6 +325,7 @@ export const useUi = create<UiState>((set) => ({
   setFocusMode: (focusMode) => set({ focusMode }),
   setAiOpen: (aiOpen) => set({ aiOpen }),
   setModalOpen: (modalOpen) => set({ modalOpen }),
+  setMenuOpen: (menuOpen) => set({ menuOpen }),
 }));
 
 // Seed the backend's theme copy on startup so an existing install — whose

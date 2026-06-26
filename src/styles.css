@@ -1443,13 +1443,17 @@ button { font-family: inherit; }
 }
 .settings-nav-item .nav-ico {
   width: 18px; height: 18px;
-  border-radius: 5px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: #fff;
+  color: var(--muted);
   flex-shrink: 0;
+  transition: color .12s;
 }
+/* One accent, used rarely: only the selected section's icon picks up the
+   terracotta, matching its label — the rest stay a quiet, even ink. */
+.settings-nav-item:hover .nav-ico { color: var(--ink-2); }
+.settings-nav-item.active .nav-ico { color: inherit; }
 .settings-nav-spacer { flex: 1; }
 .settings-version {
   padding: 8px 12px 4px;
@@ -1652,32 +1656,6 @@ button { font-family: inherit; }
   background: var(--panel-2);
   color: var(--ink);
   box-shadow: 0 1px 2px oklch(0.15 0.03 50 / 0.09);
-}
-
-/* Color swatches */
-.s-swatches {
-  display: inline-flex;
-  gap: 8px;
-}
-.s-swatch {
-  width: 22px; height: 22px;
-  border-radius: 11px;
-  cursor: pointer;
-  border: 2px solid transparent;
-  outline: 1px solid var(--hair-strong);
-  outline-offset: -1px;
-  padding: 0;
-  position: relative;
-}
-.s-swatch.on {
-  outline-color: var(--ink-2);
-  outline-width: 1.5px;
-  outline-offset: 2px;
-}
-/* The swatch uses `outline` for its own border, which would suppress the UA
-   focus ring — give keyboard focus a distinct box-shadow halo instead. */
-.s-swatch:focus-visible {
-  box-shadow: 0 0 0 3px var(--accent-soft);
 }
 
 /* Button */

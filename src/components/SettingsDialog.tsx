@@ -25,18 +25,20 @@ interface Props {
   onAddFeed: () => void;
 }
 
-// `labelKey` holds an i18n key — resolved with t() at render time.
-const SECTIONS: { id: string; labelKey: string; icon: IconName; color: string }[] = [
-  { id: "general", labelKey: "settings.nav.general", icon: "settings", color: "#7a756c" },
-  { id: "appearance", labelKey: "settings.nav.appearance", icon: "globe", color: "#bb6743" },
-  { id: "reading", labelKey: "settings.nav.reading", icon: "eye", color: "#3a4cb8" },
-  { id: "subscriptions", labelKey: "settings.nav.subscriptions", icon: "rss", color: "#d97706" },
-  { id: "filters", labelKey: "settings.nav.filters", icon: "mute", color: "#9333ea" },
-  { id: "sync", labelKey: "settings.nav.sync", icon: "refresh", color: "#2c8a3e" },
-  { id: "shortcuts", labelKey: "settings.nav.shortcuts", icon: "command", color: "#5a5fc4" },
-  { id: "notifications", labelKey: "settings.nav.notifications", icon: "inbox", color: "#a8501f" },
-  { id: "advanced", labelKey: "settings.nav.advanced", icon: "sort", color: "#4a4a4a" },
-  { id: "about", labelKey: "settings.nav.about", icon: "sparkle", color: "#111" },
+// `labelKey` holds an i18n key — resolved with t() at render time. Nav icons
+// stay monochrome (quiet ink, accent only on the active row) — one accent,
+// used rarely, never a decorative rainbow of per-section colours.
+const SECTIONS: { id: string; labelKey: string; icon: IconName }[] = [
+  { id: "general", labelKey: "settings.nav.general", icon: "settings" },
+  { id: "appearance", labelKey: "settings.nav.appearance", icon: "globe" },
+  { id: "reading", labelKey: "settings.nav.reading", icon: "eye" },
+  { id: "subscriptions", labelKey: "settings.nav.subscriptions", icon: "rss" },
+  { id: "filters", labelKey: "settings.nav.filters", icon: "mute" },
+  { id: "sync", labelKey: "settings.nav.sync", icon: "refresh" },
+  { id: "shortcuts", labelKey: "settings.nav.shortcuts", icon: "command" },
+  { id: "notifications", labelKey: "settings.nav.notifications", icon: "inbox" },
+  { id: "advanced", labelKey: "settings.nav.advanced", icon: "sort" },
+  { id: "about", labelKey: "settings.nav.about", icon: "sparkle" },
 ];
 
 /** The app version read from the Tauri bundle config at runtime, cached so the
@@ -120,8 +122,8 @@ export default function SettingsDialog({
               className={`settings-nav-item ${section === s.id ? "active" : ""}`}
               onClick={() => setSection(s.id)}
             >
-              <span className="nav-ico" style={{ background: s.color }}>
-                <Icon name={s.icon} size={11} color="#fff" />
+              <span className="nav-ico">
+                <Icon name={s.icon} size={15} />
               </span>
               {t(s.labelKey)}
             </div>
@@ -552,21 +554,12 @@ function AppearanceSection() {
   const setTheme = useUi((s) => s.setTheme);
   const darkShade = useUi((s) => s.darkShade);
   const setDarkShade = useUi((s) => s.setDarkShade);
-  const accent = useUi((s) => s.accent);
-  const setAccent = useUi((s) => s.setAccent);
   const density = useUi((s) => s.density);
   const setDensity = useUi((s) => s.setDensity);
   const viewMode = useUi((s) => s.viewMode);
   const setViewMode = useUi((s) => s.setViewMode);
   const prefs = useUi((s) => s.prefs);
   const setPref = useUi((s) => s.setPref);
-
-  const accents = [
-    { value: "clay", color: "#bb6743", label: t("settings.appearance.accentClay") },
-    { value: "pine", color: "#3d7a5e", label: t("settings.appearance.accentPine") },
-    { value: "indigo", color: "#5a5fc4", label: t("settings.appearance.accentIndigo") },
-    { value: "ink", color: "#2b2620", label: t("settings.appearance.accentInk") },
-  ] as const;
 
   return (
     <>
@@ -614,24 +607,6 @@ function AppearanceSection() {
             />
           </Row>
         )}
-        <Row
-          label={t("settings.appearance.accent")}
-          desc={t("settings.appearance.accentDesc")}
-        >
-          <div className="s-swatches" role="group">
-            {accents.map((a) => (
-              <button
-                key={a.value}
-                className={`s-swatch ${accent === a.value ? "on" : ""}`}
-                style={{ background: a.color }}
-                onClick={() => setAccent(a.value)}
-                title={a.label}
-                aria-label={a.label}
-                aria-pressed={accent === a.value}
-              />
-            ))}
-          </div>
-        </Row>
       </div>
       <div className="settings-group">
         <h3 className="settings-group-title">{t("settings.appearance.layout")}</h3>
@@ -1581,6 +1556,8 @@ function DangerZone({ onToast }: { onToast: (m: string) => void }) {
         if (
           k.startsWith("pref.") ||
           [
+            // "accent" is intentionally still cleared: it removes any value
+            // persisted by older builds that exposed an accent picker.
             "theme", "accent", "density", "viewMode", "readerFont", "useSerif",
             "readerSize", "readerLeading", "readerWidth", "collapsedFolders",
           ].includes(k)

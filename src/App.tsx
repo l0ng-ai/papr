@@ -26,15 +26,12 @@ import ResizeHandle from "./components/ResizeHandle";
 import Icon from "./components/Icon";
 import { PANEL_BOUNDS } from "./store";
 
-// Accent palettes — ported from the design prototype (app.jsx ACCENTS).
-const ACCENTS: Record<
-  string,
-  { accent: string; soft: string; ink: string; dAccent: string; dSoft: string; dInk: string }
-> = {
-  clay: { accent: "oklch(0.60 0.13 38)", soft: "oklch(0.94 0.04 50)", ink: "oklch(0.42 0.10 38)", dAccent: "oklch(0.74 0.13 45)", dSoft: "oklch(0.32 0.06 40)", dInk: "oklch(0.80 0.10 45)" },
-  pine: { accent: "oklch(0.50 0.10 165)", soft: "oklch(0.94 0.04 160)", ink: "oklch(0.38 0.08 165)", dAccent: "oklch(0.72 0.11 170)", dSoft: "oklch(0.30 0.05 165)", dInk: "oklch(0.80 0.08 170)" },
-  indigo: { accent: "oklch(0.52 0.14 268)", soft: "oklch(0.94 0.04 270)", ink: "oklch(0.40 0.12 268)", dAccent: "oklch(0.74 0.13 270)", dSoft: "oklch(0.30 0.06 268)", dInk: "oklch(0.82 0.10 270)" },
-  ink: { accent: "oklch(0.30 0.02 50)", soft: "oklch(0.92 0.005 50)", ink: "oklch(0.20 0.01 50)", dAccent: "oklch(0.86 0.005 50)", dSoft: "oklch(0.30 0.005 50)", dInk: "oklch(0.92 0.005 50)" },
+// The single accent — terracotta clay. "One accent, used rarely"; it is a
+// fixed brand mark, not a user preference, so it lives here rather than in
+// Settings. (Ported from the design prototype's ACCENTS.clay.)
+const ACCENT = {
+  accent: "oklch(0.60 0.13 38)", soft: "oklch(0.94 0.04 50)", ink: "oklch(0.42 0.10 38)",
+  dAccent: "oklch(0.74 0.13 45)", dSoft: "oklch(0.32 0.06 40)", dInk: "oklch(0.80 0.10 45)",
 };
 
 // Native window backing per dark-shade. The webview is made non-opaque in
@@ -56,7 +53,6 @@ export default function App() {
 
   const theme = useUi((s) => s.theme);
   const darkShade = useUi((s) => s.darkShade);
-  const accent = useUi((s) => s.accent);
   const density = useUi((s) => s.density);
   const readerFont = useUi((s) => s.readerFont);
   const readerSize = useUi((s) => s.readerSize);
@@ -97,7 +93,7 @@ export default function App() {
     root.dataset.theme = theme;
     root.dataset.darkShade = darkShade;
     root.dataset.density = density;
-    const a = ACCENTS[accent] ?? ACCENTS.clay;
+    const a = ACCENT;
     const dark = theme === "dark";
     root.style.setProperty("--accent", dark ? a.dAccent : a.accent);
     root.style.setProperty("--accent-soft", dark ? a.dSoft : a.soft);
@@ -111,7 +107,7 @@ export default function App() {
     const backing = dark ? DARK_BACKING[darkShade] : "#FBF9F3";
     getCurrentWindow().setBackgroundColor(backing).catch(() => {});
     getCurrentWebview().setBackgroundColor(backing).catch(() => {});
-  }, [theme, darkShade, accent, density]);
+  }, [theme, darkShade, density]);
 
   // ── dismiss the boot splash once the app shell has mounted ──
   useEffect(() => {
