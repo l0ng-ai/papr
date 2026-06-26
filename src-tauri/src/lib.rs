@@ -238,6 +238,7 @@ pub fn run() {
             commands::rename_feed,
             commands::refresh_feeds,
             commands::list_articles,
+            commands::article_index,
             commands::get_article,
             commands::mark_read,
             commands::mark_starred,
@@ -290,6 +291,7 @@ pub fn run() {
             commands::delete_highlight,
             page_view::open_page_view,
             page_view::set_page_view_bounds,
+            page_view::set_page_view_visible,
             page_view::close_page_view,
         ])
         .run(tauri::generate_context!())

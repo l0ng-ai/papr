@@ -241,16 +241,27 @@ export default function Reader({ onToast }: Props) {
   // webview aligned to it across window/sidebar resizes. (Switching articles
   // resets viewMode to "reader" above, so a.url is stable within a session.)
   const articleUrl = a?.url ?? null;
-  // Anything that floats over the reading area suspends the page view: the
+  // Anything that floats over the reading area must suspend the page view: the
   // child webview floats above the whole DOM, so it would otherwise occlude a
-  // covering modal (subscribe / settings / explore — issue #54) or the AI
-  // drawer that slides over the reader's right edge. When the overlay closes
-  // this effect re-runs and re-opens the view at the current bounds.
+  // covering modal (subscribe / settings / explore — issue #54), a context
+  // menu raised over the reader (issue #74), or the AI drawer that slides over
+  // the reader's right edge. We *hide* the webview rather than tear it down, so
+  // dismissing the overlay reveals the already-loaded page instantly instead of
+  // reloading it (the bounds keep syncing while hidden, below).
   const modalOpen = useUi((s) => s.modalOpen);
-  const overlayOpen = modalOpen || aiOpen;
+  const menuOpen = useUi((s) => s.menuOpen);
+  const overlayOpen = modalOpen || menuOpen || aiOpen;
+  // Read the latest value inside the lifecycle effect without making it a
+  // dependency — overlays toggle visibility (below), never the webview's life.
+  const overlayOpenRef = useRef(overlayOpen);
+  overlayOpenRef.current = overlayOpen;
+
+  // Webview lifecycle: create on entering web mode (or when the article's URL
+  // changes), destroy on leaving. Bounds track the host across resizes even
+  // while hidden, so re-showing never lands the page at a stale rect.
   useEffect(() => {
     const host = pageHostRef.current;
-    if (viewMode !== "web" || !articleUrl || !host || overlayOpen) return;
+    if (viewMode !== "web" || !articleUrl || !host) return;
 
     const bounds = () => {
       const r = host.getBoundingClientRect();
@@ -264,7 +275,13 @@ export default function Reader({ onToast }: Props) {
         // If teardown ran while this open was still in flight, the cleanup's
         // closePageView fired against a not-yet-created webview (a no-op) and
         // would leave this one orphaned above the DOM — close it now.
-        if (cancelled) api.closePageView().catch(() => {});
+        if (cancelled) {
+          api.closePageView().catch(() => {});
+          return;
+        }
+        // Created visible by default; if an overlay is already up (e.g. the AI
+        // drawer was open when web mode was toggled on), hide it at once.
+        if (overlayOpenRef.current) api.setPageViewVisible(false).catch(() => {});
       },
       () => {},
     );
@@ -282,7 +299,14 @@ export default function Reader({ onToast }: Props) {
       window.removeEventListener("resize", sync);
       api.closePageView().catch(() => {});
     };
-  }, [viewMode, articleUrl, overlayOpen]);
+  }, [viewMode, articleUrl]);
+
+  // Visibility: toggle the webview as overlays come and go, without reloading.
+  // No-op (backend-side) when no webview is open.
+  useEffect(() => {
+    if (viewMode !== "web" || !articleUrl) return;
+    api.setPageViewVisible(!overlayOpen).catch(() => {});
+  }, [overlayOpen, viewMode, articleUrl]);
 
   // Recover article-body images the webview fails to load, then hide the
   // stragglers. The webview sends no Referer (see sanitize.rs) — right for

@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as api from "../api";
 import { useUi } from "../store";
@@ -203,6 +203,33 @@ export default function Sidebar({
   const allFolders = folders.data ?? [];
   const allTags = tags.data ?? [];
   const isActive = (q: ArticleQuery) => sameQuery(q, query);
+
+  // Keep the selected feed in view. Opening an article from search jumps the
+  // selection to a feed that may be scrolled out of sight — or hidden inside a
+  // collapsed folder — so reveal it whenever the selection changes (issue #75).
+  // `block: "nearest"` is a no-op when the row is already visible, so a plain
+  // in-sidebar click never jolts the list.
+  const activeFeedRef = useRef<HTMLDivElement>(null);
+  // Remember which selection we last scrolled to, so a background feeds refetch
+  // or an unrelated folder toggle (both re-run this effect) doesn't yank the
+  // list back to the active feed.
+  const lastScrolledRef = useRef("");
+  useEffect(() => {
+    const key = JSON.stringify(query);
+    if (key === lastScrolledRef.current) return;
+    if (query.kind === "feed") {
+      const feed = allFeeds.find((f) => f.id === query.value);
+      // A collapsed folder doesn't render its feed rows, so there's nothing to
+      // scroll to yet — expand it and let this effect re-run (collapsed dep)
+      // once the row is mounted.
+      if (feed?.folderId != null && collapsed[feed.folderId]) {
+        setCollapsed((s) => ({ ...s, [feed.folderId!]: false }));
+        return;
+      }
+    }
+    lastScrolledRef.current = key;
+    activeFeedRef.current?.scrollIntoView({ block: "nearest" });
+  }, [query, allFeeds, collapsed]);
 
   // "Unread only" hides feeds with nothing unread, decluttering large
   // sidebars. The currently-selected feed is always kept so it doesn't vanish
@@ -473,6 +500,7 @@ export default function Sidebar({
   const feedRow = (f: Feed) => (
     <div
       key={f.id}
+      ref={isActive({ kind: "feed", value: f.id }) ? activeFeedRef : undefined}
       className={`sb-item ${
         isActive({ kind: "feed", value: f.id }) ? "active" : ""
       } ${dragId === f.id ? "dragging" : ""}`}

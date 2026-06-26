@@ -102,6 +102,22 @@ export const listArticles = (
     offset,
   });
 
+/** 0-based position of `articleId` in the list these filters produce, or null
+ *  when it isn't in that list (filtered out / different feed). Drives paging the
+ *  middle pane down to an article opened from search. */
+export const articleIndex = (
+  query: ArticleQuery,
+  unreadOnly: boolean,
+  oldestFirst: boolean,
+  articleId: number,
+) =>
+  invoke<number | null>("article_index", {
+    query,
+    unreadOnly,
+    oldestFirst,
+    articleId,
+  });
+
 export const getArticle = (id: number) =>
   invoke<ArticleDetail>("get_article", { id });
 export const markRead = (id: number, read: boolean) =>
@@ -315,4 +331,6 @@ export const openPageView = (url: string, b: PageViewBounds) =>
   invoke<void>("open_page_view", { url, ...b });
 export const setPageViewBounds = (b: PageViewBounds) =>
   invoke<void>("set_page_view_bounds", { ...b });
+export const setPageViewVisible = (visible: boolean) =>
+  invoke<void>("set_page_view_visible", { visible });
 export const closePageView = () => invoke<void>("close_page_view");

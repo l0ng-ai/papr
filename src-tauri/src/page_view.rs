@@ -81,6 +81,23 @@ pub async fn set_page_view_bounds(
     Ok(())
 }
 
+/// Show or hide the open page view without tearing it down. A transient
+/// overlay (context menu, modal, AI drawer) only needs the native webview out
+/// of the way for a moment — hiding keeps the loaded page alive, so dismissing
+/// the overlay reveals it instantly instead of reloading the whole page.
+/// No-op when the view isn't open.
+#[tauri::command]
+pub async fn set_page_view_visible(app: AppHandle, visible: bool) -> Result<(), String> {
+    if let Some(view) = app.get_webview(LABEL) {
+        if visible {
+            view.show().map_err(|e| e.to_string())?;
+        } else {
+            view.hide().map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 /// Tear down the page view (left web mode, switched away, reader unmounted).
 #[tauri::command]
 pub async fn close_page_view(app: AppHandle) -> Result<(), String> {

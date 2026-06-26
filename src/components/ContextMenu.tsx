@@ -1,8 +1,9 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import Icon, { type IconName } from "./Icon";
 import { clampToViewport } from "../lib/viewport";
 import { useDismiss } from "../hooks/useDismiss";
 import { useMenuKeyboard } from "../hooks/useMenuKeyboard";
+import { useUi } from "../store";
 
 export type MenuEntry =
   | {
@@ -43,6 +44,16 @@ export default function ContextMenu({ x, y, items, onClose }: Props) {
   }, [x, y]);
 
   useDismiss(ref, onClose);
+
+  // Flag a menu as open for the whole app. The reader's native original-page
+  // webview floats above the DOM, so it must suspend while a menu is up or it
+  // covers the menu's right edge (issue #74). One signal here covers every
+  // context menu, since they all render through this component.
+  useEffect(() => {
+    const setMenuOpen = useUi.getState().setMenuOpen;
+    setMenuOpen(true);
+    return () => setMenuOpen(false);
+  }, []);
 
   // Focus management on open/close plus Arrow/Home/End/Enter navigation,
   // shared with the other role="menu" popovers.

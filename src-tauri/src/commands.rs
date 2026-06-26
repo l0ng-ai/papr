@@ -340,6 +340,22 @@ pub async fn list_articles(
     )
 }
 
+/// 0-based position of `article_id` in the list `query` would produce (same
+/// unread filter + sort), or `None` if it isn't in that list. The frontend uses
+/// it to page the virtual list down to an article opened from search and scroll
+/// it into view.
+#[tauri::command]
+pub async fn article_index(
+    state: State<'_, AppState>,
+    query: ArticleQuery,
+    unread_only: bool,
+    oldest_first: bool,
+    article_id: i64,
+) -> AppResult<Option<i64>> {
+    let conn = state.read().await;
+    db::article_index(&conn, &query, unread_only, oldest_first, article_id)
+}
+
 #[tauri::command]
 pub async fn get_article(state: State<'_, AppState>, id: i64) -> AppResult<ArticleDetail> {
     let conn = state.read().await;

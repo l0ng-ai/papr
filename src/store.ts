@@ -108,6 +108,14 @@ interface UiState {
   unreadOnly: boolean;
   /** Sort the list oldest-first instead of newest-first. */
   sortOldest: boolean;
+  /** Offset of the first page the middle-pane list loads — its paging anchor.
+   *  Normally 0 (newest first). Opening an article from search that lives far
+   *  down the list jumps the anchor to that article's page so the list loads
+   *  *only* that page and pages outward from there, instead of every page above
+   *  it. Part of the list's React Query key, so `currentList` reads the same
+   *  window the user sees. Reset to 0 on any list-context change (feed / filter
+   *  / sort). */
+  listAnchor: number;
 
   // appearance preferences
   theme: Theme;
@@ -145,6 +153,7 @@ interface UiState {
   openArticle: (id: number | null) => void;
   toggleUnreadOnly: () => void;
   toggleSort: () => void;
+  setListAnchor: (offset: number) => void;
 
   setTheme: (t: Theme) => void;
   setDarkShade: (s: DarkShade) => void;
@@ -224,6 +233,7 @@ export const useUi = create<UiState>((set) => ({
   selectedArticleId: null,
   unreadOnly: false,
   sortOldest: false,
+  listAnchor: 0,
 
   theme: ls.oneOf<Theme>("theme", ["light", "dark"], "light"),
   darkShade: ls.oneOf<DarkShade>(
@@ -262,11 +272,14 @@ export const useUi = create<UiState>((set) => ({
     // Remember the selection so the "open on startup: last view" preference
     // can restore it next launch.
     ls.set("lastView", JSON.stringify({ query, label }));
-    set({ query, queryLabel: label, selectedArticleId: null });
+    // Reset the paging anchor: a new selection always opens at the newest page.
+    set({ query, queryLabel: label, selectedArticleId: null, listAnchor: 0 });
   },
   openArticle: (id) => set({ selectedArticleId: id }),
-  toggleUnreadOnly: () => set((s) => ({ unreadOnly: !s.unreadOnly })),
-  toggleSort: () => set((s) => ({ sortOldest: !s.sortOldest })),
+  // Toggling a filter/sort rebuilds the list, so re-anchor to the newest page.
+  toggleUnreadOnly: () => set((s) => ({ unreadOnly: !s.unreadOnly, listAnchor: 0 })),
+  toggleSort: () => set((s) => ({ sortOldest: !s.sortOldest, listAnchor: 0 })),
+  setListAnchor: (listAnchor) => set({ listAnchor }),
 
   setTheme: (theme) => { ls.set("theme", theme); mirrorTheme(theme); set({ theme }); },
   setDarkShade: (darkShade) => { ls.set("darkShade", darkShade); mirrorDarkShade(darkShade); set({ darkShade }); },

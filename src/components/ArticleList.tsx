@@ -1,6 +1,6 @@
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import * as api from "../api";
@@ -35,6 +35,7 @@ export default function ArticleList({ onToast }: Props) {
   const toggleUnreadOnly = useUi((s) => s.toggleUnreadOnly);
   const sortOldest = useUi((s) => s.sortOldest);
   const toggleSort = useUi((s) => s.toggleSort);
+  const listAnchor = useUi((s) => s.listAnchor);
   const viewMode = useUi((s) => s.viewMode);
   const density = useUi((s) => s.density);
   const showCardThumbs = useUi((s) => s.prefs.showCardThumbs);
@@ -56,19 +57,30 @@ export default function ArticleList({ onToast }: Props) {
   const [hover, setHover] = useState<Hover | null>(null);
   const hoverTimer = useRef<number | undefined>(undefined);
 
+  // Offset-anchored, *bidirectional* paging. `pageParam` is the row offset of a
+  // page, so any page can be the starting one (`initialPageParam: listAnchor`).
+  // Opening a deep article from search anchors here so the list loads only that
+  // article's page; the user can then page newer (up) or older (down) from it.
   const browse = useInfiniteQuery({
-    queryKey: ["articles", query, unreadOnly, sortOldest],
-    initialPageParam: 0,
+    queryKey: ["articles", query, unreadOnly, sortOldest, listAnchor],
+    initialPageParam: listAnchor,
     queryFn: ({ pageParam }) =>
       api.listArticles(query, unreadOnly, null, sortOldest, PAGE, pageParam as number),
-    getNextPageParam: (last, all) =>
-      last.length < PAGE ? undefined : all.length * PAGE,
+    getNextPageParam: (last, _all, lastParam) =>
+      last.length < PAGE ? undefined : (lastParam as number) + PAGE,
+    getPreviousPageParam: (_first, _all, firstParam) =>
+      (firstParam as number) > 0 ? Math.max(0, (firstParam as number) - PAGE) : undefined,
   });
 
   const items: ArticleSummary[] = useMemo(
     () => browse.data?.pages.flat() ?? [],
     [browse.data],
   );
+  // Global row offset of `items[0]` — the param of the earliest loaded page
+  // (which can sit below the anchor once the user pages upward). Global index
+  // of `items[k]` is `baseOffset + k`, the bridge between the virtual list's
+  // local indices and the backend's absolute positions (`article_index`).
+  const baseOffset = (browse.data?.pageParams?.[0] as number | undefined) ?? listAnchor;
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const rowEstimate =
@@ -102,13 +114,149 @@ export default function ArticleList({ onToast }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [virt.range?.endIndex, items.length, browse.hasNextPage, browse.isFetchingNextPage]);
 
-  // Keep the keyboard-selected article visible.
+  // Load the previous (newer) page as the top approaches — only ever non-empty
+  // when the list is anchored mid-feed (an article opened from search), so a
+  // normal newest-first browse never triggers it.
+  useEffect(() => {
+    const first = virt.getVirtualItems()[0];
+    if (
+      first &&
+      first.index <= 5 &&
+      browse.hasPreviousPage &&
+      !browse.isFetchingPreviousPage
+    ) {
+      browse.fetchPreviousPage();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [virt.range?.startIndex, browse.hasPreviousPage, browse.isFetchingPreviousPage]);
+
+  // Prepending a newer page shifts every loaded row down by a page, so the
+  // viewport would jump. Before paint, nudge the scroll position down by the
+  // newly prepended rows' height to keep the article under the user's eyes put.
+  // Estimate-based (exact for the uniform list rows; a hair off for cards).
+  // Guarded by the list signature so a *new* list (feed switch, filter, anchor
+  // jump) — which also moves `baseOffset` — isn't mistaken for a prepend.
+  const prevBaseRef = useRef(baseOffset);
+  const listSigRef = useRef("");
+  useLayoutEffect(() => {
+    const sig = `${JSON.stringify(query)}|${unreadOnly}|${sortOldest}|${listAnchor}`;
+    const prev = prevBaseRef.current;
+    prevBaseRef.current = baseOffset;
+    if (sig !== listSigRef.current) {
+      listSigRef.current = sig;
+      return; // new list context — not a prepend, don't touch the scroll
+    }
+    if (baseOffset < prev) {
+      const el = scrollRef.current;
+      if (el) el.scrollTop += (prev - baseOffset) * rowEstimate;
+    }
+  }, [baseOffset, query, unreadOnly, sortOldest, listAnchor, rowEstimate]);
+
+  // The article we're keeping centred. A one-shot scroll lands on *estimated*
+  // row heights when the list hasn't measured yet — fatal for long rows (an
+  // article-as-a-site page), which settle far from their estimate, leaving the
+  // target off-screen. So instead of scrolling once and locking, we hold the
+  // article centred and re-centre every time the total size shifts (rows
+  // measuring, images loading) until it stops moving.
+  const [reveal, setReveal] = useState<number | null>(null);
+  const totalSize = virt.getTotalSize();
+  useEffect(() => {
+    if (reveal == null) return;
+    const i = items.findIndex((a) => a.id === reveal);
+    if (i < 0) return; // not loaded into the window yet — wait
+    virt.scrollToIndex(i, { align: "center" });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reveal, items, totalSize]);
+
+  // Hand control back the instant the user drives the list themselves, so we
+  // never fight their scroll while a long page is still settling. A safety
+  // deadline releases too, in case the size never stops changing.
+  useEffect(() => {
+    if (reveal == null) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    const release = () => setReveal(null);
+    el.addEventListener("wheel", release, { passive: true });
+    el.addEventListener("pointerdown", release, { passive: true });
+    el.addEventListener("keydown", release);
+    const timer = window.setTimeout(release, 3000);
+    return () => {
+      el.removeEventListener("wheel", release);
+      el.removeEventListener("pointerdown", release);
+      el.removeEventListener("keydown", release);
+      window.clearTimeout(timer);
+    };
+  }, [reveal]);
+
+  // Reveal the selected article. The common case (keyboard nav, clicking a row)
+  // finds it already loaded and just scrolls. The hard case is an article
+  // opened from search: selecting it also switches feed, and it may live far
+  // below the first loaded page — or be hidden by the "unread only" filter. We
+  // ask the backend for its position under the current filters and page the
+  // virtual list down to it (see the locate effect below); if it's filtered out
+  // (null), drop the unread filter so it rejoins the list and locate again.
+  const revealedForRef = useRef<number | null>(null);
+  const lookupRef = useRef<number | null>(null);
+  const [locate, setLocate] = useState<{ id: number; rank: number } | null>(null);
   useEffect(() => {
     if (selectedId == null) return;
+    if (revealedForRef.current === selectedId) return;
     const i = items.findIndex((a) => a.id === selectedId);
-    if (i >= 0) virt.scrollToIndex(i, { align: "auto" });
+    if (i >= 0) {
+      revealedForRef.current = selectedId;
+      setLocate(null);
+      setReveal(selectedId);
+      return;
+    }
+    // Not in the loaded window. Locate read-agnostically: an "unread only" view
+    // can't reliably hold the article we're opening (it may already be read, or
+    // get marked read on open, and then the page query filters it right back
+    // out), so switch to "all" first, then page to it. Only reached for an
+    // article below the loaded window — a recent one is already in view.
+    if (lookupRef.current === selectedId) return;
+    if (unreadOnly) {
+      toggleUnreadOnly();
+      return;
+    }
+    lookupRef.current = selectedId;
+    const target = selectedId;
+    api
+      .articleIndex(query, false, sortOldest, target)
+      .then((rank) => {
+        if (useUi.getState().selectedArticleId !== target) return;
+        if (rank != null) setLocate({ id: target, rank });
+      })
+      .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedId]);
+  }, [selectedId, items]);
+
+  // Drive the located article into view. If it's outside the loaded window,
+  // jump the paging anchor to its page so the list reloads *only* there (rather
+  // than every page above it); once that page is in, Effect above scrolls to it.
+  useEffect(() => {
+    if (!locate) return;
+    if (locate.id !== selectedId) {
+      setLocate(null);
+      return;
+    }
+    const local = locate.rank - baseOffset;
+    if (local >= 0 && local < items.length) {
+      revealedForRef.current = locate.id;
+      setReveal(locate.id);
+      setLocate(null);
+      return;
+    }
+    const targetAnchor = Math.floor(locate.rank / PAGE) * PAGE;
+    if (listAnchor !== targetAnchor) useUi.getState().setListAnchor(targetAnchor);
+    // else: anchor already at the target page, still loading — wait for `items`.
+  }, [locate, selectedId, items, baseOffset, listAnchor]);
+
+  // A new query or filter rebuilds the list, so any in-flight locate is stale —
+  // clear it and allow a fresh lookup under the new filters.
+  useEffect(() => {
+    lookupRef.current = null;
+    setLocate(null);
+  }, [query, unreadOnly, sortOldest]);
 
   useEffect(() => () => window.clearTimeout(hoverTimer.current), []);
 
@@ -127,9 +275,11 @@ export default function ArticleList({ onToast }: Props) {
   // a new feed/folder/tag opens scrolled to wherever the *previous* list was
   // left — burying its newest articles below the fold. `scrollToOffset(0)`
   // also resets the virtualizer's internal offset, keeping its rendered window
-  // in sync with the DOM scroll position.
+  // in sync with the DOM scroll position. Skipped when the query change came
+  // from opening a specific article (search → feed + article in one step), so
+  // the selected-article scroll above isn't overridden back to the top.
   useEffect(() => {
-    virt.scrollToOffset(0);
+    if (selectedId == null) virt.scrollToOffset(0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query]);
 

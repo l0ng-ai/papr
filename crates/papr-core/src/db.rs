@@ -1078,15 +1078,12 @@ pub fn upsert_article(
 }
 
 /// Build and run the article-list query for the given sidebar selection.
-pub fn list_articles(
-    conn: &Connection,
-    query: &ArticleQuery,
-    unread_only: bool,
-    search: Option<&str>,
-    oldest_first: bool,
-    limit: i64,
-    offset: i64,
-) -> AppResult<Vec<ArticleSummary>> {
+/// WHERE clauses + bind values selecting the articles for `query` under the
+/// unread filter — shared by `list_articles` and `article_index` so the two
+/// never drift in *which* rows they consider (a drift would put a located
+/// article at an index the list doesn't agree with). The returned clauses
+/// assume the `articles a JOIN feeds f` aliases used by both callers.
+fn article_filter(query: &ArticleQuery, unread_only: bool) -> (Vec<String>, Vec<Value>) {
     let mut where_clauses: Vec<String> = vec!["1=1".into()];
     let mut binds: Vec<Value> = Vec::new();
 
@@ -1113,6 +1110,61 @@ pub fn list_articles(
     if unread_only && !matches!(query, ArticleQuery::Unread) {
         where_clauses.push("a.is_read = 0".into());
     }
+    (where_clauses, binds)
+}
+
+/// The non-search ORDER BY clause shared by `list_articles` and
+/// `article_index`. See `list_articles` for why the effective date is wrapped
+/// in `datetime(COALESCE(...))`.
+fn article_order(oldest_first: bool) -> &'static str {
+    if oldest_first {
+        "datetime(COALESCE(a.published_at, a.fetched_at)) ASC, a.id ASC"
+    } else {
+        "datetime(COALESCE(a.published_at, a.fetched_at)) DESC, a.id DESC"
+    }
+}
+
+/// 0-based position of `article_id` within the list `query` would produce under
+/// the same unread filter and sort — or `None` when the article isn't in that
+/// list (filtered out, or not in this feed/folder/tag). Lets the frontend page
+/// the virtual list up to a specific article (e.g. one opened from search that
+/// lives far below the first loaded page) and scroll it into view.
+pub fn article_index(
+    conn: &Connection,
+    query: &ArticleQuery,
+    unread_only: bool,
+    oldest_first: bool,
+    article_id: i64,
+) -> AppResult<Option<i64>> {
+    let (where_clauses, mut binds) = article_filter(query, unread_only);
+    let sql = format!(
+        "SELECT pos FROM (
+             SELECT a.id AS aid,
+                    ROW_NUMBER() OVER (ORDER BY {order}) - 1 AS pos
+             FROM articles a JOIN feeds f ON f.id = a.feed_id
+             WHERE {where_sql}
+         ) WHERE aid = ?",
+        order = article_order(oldest_first),
+        where_sql = where_clauses.join(" AND "),
+    );
+    binds.push(Value::Integer(article_id));
+    let pos = conn
+        .prepare(&sql)?
+        .query_row(params_from_iter(binds), |r| r.get::<_, i64>(0))
+        .optional()?;
+    Ok(pos)
+}
+
+pub fn list_articles(
+    conn: &Connection,
+    query: &ArticleQuery,
+    unread_only: bool,
+    search: Option<&str>,
+    oldest_first: bool,
+    limit: i64,
+    offset: i64,
+) -> AppResult<Vec<ArticleSummary>> {
+    let (mut where_clauses, mut binds) = article_filter(query, unread_only);
 
     let searching = search.map(|s| !s.trim().is_empty()).unwrap_or(false);
     let mut sql = String::from(
@@ -1138,13 +1190,13 @@ pub fn list_articles(
     // `datetime()` normalises each side to a single comparable form. Backed
     // by `idx_articles_sort`, an expression index over the same wrapped
     // expression (v12) — the planner uses it for both directions, no sort.
-    sql.push_str(if searching {
-        " ORDER BY fts.rank "
-    } else if oldest_first {
-        " ORDER BY datetime(COALESCE(a.published_at, a.fetched_at)) ASC, a.id ASC "
+    if searching {
+        sql.push_str(" ORDER BY fts.rank ");
     } else {
-        " ORDER BY datetime(COALESCE(a.published_at, a.fetched_at)) DESC, a.id DESC "
-    });
+        sql.push_str(" ORDER BY ");
+        sql.push_str(article_order(oldest_first));
+        sql.push(' ');
+    }
     sql.push_str("LIMIT ? OFFSET ?");
     binds.push(Value::Integer(limit));
     binds.push(Value::Integer(offset));
