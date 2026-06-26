@@ -79,7 +79,6 @@ cost. Use it in any agent that supports the skill format.
 | Subscriptions | `subscribe`, `unsubscribe`, `feed`, `folder`, `folders`, `opml` |
 | Organise | `tags`, `tag`, `rules`, `rule`, `highlights`, `highlight` |
 | Newsletters | `newsletters`, `newsletter add/remove` |
-| AI | `summarize`, `ask`, `digest`, `translate` |
 | Sync | `sync status/connect/disconnect/run` (FreshRSS / Miniflux) |
 | System | `settings`, `stats`, `admin`, `setup` |
 
@@ -88,8 +87,13 @@ Every command supports `--help`. Point at a non-default database with
 
 ## Scope
 
-The CLI covers the desktop app's full capability surface — reads, triage,
-refresh (RSS + newsletters), subscription/feed/folder/tag/rule/highlight
-management, OPML, AI helpers (summaries, ask-the-article, digests, translation,
-reading provider config from settings), and FreshRSS/Miniflux sync — all driven
-headlessly through the shared `papr-core` crate.
+The CLI covers the data and actions an agent needs — reads, triage, refresh
+(RSS + newsletters), subscription/feed/folder/tag/rule/highlight management,
+OPML, and FreshRSS/Miniflux sync — all driven headlessly through the shared
+`papr-core` crate.
+
+It deliberately does **not** ship summarize/ask/digest/translate commands: the
+agent driving `papr` is already a language model, so it reads article text with
+`papr read` and `papr search` and applies its own intelligence — no second AI
+provider, API key, or round-trip required. (The desktop app keeps its own AI
+features; only the CLI surface omits them.)

@@ -10,7 +10,6 @@ mod setup;
 mod toon;
 
 use clap::{Parser, Subcommand};
-use papr_core::ai::{self, AiConfig};
 use papr_core::db;
 use papr_core::ingestion::{fetch, parse, refresh};
 use papr_core::models::ArticleQuery;
@@ -132,7 +131,7 @@ enum Cmd {
         #[command(subcommand)]
         cmd: FolderCmd,
     },
-    /// Manage a feed's settings (rename / move / interval / translate).
+    /// Manage a feed's settings (rename / move / interval).
     Feed {
         #[command(subcommand)]
         cmd: FeedCmd,
@@ -190,36 +189,6 @@ enum Cmd {
         /// Which agent host to wire up.
         #[arg(long, default_value = "all", value_parser = ["all", "claude", "codex", "opencode"])]
         app: String,
-    },
-    /// Summarize an article with the configured AI provider.
-    Summarize {
-        /// The article id.
-        id: i64,
-        /// Also cache the summary on the article (so the app shows it too).
-        #[arg(long)]
-        save: bool,
-    },
-    /// Ask a question answered from your subscribed articles (RAG over FTS5).
-    Ask {
-        /// The question.
-        question: String,
-        /// How many articles to retrieve as context.
-        #[arg(long, default_value_t = 6)]
-        limit: i64,
-    },
-    /// Generate an AI briefing of your most recent articles.
-    Digest {
-        /// How many recent articles to brief over.
-        #[arg(long, default_value_t = 30)]
-        limit: i64,
-    },
-    /// Translate an article's text into a target language.
-    Translate {
-        /// The article id.
-        id: i64,
-        /// Target language (e.g. "English", "Simplified Chinese", "日本語").
-        #[arg(long)]
-        lang: String,
     },
     /// FreshRSS / GReader sync (status / connect / disconnect / run).
     Sync {
@@ -296,12 +265,6 @@ enum FeedCmd {
         id: i64,
         #[arg(long)]
         minutes: Option<i64>,
-    },
-    /// Toggle a feed's auto-translate-on-open.
-    Translate {
-        id: i64,
-        #[arg(value_parser = ["on", "off"])]
-        state: String,
     },
 }
 
@@ -543,10 +506,6 @@ async fn run(cli: Cli) -> Result<String, AxiError> {
         Some(Cmd::Stats) => cmd_stats(&path),
         Some(Cmd::Admin { cmd }) => cmd_admin(&path, cmd),
         Some(Cmd::Setup { .. }) => unreachable!("setup is dispatched before db_path"),
-        Some(Cmd::Summarize { id, save }) => cmd_summarize(&path, id, save).await,
-        Some(Cmd::Ask { question, limit }) => cmd_ask(&path, &question, limit).await,
-        Some(Cmd::Digest { limit }) => cmd_digest(&path, limit).await,
-        Some(Cmd::Translate { id, lang }) => cmd_translate(&path, id, &lang).await,
         Some(Cmd::Sync { cmd }) => cmd_sync(&path, cmd.unwrap_or(SyncCmd::Status)).await,
     }
 }
@@ -1106,149 +1065,6 @@ async fn cmd_sync(path: &Path, cmd: SyncCmd) -> Result<String, AxiError> {
     }
 }
 
-// ─────────────────────────────── AI ───────────────────────────────
-
-/// Load the AI provider config from settings, with an agent-actionable error
-/// when no key is configured.
-fn load_ai(conn: &Connection) -> Result<AiConfig, AxiError> {
-    AiConfig::new(
-        db::get_setting(conn, "ai_provider").map_err(db_err)?,
-        db::get_setting(conn, "ai_api_key").map_err(db_err)?,
-        db::get_setting(conn, "ai_model").map_err(db_err)?,
-        db::get_setting(conn, "ai_base_url").map_err(db_err)?,
-    )
-    .map_err(|_| {
-        AxiError::runtime_help(
-            "no AI provider configured",
-            vec![
-                "Run `papr settings set ai_api_key <key>` (and optionally ai_provider / ai_model)".into(),
-                "Or configure AI in the Papr desktop app".into(),
-            ],
-        )
-    })
-}
-
-/// A response-language instruction matching the user's configured UI language.
-fn response_language(conn: &Connection) -> &'static str {
-    match db::get_setting(conn, "language").ok().flatten().as_deref() {
-        Some("zh") => "\n\nAlways write your response in Simplified Chinese.",
-        Some("ja") => "\n\nAlways write your response in Japanese.",
-        _ => "\n\nAlways write your response in English.",
-    }
-}
-
-/// Emit an AI text result as a `text:` block, with a small header.
-fn ai_output(header_kv: &[(&str, Value)], text: &str) -> String {
-    let mut d = Doc::new();
-    for (k, v) in header_kv {
-        d.set(k, v.clone());
-    }
-    d.set("text", text.trim());
-    d.into_toon()
-}
-
-async fn cmd_summarize(path: &Path, id: i64, save: bool) -> Result<String, AxiError> {
-    let conn = if save { open_rw(path)? } else { open_ro(path)? };
-    let (title, body) = db::article_text(&conn, id)
-        .map_err(|_| AxiError::runtime(format!("article #{id} not found")))?;
-    if body.trim().is_empty() {
-        return Err(AxiError::runtime(format!("article #{id} has no body to summarize")));
-    }
-    let cfg = load_ai(&conn)?;
-    let lang = response_language(&conn);
-    let system = format!(
-        "You are a sharp news editor. Summarize the article so a reader can decide \
-         whether to read it in full.\n\nFormat in markdown: a bold **TL;DR** one-liner, \
-         then 3-5 single-idea bullets. Output only that.{lang}"
-    );
-    let user = format!("Title: {title}\n\n{}", truncate(&body, 8000).0);
-    let client = http_client()?;
-    let text = ai::complete_chat(&client, &cfg, &system, &user, ai::MAX_TOKENS)
-        .await
-        .map_err(|e| AxiError::runtime(format!("AI request failed: {e}")))?;
-    if save && !text.trim().is_empty() {
-        db::set_ai_summary(&conn, id, text.trim()).map_err(db_err)?;
-    }
-    Ok(ai_output(&[("id", json!(id)), ("model", json!(cfg.model()))], &text))
-}
-
-async fn cmd_ask(path: &Path, question: &str, limit: i64) -> Result<String, AxiError> {
-    let conn = open_ro(path)?;
-    let cfg = load_ai(&conn)?;
-    let lang = response_language(&conn);
-    let hits = db::search_articles_for_rag(&conn, question, clamp_limit(limit)).map_err(db_err)?;
-    let mut context = String::new();
-    let mut cited = Vec::new();
-    for (aid, _title, feed_title) in &hits {
-        let (title, body) = db::article_text(&conn, *aid).map_err(db_err)?;
-        context.push_str(&format!("## {title} — {feed_title}\n{}\n\n", truncate(&body, 1200).0));
-        cited.push(aid.to_string());
-    }
-    let system = format!(
-        "You answer the user's question using only the provided articles from their RSS \
-         subscriptions. Cite the article titles you draw from. If the articles do not \
-         contain the answer, say so plainly.{lang}"
-    );
-    let user = if context.trim().is_empty() {
-        format!("No relevant articles were found.\n\nQuestion: {question}")
-    } else {
-        format!("Articles from the user's feeds:\n\n{context}---\n\nQuestion: {question}")
-    };
-    let client = http_client()?;
-    let text = ai::complete_chat(&client, &cfg, &system, &user, ai::MAX_TOKENS)
-        .await
-        .map_err(|e| AxiError::runtime(format!("AI request failed: {e}")))?;
-    Ok(ai_output(
-        &[("sources", if cited.is_empty() { json!("none") } else { json!(cited.join(",")) })],
-        &text,
-    ))
-}
-
-async fn cmd_digest(path: &Path, limit: i64) -> Result<String, AxiError> {
-    let conn = open_ro(path)?;
-    let cfg = load_ai(&conn)?;
-    let lang = response_language(&conn);
-    let articles = db::digest_source(&conn, clamp_limit(limit)).map_err(db_err)?;
-    if articles.is_empty() {
-        return ok_line("digest: 0 recent articles to brief on".into());
-    }
-    let mut corpus = String::new();
-    for (title, feed, text) in &articles {
-        corpus.push_str(&format!("- [{feed}] {title}: {}\n", truncate(text, 400).0));
-    }
-    let system = format!(
-        "You are the user's personal news briefer. From the recent articles, write a crisp \
-         briefing: group related items into 2-4 themed sections with short headers, lead with \
-         what matters most, keep it skimmable. Plain prose, no preamble.{lang}"
-    );
-    let user = format!("Recent articles from my feeds:\n\n{corpus}");
-    let client = http_client()?;
-    let text = ai::complete_chat(&client, &cfg, &system, &user, ai::MAX_TOKENS)
-        .await
-        .map_err(|e| AxiError::runtime(format!("AI request failed: {e}")))?;
-    Ok(ai_output(&[("articles", json!(articles.len()))], &text))
-}
-
-async fn cmd_translate(path: &Path, id: i64, lang: &str) -> Result<String, AxiError> {
-    let conn = open_ro(path)?;
-    let (title, body) = db::article_text(&conn, id)
-        .map_err(|_| AxiError::runtime(format!("article #{id} not found")))?;
-    if body.trim().is_empty() {
-        return Err(AxiError::runtime(format!("article #{id} has no text to translate")));
-    }
-    let cfg = load_ai(&conn)?;
-    let system = format!(
-        "You are a professional translator. Translate the article into {lang}, preserving \
-         meaning, tone and paragraph structure. Output only the translation, no notes."
-    );
-    let user = format!("Title: {title}\n\n{}", truncate(&body, 8000).0);
-    let client = http_client()?;
-    let text = ai::complete_chat(&client, &cfg, &system, &user, ai::TRANSLATE_MAX_TOKENS)
-        .await
-        .map_err(|e| AxiError::runtime(format!("AI request failed: {e}")))?;
-    Ok(ai_output(&[("id", json!(id)), ("lang", json!(lang))], &text))
-}
-
 // ─────────────────────── feeds / folders management ───────────────────────
 
 fn feed_title(conn: &Connection, id: i64) -> Option<String> {
@@ -1361,11 +1177,6 @@ fn cmd_feed(path: &Path, cmd: FeedCmd) -> Result<String, AxiError> {
                 Some(m) => ok_line(format!("feed: #{id} refresh interval set to {m} min")),
                 None => ok_line(format!("feed: #{id} now follows the global interval")),
             }
-        }
-        FeedCmd::Translate { id, state } => {
-            let on = state == "on";
-            db::set_feed_auto_translate(&conn, id, on).map_err(db_err)?;
-            ok_line(format!("feed: #{id} auto-translate {state}"))
         }
     }
 }
@@ -1925,10 +1736,10 @@ fn http_client() -> Result<reqwest::Client, AxiError> {
     reqwest::Client::builder()
         .user_agent(USER_AGENT)
         // Bound network waits so a stalled connection or unresponsive server
-        // can't hang the CLI forever. The total budget is generous enough for a
-        // slow AI completion while still failing eventually.
+        // can't hang the CLI forever. The total budget stays generous for a slow
+        // feed or article fetch while still failing eventually.
         .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(180))
+        .timeout(Duration::from_secs(120))
         .build()
         .map_err(|e| AxiError::runtime(format!("http client: {e}")))
 }
