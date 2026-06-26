@@ -53,6 +53,16 @@ shared `papr-core` crate), so an agent can work your feeds with no GUI:
 brew install l0ng-ai/papr/papr-cli
 ```
 
-See **[docs/cli.md](docs/cli.md)** for the full command reference, install options,
-and how to wire it into an agent — plus the bundled
-[`papr-rss` skill](skills/papr-rss/SKILL.md) for agents that support skills.
+### Plug it into your agent with the `papr-rss` skill
+
+The bundled **[`papr-rss` skill](skills/papr-rss/SKILL.md)** is the easiest way to
+hand a skill-aware agent (Claude Code, Codex, OpenCode…) the keys to your feeds.
+Drop it in and it loads **on demand** — whenever you say something like _"any
+unread RSS?"_, _"summarize this feed"_, or _"subscribe to &lt;url&gt;"_ — with
+**zero per-session token cost** and nothing to memorize: the agent discovers the
+commands itself.
+
+Prefer it always-on? `papr setup` installs an ambient SessionStart hook so every
+conversation opens with your unread dashboard already in context. See
+**[docs/cli.md](docs/cli.md)** for both paths, the full command reference, and
+install options.
