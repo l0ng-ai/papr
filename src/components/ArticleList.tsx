@@ -152,19 +152,21 @@ export default function ArticleList({ onToast }: Props) {
     }
   }, [baseOffset, query, unreadOnly, sortOldest, listAnchor, rowEstimate]);
 
-  // The article we're keeping centred. A one-shot scroll lands on *estimated*
+  // The article we're keeping in view. A one-shot scroll lands on *estimated*
   // row heights when the list hasn't measured yet — fatal for long rows (an
   // article-as-a-site page), which settle far from their estimate, leaving the
-  // target off-screen. So instead of scrolling once and locking, we hold the
-  // article centred and re-centre every time the total size shifts (rows
-  // measuring, images loading) until it stops moving.
+  // target off-screen. So instead of scrolling once and locking, we keep the
+  // article in view, re-checking every time the total size shifts (rows
+  // measuring, images loading) until it stops moving. `align: "auto"` only
+  // scrolls when the row isn't already fully visible, so *clicking* a visible
+  // row never jolts the list — it just opens.
   const [reveal, setReveal] = useState<number | null>(null);
   const totalSize = virt.getTotalSize();
   useEffect(() => {
     if (reveal == null) return;
     const i = items.findIndex((a) => a.id === reveal);
     if (i < 0) return; // not loaded into the window yet — wait
-    virt.scrollToIndex(i, { align: "center" });
+    virt.scrollToIndex(i, { align: "auto" });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reveal, items, totalSize]);
 
