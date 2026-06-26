@@ -327,6 +327,15 @@ async fn poll_newsletters(
             // that completes the handshake but stalls mid-command would block
             // forever. Bound the whole fetch with a wall-clock timeout so a hung
             // mailbox degrades to a per-feed error instead of wedging the run.
+            //
+            // Caveat: `timeout` only abandons the `JoinHandle`; the
+            // `spawn_blocking` thread keeps running until its socket read
+            // unblocks. A truly cancellable poll needs a socket read-timeout,
+            // but the pinned `imap` alpha exposes no public accessor for the
+            // session's stream (its `SetReadTimeout` is crate-internal), so that
+            // would mean hand-rolling the rustls handshake. Tracked as a
+            // follow-up; acceptable here because a permanently-stalling mailbox
+            // is a rare, user-fixable misconfiguration.
             let fetched = match tokio::time::timeout(
                 Duration::from_secs(NEWSLETTER_POLL_TIMEOUT_SECS),
                 tokio::task::spawn_blocking(move || newsletter::fetch_recent(&cfg, 50)),
