@@ -40,6 +40,21 @@ help[4]: Run `papr read <id>` to read an article's full text,...
 
 ## Install
 
+### Homebrew (macOS / Linux)
+
+```sh
+brew install l0ng-ai/papr/papr-cli
+```
+
+### Prebuilt binary
+
+Download the archive for your platform from the
+[latest release](https://github.com/l0ng-ai/papr/releases/latest) —
+`papr-<target>.tar.gz` (`.zip` on Windows) — unpack it, and drop `papr`
+anywhere on your `PATH`. The macOS builds are Developer ID signed and notarized.
+
+### From source
+
 ```sh
 cargo build --release -p papr-cli      # produces target/release/papr
 cp target/release/papr ~/.local/bin/   # or anywhere on PATH

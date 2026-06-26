@@ -37,6 +37,17 @@ jobs:
           echo "arm=$(sha256sum arm.dmg | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
           echo "x64=$(sha256sum x64.dmg | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
+      - name: Download CLI tarballs and hash them
+        id: cli
+        run: |
+          BASE="https://github.com/${{ github.repository }}/releases/download/${{ steps.v.outputs.tag }}"
+          curl -fSL --retry 3 -o cli-arm-mac.tgz "$BASE/papr-aarch64-apple-darwin.tar.gz"
+          curl -fSL --retry 3 -o cli-x64-mac.tgz "$BASE/papr-x86_64-apple-darwin.tar.gz"
+          curl -fSL --retry 3 -o cli-linux.tgz   "$BASE/papr-x86_64-unknown-linux-gnu.tar.gz"
+          echo "arm_mac=$(sha256sum cli-arm-mac.tgz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "x64_mac=$(sha256sum cli-x64-mac.tgz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "linux=$(sha256sum cli-linux.tgz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
       - name: Check out tap
         uses: actions/checkout@v4
         with:
@@ -61,14 +72,58 @@ jobs:
           grep -q "\"${ARM}\"" "$f"
           grep -q "\"${X64}\"" "$f"
 
+      - name: Generate the CLI formula
+        run: |
+          V="${{ steps.v.outputs.version }}"
+          BASE="https://github.com/${{ github.repository }}/releases/download/v#{version}"
+          mkdir -p tap/Formula
+          # Regenerated wholesale each release — no placeholder file needs to
+          # pre-exist in the tap, and there's no sed to drift out of alignment.
+          cat > tap/Formula/papr-cli.rb <<EOF
+          class PaprCli < Formula
+            desc "Agent-facing CLI over your Papr RSS feeds"
+            homepage "https://github.com/${{ github.repository }}"
+            version "${V}"
+            license "MIT"
+
+            on_macos do
+              on_arm do
+                url "${BASE}/papr-aarch64-apple-darwin.tar.gz"
+                sha256 "${{ steps.cli.outputs.arm_mac }}"
+              end
+              on_intel do
+                url "${BASE}/papr-x86_64-apple-darwin.tar.gz"
+                sha256 "${{ steps.cli.outputs.x64_mac }}"
+              end
+            end
+
+            on_linux do
+              on_intel do
+                url "${BASE}/papr-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "${{ steps.cli.outputs.linux }}"
+              end
+            end
+
+            def install
+              bin.install "papr"
+            end
+
+            test do
+              assert_match "papr", shell_output("#{bin}/papr --help")
+            end
+          end
+          EOF
+          echo "----- generated formula -----"
+          cat tap/Formula/papr-cli.rb
+
       - name: Commit and push
         run: |
           cd tap
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Casks/papr.rb
+          git add Casks/papr.rb Formula/papr-cli.rb
           if git diff --cached --quiet; then
-            echo "cask already up to date — nothing to push"
+            echo "cask + formula already up to date — nothing to push"
             exit 0
           fi
           git commit -m "papr ${{ steps.v.outputs.version }}"

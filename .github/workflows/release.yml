@@ -16,12 +16,16 @@ jobs:
         include:
           - platform: macos-latest
             args: "--target aarch64-apple-darwin"
+            cli_target: aarch64-apple-darwin
           - platform: macos-latest
             args: "--target x86_64-apple-darwin"
+            cli_target: x86_64-apple-darwin
           - platform: ubuntu-22.04
             args: ""
+            cli_target: x86_64-unknown-linux-gnu
           - platform: windows-latest
             args: ""
+            cli_target: x86_64-pc-windows-msvc
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -84,3 +88,78 @@ jobs:
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
+
+      # ---------------------------------------------------------------------
+      # papr CLI — built from the same workspace, signed/notarized on macOS,
+      # and uploaded to the same draft release tauri-action just created.
+      # ---------------------------------------------------------------------
+      - name: Add Rust target for the CLI
+        run: rustup target add ${{ matrix.cli_target }}
+
+      - name: Build papr CLI
+        run: cargo build --release -p papr-cli --target ${{ matrix.cli_target }}
+
+      - name: Sign & notarize papr CLI (macOS)
+        if: matrix.platform == 'macos-latest'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          BIN="target/${{ matrix.cli_target }}/release/papr"
+
+          # tauri-action tears down its own keychain after its step, so stand up
+          # a fresh one to sign the bare CLI binary with the Developer ID cert.
+          KEYCHAIN="$RUNNER_TEMP/papr-cli.keychain-db"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -A -t cert -f pkcs12 -k "$KEYCHAIN"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" login.keychain
+
+          # Hardened runtime + secure timestamp, same posture as the app bundle.
+          codesign --force --options runtime --timestamp \
+            --sign "$APPLE_SIGNING_IDENTITY" "$BIN"
+          codesign --verify --strict --verbose=2 "$BIN"
+
+          # Notarize. A bare executable can't be stapled (stapling needs an
+          # app/dmg/pkg container), so we submit a zip of the binary; the ticket
+          # binds to the code signature's cdhash and Gatekeeper checks it online.
+          ditto -c -k "$BIN" "$RUNNER_TEMP/papr-cli.zip"
+          xcrun notarytool submit "$RUNNER_TEMP/papr-cli.zip" \
+            --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" \
+            --team-id "$APPLE_TEAM_ID" --wait
+
+      - name: Package CLI (Unix)
+        if: matrix.platform != 'windows-latest'
+        run: |
+          set -euo pipefail
+          tar -czf "papr-${{ matrix.cli_target }}.tar.gz" \
+            -C "target/${{ matrix.cli_target }}/release" papr
+
+      - name: Package CLI (Windows)
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "target/${{ matrix.cli_target }}/release/papr.exe" `
+            -DestinationPath "papr-${{ matrix.cli_target }}.zip" -Force
+
+      - name: Upload CLI to the release
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Exactly one of .tar.gz (Unix) / .zip (Windows) exists for this target.
+          asset=$(echo papr-${{ matrix.cli_target }}.*)
+          gh release upload "${{ github.ref_name }}" "$asset" --clobber \
+            --repo "${{ github.repository }}"

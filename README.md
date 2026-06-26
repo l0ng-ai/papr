@@ -22,6 +22,14 @@ A fast, native RSS reader for the desktop.
 - **Local-first** — everything in a local SQLite database. No account, no cloud.
 - **Localized** — English, Japanese, and Simplified Chinese.
 
+## For agents — the `papr` CLI
+
+A token-efficient, agent-facing CLI over the same local database, for driving
+Papr headlessly from a shell — read, search, triage, and refresh your feeds with
+no GUI. See [`crates/papr-cli`](crates/papr-cli/README.md) for the full command
+reference, and the bundled [`papr-rss` skill](skills/papr-rss/SKILL.md) for
+agents that support the skill format.
+
 ## Installation
 
 ### macOS
