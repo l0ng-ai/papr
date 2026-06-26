@@ -63,10 +63,8 @@ Install it in one line with [`skills`](https://github.com/vercel-labs/skills):
 npx skills add https://github.com/l0ng-ai/papr/tree/main/skills/papr-rss
 ```
 
-It then loads **on demand** — whenever you say something like _"any unread RSS?"_,
-_"summarize this feed"_, or _"subscribe to &lt;url&gt;"_ — with **zero
-per-session token cost** and nothing to memorize: the agent discovers the
-commands itself.
+It loads **on demand** when a feed task comes up, with **zero per-session token
+cost** — the agent discovers the commands itself.
 
 See **[docs/cli.md](docs/cli.md)** for the full command reference and install
 options.
