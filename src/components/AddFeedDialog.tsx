@@ -5,6 +5,7 @@ import * as api from "../api";
 import { useArticleActions } from "../hooks/articleActions";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { errorText } from "../lib/errors";
+import { NO_AUTOCORRECT } from "../lib/inputProps";
 import type { DiscoveryResult } from "../types";
 import Icon from "./Icon";
 
@@ -214,6 +215,7 @@ export default function AddFeedDialog({ onClose, onToast, initialUrl }: Props) {
               autoFocus
               placeholder={t("addFeed.discoverPlaceholder")}
               aria-label={t("addFeed.urlLabel")}
+              {...NO_AUTOCORRECT}
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               onKeyDown={(e) => {
@@ -305,6 +307,7 @@ export default function AddFeedDialog({ onClose, onToast, initialUrl }: Props) {
               autoFocus
               placeholder={t("addFeed.nlTitlePlaceholder")}
               aria-label={t("addFeed.nlTitleLabel")}
+              {...NO_AUTOCORRECT}
               value={nlTitle}
               onChange={(e) => setNlTitle(e.target.value)}
               onKeyDown={nlKeyDown}
@@ -316,6 +319,7 @@ export default function AddFeedDialog({ onClose, onToast, initialUrl }: Props) {
                 style={{ flex: 2 }}
                 placeholder={t("addFeed.nlHostPlaceholder")}
                 aria-label={t("addFeed.nlHostLabel")}
+                {...NO_AUTOCORRECT}
                 value={nlHost}
                 onChange={(e) => setNlHost(e.target.value)}
                 onKeyDown={nlKeyDown}
@@ -326,6 +330,7 @@ export default function AddFeedDialog({ onClose, onToast, initialUrl }: Props) {
                 style={{ flex: 1 }}
                 placeholder="993"
                 aria-label={t("addFeed.nlPortLabel")}
+                {...NO_AUTOCORRECT}
                 value={nlPort}
                 onChange={(e) => setNlPort(e.target.value)}
                 onKeyDown={nlKeyDown}
@@ -336,6 +341,7 @@ export default function AddFeedDialog({ onClose, onToast, initialUrl }: Props) {
               type="text"
               placeholder={t("addFeed.nlUserPlaceholder")}
               aria-label={t("addFeed.nlUserLabel")}
+              {...NO_AUTOCORRECT}
               value={nlUser}
               onChange={(e) => setNlUser(e.target.value)}
               onKeyDown={nlKeyDown}
@@ -345,6 +351,7 @@ export default function AddFeedDialog({ onClose, onToast, initialUrl }: Props) {
               type="password"
               placeholder={t("addFeed.nlPassPlaceholder")}
               aria-label={t("addFeed.nlPassLabel")}
+              {...NO_AUTOCORRECT}
               value={nlPass}
               onChange={(e) => setNlPass(e.target.value)}
               onKeyDown={nlKeyDown}
@@ -354,6 +361,7 @@ export default function AddFeedDialog({ onClose, onToast, initialUrl }: Props) {
               type="text"
               placeholder="INBOX"
               aria-label={t("addFeed.nlFolderLabel")}
+              {...NO_AUTOCORRECT}
               value={nlFolder}
               onChange={(e) => setNlFolder(e.target.value)}
               onKeyDown={nlKeyDown}

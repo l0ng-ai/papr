@@ -6,6 +6,7 @@ import { useDismiss } from "../hooks/useDismiss";
 import { reportError } from "../toast";
 import { tagColor } from "../lib/tagColors";
 import { clampToViewport } from "../lib/viewport";
+import { NO_AUTOCORRECT } from "../lib/inputProps";
 import Icon from "./Icon";
 
 interface Props {
@@ -127,6 +128,7 @@ export default function TagPicker({
           }}
           placeholder={t("tagPicker.createPlaceholder")}
           aria-label={t("tagPicker.createPlaceholder")}
+          {...NO_AUTOCORRECT}
         />
         <button onClick={createAndAttach} disabled={!draft.trim()}>
           <Icon name="plus" size={13} />

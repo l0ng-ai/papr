@@ -5,6 +5,7 @@ import * as api from "../api";
 import { useArticleActions } from "../hooks/articleActions";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { reportError } from "../toast";
+import { NO_AUTOCORRECT } from "../lib/inputProps";
 import FeedAvatar from "./FeedAvatar";
 import Icon from "./Icon";
 
@@ -151,6 +152,7 @@ export default function ExploreDialog({ onClose, onToast }: Props) {
               aria-label={t("explore.searchLabel")}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
+              {...NO_AUTOCORRECT}
             />
           </div>
           <div

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useFocusTrap } from "../hooks/useFocusTrap";
+import { NO_AUTOCORRECT } from "../lib/inputProps";
 
 interface Props {
   title: string;
@@ -70,6 +71,7 @@ export default function PromptDialog({
           value={value}
           placeholder={placeholder}
           aria-label={placeholder ?? title}
+          {...NO_AUTOCORRECT}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => {
             // Ignore the Enter that confirms an IME candidate (CJK input) —

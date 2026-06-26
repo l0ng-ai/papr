@@ -5,6 +5,7 @@ import * as api from "../api";
 import { useUi } from "../store";
 import { feedHost, relTime } from "../lib/feedMeta";
 import { modCombo } from "../lib/platform";
+import { NO_AUTOCORRECT } from "../lib/inputProps";
 import type { ArticleSummary, Feed } from "../types";
 import Icon, { type IconName } from "./Icon";
 import FeedAvatar from "./FeedAvatar";
@@ -271,6 +272,7 @@ export default function CommandPalette({
             onKeyDown={handleKey}
             placeholder={t("commandPalette.searchPlaceholder")}
             aria-label={t("commandPalette.searchPlaceholder")}
+            {...NO_AUTOCORRECT}
             role="combobox"
             aria-expanded={items.length > 0}
             aria-controls="cp-listbox"

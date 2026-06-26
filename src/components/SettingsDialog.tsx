@@ -13,6 +13,7 @@ import { modKey, modCombo } from "../lib/platform";
 import { reportError } from "../toast";
 import { checkForUpdates } from "../lib/updater";
 import { downloadFile } from "../lib/download";
+import { NO_AUTOCORRECT } from "../lib/inputProps";
 import type { Feed, Rule, RuleAction, RuleField, RulePreview } from "../types";
 import Icon, { type IconName } from "./Icon";
 import ConfirmDialog from "./ConfirmDialog";
@@ -866,6 +867,7 @@ function SubscriptionsSection({
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder={t("settings.subscriptions.searchPlaceholder")}
+              {...NO_AUTOCORRECT}
               style={{
                 flex: 1,
                 border: 0,
@@ -980,9 +982,7 @@ function RsshubInstanceGroup() {
             if (e.key === "Enter") e.currentTarget.blur();
           }}
           placeholder="https://rsshub.app"
-          spellCheck={false}
-          autoCapitalize="off"
-          autoCorrect="off"
+          {...NO_AUTOCORRECT}
           style={{
             width: 220,
             padding: "5px 9px",
@@ -1141,6 +1141,7 @@ function SyncSection({ onToast }: { onToast: (m: string) => void }) {
                 className="modal-input"
                 style={{ margin: 0 }}
                 placeholder={t("settings.sync.serverPlaceholder")}
+                {...NO_AUTOCORRECT}
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
               />
@@ -1148,6 +1149,7 @@ function SyncSection({ onToast }: { onToast: (m: string) => void }) {
                 className="modal-input"
                 style={{ margin: 0 }}
                 placeholder={t("settings.sync.userPlaceholder")}
+                {...NO_AUTOCORRECT}
                 value={user}
                 onChange={(e) => setUser(e.target.value)}
               />
@@ -1160,6 +1162,7 @@ function SyncSection({ onToast }: { onToast: (m: string) => void }) {
                     ? t("settings.sync.appPassPlaceholder")
                     : t("settings.sync.passPlaceholder")
                 }
+                {...NO_AUTOCORRECT}
                 value={pass}
                 onChange={(e) => setPass(e.target.value)}
               />
@@ -1501,6 +1504,7 @@ function NetworkGroup({ onToast }: { onToast: (m: string) => void }) {
         >
           <input
             className="s-text-input"
+            {...NO_AUTOCORRECT}
             value={customProxy}
             placeholder="http://host:port"
             onChange={(e) => setCustomProxy(e.target.value)}
@@ -1744,6 +1748,7 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
         <input
           className="s-text-input"
           type="password"
+          {...NO_AUTOCORRECT}
           value={apiKey}
           placeholder="sk-…"
           onChange={(e) => setApiKey(e.target.value)}
@@ -1766,6 +1771,7 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
         <input
           className="s-text-input"
           type="text"
+          {...NO_AUTOCORRECT}
           value={model}
           placeholder={placeholder}
           onChange={(e) => setModel(e.target.value)}
@@ -1788,6 +1794,7 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
         <input
           className="s-text-input"
           type="text"
+          {...NO_AUTOCORRECT}
           value={baseUrl}
           placeholder={baseUrlPlaceholder}
           onChange={(e) => setBaseUrl(e.target.value)}
@@ -2094,12 +2101,14 @@ function RuleEditor({
     <div className="rule-card">
       <input
         className="rule-input"
+        {...NO_AUTOCORRECT}
         value={name}
         onChange={(e) => setName(e.target.value)}
         placeholder={t("settings.filters.namePlaceholder")}
       />
       <input
         className="rule-input"
+        {...NO_AUTOCORRECT}
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         placeholder={t("settings.filters.queryPlaceholder")}
