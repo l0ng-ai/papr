@@ -11,6 +11,9 @@
   --panel: #FBF9F3;
   --panel-2: #FFFEFA;
   --reader: #FBF9F3;
+  /* Hex mirror of --reader for the root html/body background — see the dark
+     note below: a root-propagated oklch background flashes white on resize. */
+  --resize-backing: #FBF9F3;
 
   --ink: #1A1816;
   --ink-2: #3A3733;
@@ -79,6 +82,11 @@
   --panel: oklch(0.190 0.002 250);  /* #131415 — sidebar, recedes */
   --panel-2: oklch(0.215 0.002 250);/* #19191a — list rows + floating menus */
   --reader: oklch(0.235 0.002 250); /* #1d1e1f — reading surface, lightest */
+  /* Hex mirror of --reader. The root html/body background MUST stay hex (see the
+     --paper note above): a root-propagated oklch viewport background flashes
+     white in the strip WebKit exposes during a live resize. Child elements
+     (.window's gradient, the panes) keep oklch — they're unaffected. */
+  --resize-backing: #1D1E1F;
 
   --ink: oklch(0.930 0.006 50);     /* #ebe7e4 — soft warm white, never #fff */
   --ink-2: oklch(0.800 0.006 48);
@@ -150,13 +158,16 @@ html, body, #root { height: 100%; margin: 0; }
    The panes tile the whole window (fixed sidebar + list + 1fr reader, separated
    by borders not gaps), so this colour is invisible in steady state — it only
    shows in that resize seam. Using `--paper` (#0A0B0C, the near-black floor)
-   made the seam flash black against the lighter panes; `--reader` matches the
-   widest pane (the 1fr reader, where most of the seam is) so the seam blends.
+   made the seam flash black against the lighter panes; `--resize-backing` is the
+   hex mirror of `--reader`, matching the widest pane (the 1fr reader, where most
+   of the seam is) so the seam blends. It MUST be hex, not the oklch `--reader`
+   var: this is the root viewport background, and a root-propagated oklch
+   background flashes white on resize (see the dark `--resize-backing` note).
    (The white half of the resize flash is fixed natively — see backing.rs; this
    is the web-layer half.) Stays a theme var so light/dark both track. */
-html { background: var(--reader); }
+html { background: var(--resize-backing); }
 body {
-  background: var(--reader);
+  background: var(--resize-backing);
   font-family: var(--ui);
   -webkit-font-smoothing: antialiased;
   color: var(--ink);

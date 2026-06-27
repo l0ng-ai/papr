@@ -147,7 +147,11 @@ pub fn run() {
                     match dark_shade.as_deref() {
                         Some("dimmer") => (0x1C, 0x17, 0x15),
                         Some("black") => (0x15, 0x10, 0x0F),
-                        _ => (0x25, 0x20, 0x1F),
+                        // #1D1E1F — the shipped dark `--reader` (styles.css) and
+                        // the frontend's DARK_BACKING. Keep these in sync so the
+                        // cold-start frame matches before the frontend re-asserts
+                        // `set_native_backing`.
+                        _ => (0x1D, 0x1E, 0x1F),
                     }
                 } else {
                     (0xFB, 0xF9, 0xF3)
