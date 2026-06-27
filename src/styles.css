@@ -11,6 +11,9 @@
   --panel: #FBF9F3;
   --panel-2: #FFFEFA;
   --reader: #FBF9F3;
+  /* Hex mirror of --reader for the root html/body background — see the dark
+     note below: a root-propagated oklch background flashes white on resize. */
+  --resize-backing: #FBF9F3;
 
   --ink: #1A1816;
   --ink-2: #3A3733;
@@ -79,6 +82,11 @@
   --panel: oklch(0.190 0.002 250);  /* #131415 — sidebar, recedes */
   --panel-2: oklch(0.215 0.002 250);/* #19191a — list rows + floating menus */
   --reader: oklch(0.235 0.002 250); /* #1d1e1f — reading surface, lightest */
+  /* Hex mirror of --reader. The root html/body background MUST stay hex (see the
+     --paper note above): a root-propagated oklch viewport background flashes
+     white in the strip WebKit exposes during a live resize. Child elements
+     (.window's gradient, the panes) keep oklch — they're unaffected. */
+  --resize-backing: #1D1E1F;
 
   --ink: oklch(0.930 0.006 50);     /* #ebe7e4 — soft warm white, never #fff */
   --ink-2: oklch(0.800 0.006 48);
@@ -144,15 +152,22 @@
 
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
-/* Keep the document background on the themed paper colour so any strip a
-   resize exposes before `.window` repaints matches. NOTE: this alone does NOT
-   fix the macOS resize flash — the WKWebview is opaque and hides this layer;
-   the real fix is setting the webview's native backing per theme (see the
-   setBackgroundColor calls in App.tsx). A hardcoded dark value here flashed
-   black in the light theme, so it stays var(--paper). */
-html { background: var(--paper); }
+/* Document background = the themed READER colour, NOT the `--paper` floor.
+   During a live window resize the grid's panes lag a frame behind the new
+   viewport size, and whatever the document paints under them shows in that gap.
+   The panes tile the whole window (fixed sidebar + list + 1fr reader, separated
+   by borders not gaps), so this colour is invisible in steady state — it only
+   shows in that resize seam. Using `--paper` (#0A0B0C, the near-black floor)
+   made the seam flash black against the lighter panes; `--resize-backing` is the
+   hex mirror of `--reader`, matching the widest pane (the 1fr reader, where most
+   of the seam is) so the seam blends. It MUST be hex, not the oklch `--reader`
+   var: this is the root viewport background, and a root-propagated oklch
+   background flashes white on resize (see the dark `--resize-backing` note).
+   (The white half of the resize flash is fixed natively — see backing.rs; this
+   is the web-layer half.) Stays a theme var so light/dark both track. */
+html { background: var(--resize-backing); }
 body {
-  background: var(--paper);
+  background: var(--resize-backing);
   font-family: var(--ui);
   -webkit-font-smoothing: antialiased;
   color: var(--ink);
@@ -170,13 +185,34 @@ button { font-family: inherit; }
 .reader-scroll,
 .settings-scroll {
   scrollbar-width: thin;
+  /* Isolate each pane's layout + paint from the others. During a live window
+     resize this caps the reflow/raster WebKit must redo to the pane that
+     actually changed width, so content catches up to the frame faster and the
+     dark "lag band" at the resized edge is shorter. Safe here: these are all
+     `overflow-y: auto` scroll containers that already clip, and floating menus
+     /dialogs are portaled to <body>, outside them. (The white-flash half of the
+     resize artifact is fixed natively — see backing.rs.) */
+  contain: layout paint;
 }
 
 /* ====== Window ====== */
 .window {
   width: 100vw;
   height: 100vh;
-  background: var(--paper);
+  /* The resize seam (see html/body note) shows THIS background wherever the
+     panes lag a frame behind a live resize. A flat colour can only match one
+     pane; the seam spans all three. So paint a hard-stop horizontal gradient
+     aligned to the exact column boundaries (`--col-sidebar` / `--col-list`,
+     kept live from the drag handles), so the seam under each column matches
+     that column's pane: --panel | --panel-2 | --reader. Invisible in steady
+     state (panes cover it); only the resize seam reveals it. */
+  background: linear-gradient(
+    to right,
+    var(--panel) var(--col-sidebar),
+    var(--panel-2) var(--col-sidebar),
+    var(--panel-2) calc(var(--col-sidebar) + var(--col-list)),
+    var(--reader) calc(var(--col-sidebar) + var(--col-list))
+  );
   color: var(--ink);
   display: grid;
   grid-template-columns: var(--col-sidebar) var(--col-list) 1fr;

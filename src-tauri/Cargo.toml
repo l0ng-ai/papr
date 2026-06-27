@@ -98,3 +98,8 @@ log = "0.4"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 objc2-foundation = "0.3"
+# Typed handles to the WKWebView / NSWindow / NSColor we repaint per theme to
+# kill the resize flash (see src/backing.rs). Versions track tauri/wry's own
+# objc2 to keep a single copy in the tree.
+objc2-web-kit = { version = "0.3", features = ["WKWebView"] }
+objc2-app-kit = { version = "0.3", features = ["NSColor", "NSWindow", "NSView", "NSResponder"] }

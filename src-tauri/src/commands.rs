@@ -19,6 +19,18 @@ use serde::{Deserialize, Serialize};
 use tauri::{ipc::Channel, AppHandle, Emitter, Manager, State};
 use url::Url;
 
+// ─────────────────────────── native chrome ───────────────────────────
+
+/// Repaint the native window + webview backing to `(r, g, b)` so a live resize
+/// never flashes a mismatched strip at the dragged edge. macOS-only effect (see
+/// `backing::apply`, which pins drawsBackground / underPageBackgroundColor /
+/// NSWindow); a harmless no-op elsewhere. Called from the frontend on every
+/// theme change, alongside Tauri's cross-platform `setBackgroundColor`.
+#[tauri::command]
+pub fn set_native_backing(window: tauri::WebviewWindow, r: u8, g: u8, b: u8) {
+    crate::backing::apply(&window, r, g, b);
+}
+
 // ─────────────────────────── folders ───────────────────────────
 
 #[tauri::command]
