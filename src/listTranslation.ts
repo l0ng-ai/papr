@@ -15,6 +15,8 @@ export interface ListTranslationJob {
   articleId: number;
   lang: string;
   engine: string;
+  sourceTitle: string;
+  sourceSnippet: string | null;
   title: string | null;
   snippet: string | null;
   error?: string;
@@ -54,14 +56,18 @@ export const useListTranslation = create<ListTranslationState>((set, get) => {
         set((s) => ({
           jobs: {
             ...s.jobs,
-            [nextKey]: {
-              ...s.jobs[nextKey],
-              status: "done",
-              title: result.title,
-              snippet: result.snippet,
-              lang: result.lang,
-              engine: result.engine,
-            },
+            ...(matchesJobSource(s.jobs[nextKey], next)
+              ? {
+                  [nextKey]: {
+                    ...s.jobs[nextKey],
+                    status: "done",
+                    title: result.title,
+                    snippet: result.snippet,
+                    lang: result.lang,
+                    engine: result.engine,
+                  },
+                }
+              : {}),
           },
         }));
       })
@@ -70,7 +76,15 @@ export const useListTranslation = create<ListTranslationState>((set, get) => {
         set((s) => ({
           jobs: {
             ...s.jobs,
-            [nextKey]: { ...s.jobs[nextKey], status: "error", error: message },
+            ...(matchesJobSource(s.jobs[nextKey], next)
+              ? {
+                  [nextKey]: {
+                    ...s.jobs[nextKey],
+                    status: "error",
+                    error: message,
+                  },
+                }
+              : {}),
           },
         }));
         reportError(err);
@@ -92,14 +106,21 @@ export const useListTranslation = create<ListTranslationState>((set, get) => {
       const current = get().jobs;
       for (const article of articles) {
         const key = keyFor(article.id, targetLang, engine);
+        const sourceTitle = article.title;
+        const sourceSnippet = article.snippet ?? null;
         const existing = current[key];
-        if (existing && existing.status !== "error") continue;
+        const sourceChanged =
+          existing?.sourceTitle !== sourceTitle ||
+          existing?.sourceSnippet !== sourceSnippet;
+        if (existing && existing.status !== "error" && !sourceChanged) continue;
         additions[key] = {
           ...(existing ?? {
             articleId: article.id,
             title: null,
             snippet: null,
           }),
+          sourceTitle,
+          sourceSnippet,
           status: "queued",
           lang: targetLang,
           engine,
@@ -114,3 +135,13 @@ export const useListTranslation = create<ListTranslationState>((set, get) => {
     },
   };
 });
+
+const matchesJobSource = (
+  current: ListTranslationJob | undefined,
+  expected: ListTranslationJob,
+) =>
+  current?.articleId === expected.articleId &&
+  current.lang === expected.lang &&
+  current.engine === expected.engine &&
+  current.sourceTitle === expected.sourceTitle &&
+  current.sourceSnippet === expected.sourceSnippet;
