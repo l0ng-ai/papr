@@ -251,6 +251,27 @@ static MIGRATIONS: LazyLock<Migrations> = LazyLock::new(|| {
         M::up(
             "ALTER TABLE feeds ADD COLUMN auto_translate INTEGER NOT NULL DEFAULT 0;",
         ),
+        // v17 — independent list-pane translation cache. Preview translations
+        // are keyed by article, target language and engine so switching language
+        // or engine never overwrites another cached preview. A source title/body
+        // update invalidates the derived preview text.
+        M::up(
+            r#"
+            CREATE TABLE article_preview_translations (
+                article_id INTEGER NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
+                lang       TEXT NOT NULL,
+                engine     TEXT NOT NULL,
+                title      TEXT NOT NULL,
+                snippet    TEXT NOT NULL,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY(article_id, lang, engine)
+            );
+            CREATE TRIGGER article_preview_translations_au
+            AFTER UPDATE OF title, body_text ON articles BEGIN
+                DELETE FROM article_preview_translations WHERE article_id = new.id;
+            END;
+            "#,
+        ),
     ])
 });
 
@@ -1392,6 +1413,15 @@ pub fn get_article(conn: &Connection, id: i64) -> AppResult<ArticleDetail> {
 /// `(title, plain_text)` for building an AI prompt. Prefers the extracted
 /// full text when the user has run extraction, so a summary / answer covers
 /// the whole article rather than the (often truncated) feed body.
+pub fn article_preview_text(conn: &Connection, id: i64) -> AppResult<(String, String)> {
+    conn.query_row(
+        "SELECT title, body_text FROM articles WHERE id = ?1",
+        params![id],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )
+    .map_err(Into::into)
+}
+
 pub fn article_text(conn: &Connection, id: i64) -> AppResult<(String, String)> {
     let (title, body, extracted): (String, String, Option<String>) = conn.query_row(
         "SELECT title, body_text, extracted_html FROM articles WHERE id = ?1",
@@ -1454,8 +1484,46 @@ pub fn set_ai_summary(conn: &Connection, id: i64, summary: &str) -> AppResult<()
     Ok(())
 }
 
-/// Cache a completed translation of an article's body, tagged with the target
-/// language it was produced for so a later language change is detected as stale.
+/// Return a cached list-preview translation for this exact target language and
+/// engine, if one exists.
+pub fn get_preview_translation(
+    conn: &Connection,
+    id: i64,
+    lang: &str,
+    engine: &str,
+) -> AppResult<Option<(String, String)>> {
+    Ok(conn
+        .query_row(
+            "SELECT title, snippet
+               FROM article_preview_translations
+              WHERE article_id = ?1 AND lang = ?2 AND engine = ?3",
+            params![id, lang, engine],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?)
+}
+
+/// Cache a list-preview translation independently from full-body translations.
+pub fn set_preview_translation(
+    conn: &Connection,
+    id: i64,
+    title: &str,
+    snippet: &str,
+    lang: &str,
+    engine: &str,
+) -> AppResult<()> {
+    conn.execute(
+        "INSERT INTO article_preview_translations(article_id, lang, engine, title, snippet, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))
+         ON CONFLICT(article_id, lang, engine) DO UPDATE SET
+             title = excluded.title,
+             snippet = excluded.snippet,
+             updated_at = excluded.updated_at",
+        params![id, lang, engine, title.trim(), snippet.trim()],
+    )?;
+    Ok(())
+}
+
 pub fn set_translation(conn: &Connection, id: i64, html: &str, lang: &str) -> AppResult<()> {
     conn.execute(
         "UPDATE articles SET translated_html = ?2, translated_lang = ?3 WHERE id = ?1",
@@ -2360,6 +2428,43 @@ mod tests {
         // the 20-minute-old fetch and a 5-minute global, it is due again.
         set_feed_refresh_interval(&conn, feed_id, None).unwrap();
         assert!(!feeds_due_for_refresh(&conn, 5).unwrap().is_empty());
+    }
+
+    #[test]
+    fn preview_translation_cache_is_keyed_by_language_and_engine() {
+        let (conn, id) = test_db();
+
+        set_preview_translation(&conn, id, "标题", "摘要", "zh", "google").unwrap();
+        set_preview_translation(&conn, id, "題名", "要約", "ja", "google").unwrap();
+        set_preview_translation(&conn, id, "見出し", "抜粋", "ja", "deepl").unwrap();
+
+        assert_eq!(
+            get_preview_translation(&conn, id, "zh", "google").unwrap(),
+            Some(("标题".into(), "摘要".into()))
+        );
+        assert_eq!(
+            get_preview_translation(&conn, id, "ja", "google").unwrap(),
+            Some(("題名".into(), "要約".into()))
+        );
+        assert_eq!(
+            get_preview_translation(&conn, id, "ja", "deepl").unwrap(),
+            Some(("見出し".into(), "抜粋".into()))
+        );
+        assert_eq!(get_preview_translation(&conn, id, "en", "google").unwrap(), None);
+    }
+
+    #[test]
+    fn preview_translation_cache_is_cleared_when_source_preview_changes() {
+        let (conn, id) = test_db();
+
+        set_preview_translation(&conn, id, "标题", "摘要", "zh", "google").unwrap();
+        conn.execute(
+            "UPDATE articles SET title = ?2, body_text = ?3 WHERE id = ?1",
+            params![id, "New title", "New body"],
+        )
+        .unwrap();
+
+        assert_eq!(get_preview_translation(&conn, id, "zh", "google").unwrap(), None);
     }
 
     #[test]
