@@ -6,6 +6,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import * as api from "../api";
 import { useUi } from "../store";
 import { useArticleActions } from "../hooks/articleActions";
+import { listTranslationKey, useListTranslation } from "../listTranslation";
 import { relTime } from "../lib/feedMeta";
 import { isMac, modCombo } from "../lib/platform";
 import { reportError, toast } from "../toast";
@@ -27,7 +28,7 @@ interface Hover {
 }
 
 export default function ArticleList({ onToast }: Props) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const actions = useArticleActions(toast.error);
   const query = useUi((s) => s.query);
   const queryLabel = useUi((s) => s.queryLabel);
@@ -41,6 +42,19 @@ export default function ArticleList({ onToast }: Props) {
   const showCardThumbs = useUi((s) => s.prefs.showCardThumbs);
   const selectedId = useUi((s) => s.selectedArticleId);
   const openArticle = useUi((s) => s.openArticle);
+
+  const translateSetting = useQuery({
+    queryKey: ["setting", "translate_target_lang"],
+    queryFn: () => api.getSetting("translate_target_lang"),
+  });
+  const translateEngineSetting = useQuery({
+    queryKey: ["setting", "translate_engine"],
+    queryFn: () => api.getSetting("translate_engine"),
+  });
+  const targetLang = translateSetting.data || i18n.language;
+  const translateEngine = translateEngineSetting.data || "llm";
+  const listTranslationJobs = useListTranslation((s) => s.jobs);
+  const enqueueVisibleTranslations = useListTranslation((s) => s.enqueueVisible);
 
   const feeds = useQuery({ queryKey: ["feeds"], queryFn: api.listFeeds });
   const feedById = useMemo(() => {
@@ -367,6 +381,22 @@ export default function ArticleList({ onToast }: Props) {
   ];
 
   const vItems = virt.getVirtualItems();
+
+  useEffect(() => {
+    const visible = vItems
+      .filter((vi) => vi.index >= 0 && vi.index < items.length)
+      .slice(0, 16)
+      .map((vi) => items[vi.index])
+      .filter(Boolean);
+    enqueueVisibleTranslations(visible, targetLang, translateEngine);
+  }, [
+    enqueueVisibleTranslations,
+    items,
+    targetLang,
+    translateEngine,
+    virt.range?.startIndex,
+    virt.range?.endIndex,
+  ]);
   const showCount = t("articleList.countArticles", {
     count: items.length,
     suffix: browse.hasNextPage ? "+" : "",
@@ -548,8 +578,33 @@ export default function ArticleList({ onToast }: Props) {
                         </span>
                       )}
                     </div>
-                    <h3 className="art-title">{a.title}</h3>
-                    {a.snippet && <p className="art-snippet">{a.snippet}</p>}
+                    {(() => {
+                      const liveTranslation =
+                        listTranslationJobs[listTranslationKey(a.id, targetLang, translateEngine)];
+                      const liveTranslated =
+                        liveTranslation?.status === "done" &&
+                        (!!liveTranslation.title || !!liveTranslation.snippet);
+                      const hasListTranslation = liveTranslated;
+                      const title = liveTranslated ? liveTranslation.title || a.title : a.title;
+                      const snippet = liveTranslated
+                        ? liveTranslation.snippet || a.snippet
+                        : a.snippet;
+                      return (
+                        <>
+                          <h3 className="art-title" title={hasListTranslation ? a.title : undefined}>
+                            {title}
+                          </h3>
+                          {snippet && (
+                            <p
+                              className="art-snippet"
+                              title={hasListTranslation ? (a.snippet ?? undefined) : undefined}
+                            >
+                              {snippet}
+                            </p>
+                          )}
+                        </>
+                      );
+                    })()}
                   </div>
                 </div>
               );

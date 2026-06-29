@@ -5,6 +5,7 @@ import { imageBytes, type ImageBytesResponse } from "./lib/imageBytes";
 import type {
   AiEvent,
   ArticleDetail,
+  ArticlePreviewTranslation,
   ArticleQuery,
   ArticleSummary,
   DiscoveryResult,
@@ -178,6 +179,11 @@ export function aiTranslate(
   channel.onmessage = onEvent;
   return invoke<void>("ai_translate", { articleId, lang, engine, onEvent: channel });
 }
+
+/** Translate only the list preview fields for an article and persist them in the
+ *  preview cache. */
+export const translateArticlePreview = (articleId: number, lang: string, engine: string) =>
+  invoke<ArticlePreviewTranslation>("translate_article_preview", { articleId, lang, engine });
 
 // ── settings ──
 export const getSetting = (key: string) =>

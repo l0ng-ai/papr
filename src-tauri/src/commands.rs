@@ -847,6 +847,131 @@ pub enum TranslateEvent {
     Done { html: String },
 }
 
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArticlePreviewTranslation {
+    article_id: i64,
+    title: String,
+    snippet: String,
+    lang: String,
+    engine: String,
+}
+
+fn preview_translation_prompt(target: &str) -> String {
+    format!(
+        "You are a professional translator. Translate the text content of the \
+         HTML fragment into {target}.\n\n\
+         Rules:\n\
+         - Preserve the h1 and p tags exactly.\n\
+         - Translate only human-readable text.\n\
+         - Output only the translated HTML fragment: no preamble, no code fences."
+    )
+}
+
+fn escape_preview_text(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn preview_translation_html(title: &str, snippet: &str) -> String {
+    format!(
+        "<h1>{}</h1><p>{}</p>",
+        escape_preview_text(title),
+        escape_preview_text(snippet)
+    )
+}
+
+fn text_for_selector(fragment: &str, selector: &str) -> String {
+    let doc = scraper::Html::parse_fragment(fragment);
+    let selector = scraper::Selector::parse(selector).expect("static preview selector");
+    doc.select(&selector)
+        .next()
+        .map(|el| el.text().collect::<Vec<_>>().join(" "))
+        .unwrap_or_default()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Translate only the lightweight fields needed by the article list. This does
+/// not reuse `ai_translate`: the reader command translates full article HTML,
+/// whereas the list needs title + short body preview jobs that can be scheduled
+/// as rows enter the virtualized viewport.
+#[tauri::command]
+pub async fn translate_article_preview(
+    state: State<'_, AppState>,
+    article_id: i64,
+    lang: String,
+    engine: String,
+) -> AppResult<ArticlePreviewTranslation> {
+    let engine = if engine.trim().is_empty() {
+        "llm".to_string()
+    } else {
+        engine
+    };
+    let (title, snippet, sel, target) = {
+        let conn = state.read().await;
+        let target = if lang.trim().is_empty() {
+            translate_target_lang(&conn)
+        } else {
+            lang
+        };
+        if let Some((title, snippet)) =
+            db::get_preview_translation(&conn, article_id, &target, &engine)?
+        {
+            return Ok(ArticlePreviewTranslation {
+                article_id,
+                title,
+                snippet,
+                lang: target,
+                engine,
+            });
+        }
+        let (title, body) = db::article_preview_text(&conn, article_id)?;
+        (
+            title,
+            truncate(body.trim(), 280),
+            build_translate_selection(&conn, &engine)?,
+            target,
+        )
+    };
+    if title.trim().is_empty() && snippet.trim().is_empty() {
+        return Err(AppError::code("noArticleBody"));
+    }
+
+    let http = state.http();
+    let backend = translate::ready(&http, sel).await?;
+    let system = preview_translation_prompt(translate::language_name(&target));
+    let source = preview_translation_html(&title, &snippet);
+    let raw = backend.translate_batch(&http, &system, &source, &target).await?;
+    let clean = sanitize::sanitize(raw.trim(), None);
+    let translated_title = text_for_selector(&clean, "h1");
+    let translated_snippet = text_for_selector(&clean, "p");
+
+    {
+        let conn = state.db.lock().await;
+        db::set_preview_translation(
+            &conn,
+            article_id,
+            &translated_title,
+            &translated_snippet,
+            &target,
+            &engine,
+        )?;
+    }
+
+    Ok(ArticlePreviewTranslation {
+        article_id,
+        title: translated_title,
+        snippet: translated_snippet,
+        lang: target,
+        engine,
+    })
+}
+
 /// Translate one article's body into the configured target language, reporting
 /// progress per batch over `on_event`. The body is split into batches of whole
 /// blocks (so long articles and the per-request token cap are both handled) and
