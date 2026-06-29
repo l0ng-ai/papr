@@ -79,6 +79,8 @@ importers:
         specifier: ^3.2.4
         version: 3.2.4
 
+  extension: {}
+
 packages:
 
   '@babel/code-frame@7.29.0':
