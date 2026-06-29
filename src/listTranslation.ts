@@ -92,14 +92,18 @@ export const useListTranslation = create<ListTranslationState>((set, get) => {
       const current = get().jobs;
       for (const article of articles) {
         const key = keyFor(article.id, targetLang, engine);
-        if (current[key]) continue;
+        const existing = current[key];
+        if (existing && existing.status !== "error") continue;
         additions[key] = {
+          ...(existing ?? {
+            articleId: article.id,
+            title: null,
+            snippet: null,
+          }),
           status: "queued",
-          articleId: article.id,
           lang: targetLang,
           engine,
-          title: null,
-          snippet: null,
+          error: undefined,
         };
         changed = true;
       }

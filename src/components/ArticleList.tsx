@@ -58,6 +58,8 @@ export default function ArticleList({ onToast }: Props) {
   });
   const targetLang = translateSetting.data || i18n.language;
   const translateEngine = translateEngineSetting.data || "llm";
+  const translationSettingsReady =
+    translateSetting.isFetched && translateEngineSetting.isFetched;
   const listTranslateMode =
     listTranslateModeSetting.data === "auto" ? "auto" : "off";
   const listTranslationJobs = useListTranslation((s) => s.jobs);
@@ -398,6 +400,7 @@ export default function ArticleList({ onToast }: Props) {
 
   useEffect(() => {
     if (listTranslateMode !== "auto") return;
+    if (!translationSettingsReady) return;
     const visible = vItems
       .filter((vi) => vi.index >= 0 && vi.index < items.length)
       .slice(0, 16)
@@ -408,6 +411,7 @@ export default function ArticleList({ onToast }: Props) {
     enqueueVisibleTranslations,
     items,
     listTranslateMode,
+    translationSettingsReady,
     targetLang,
     translateEngine,
     virt.range?.startIndex,

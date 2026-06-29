@@ -576,6 +576,8 @@
     "noArticleUrl": "この記事には元記事の URL がありません",
     "noArticles": "要約できる記事がまだありません",
     "noArticleBody": "この記事には要約できる本文がありません",
+    "emptyPreviewTranslation": "プレビュー翻訳の結果が空でした",
+    "articlePreviewChanged": "プレビュー翻訳中に記事の内容が変わりました",
     "noExtractableContent": "そのページから本文を抽出できませんでした",
     "freshrssLoginFailed": "ログインに失敗しました。サーバー URL・ユーザー名・パスワードを確認してください",
     "freshrssNoToken": "サーバーが認証トークンを返しませんでした",

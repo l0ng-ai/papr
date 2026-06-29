@@ -950,9 +950,17 @@ pub async fn translate_article_preview(
     let clean = sanitize::sanitize(raw.trim(), None);
     let translated_title = text_for_selector(&clean, "h1");
     let translated_snippet = text_for_selector(&clean, "p");
+    if translated_title.trim().is_empty() && translated_snippet.trim().is_empty() {
+        return Err(AppError::code("emptyPreviewTranslation"));
+    }
 
     {
         let conn = state.db.lock().await;
+        let (current_title, current_body) = db::article_preview_text(&conn, article_id)?;
+        let current_snippet = truncate(current_body.trim(), 280);
+        if current_title != title || current_snippet != snippet {
+            return Err(AppError::code("articlePreviewChanged"));
+        }
         db::set_preview_translation(
             &conn,
             article_id,

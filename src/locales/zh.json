@@ -576,6 +576,8 @@
     "noArticleUrl": "这篇文章没有原文链接",
     "noArticles": "还没有可供生成摘要的文章",
     "noArticleBody": "这篇文章没有可供生成摘要的正文",
+    "emptyPreviewTranslation": "列表预览翻译结果为空",
+    "articlePreviewChanged": "文章内容在预览翻译过程中发生了变化",
     "noExtractableContent": "未能从该页面提取到正文",
     "freshrssLoginFailed": "登录失败：请检查服务器地址、用户名与密码",
     "freshrssNoToken": "服务器未返回认证令牌",
