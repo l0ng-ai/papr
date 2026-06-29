@@ -1,4 +1,4 @@
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -29,6 +29,7 @@ interface Hover {
 
 export default function ArticleList({ onToast }: Props) {
   const { t, i18n } = useTranslation();
+  const qc = useQueryClient();
   const actions = useArticleActions(toast.error);
   const query = useUi((s) => s.query);
   const queryLabel = useUi((s) => s.queryLabel);
@@ -51,8 +52,14 @@ export default function ArticleList({ onToast }: Props) {
     queryKey: ["setting", "translate_engine"],
     queryFn: () => api.getSetting("translate_engine"),
   });
+  const listTranslateModeSetting = useQuery({
+    queryKey: ["setting", "list_translate_mode"],
+    queryFn: () => api.getSetting("list_translate_mode"),
+  });
   const targetLang = translateSetting.data || i18n.language;
   const translateEngine = translateEngineSetting.data || "llm";
+  const listTranslateMode =
+    listTranslateModeSetting.data === "auto" ? "auto" : "off";
   const listTranslationJobs = useListTranslation((s) => s.jobs);
   const enqueueVisibleTranslations = useListTranslation((s) => s.enqueueVisible);
 
@@ -314,6 +321,13 @@ export default function ArticleList({ onToast }: Props) {
   };
 
   const onHover = (a: ArticleSummary, e: React.MouseEvent) => {
+    if (
+      e.target instanceof Element &&
+      e.target.closest("[data-no-hover-preview]")
+    ) {
+      leaveHover();
+      return;
+    }
     window.clearTimeout(hoverTimer.current);
     // Hold the row element, not a rect snapshot: the preview only appears
     // 650ms later, and the list is scrollable — measuring at hover time would
@@ -383,6 +397,7 @@ export default function ArticleList({ onToast }: Props) {
   const vItems = virt.getVirtualItems();
 
   useEffect(() => {
+    if (listTranslateMode !== "auto") return;
     const visible = vItems
       .filter((vi) => vi.index >= 0 && vi.index < items.length)
       .slice(0, 16)
@@ -392,6 +407,7 @@ export default function ArticleList({ onToast }: Props) {
   }, [
     enqueueVisibleTranslations,
     items,
+    listTranslateMode,
     targetLang,
     translateEngine,
     virt.range?.startIndex,
@@ -419,6 +435,15 @@ export default function ArticleList({ onToast }: Props) {
     openArticle(items[next].id);
   };
 
+  const setListTranslateMode = (mode: "off" | "auto") => {
+    api
+      .setSetting("list_translate_mode", mode)
+      .then(() => {
+        qc.setQueryData(["setting", "list_translate_mode"], mode);
+      })
+      .catch((e) => reportError(e));
+  };
+
   return (
     <div className="list" role="region" aria-labelledby="article-list-title">
       <div className="list-header" {...(isMac && { "data-tauri-drag-region": true })}>
@@ -429,7 +454,41 @@ export default function ArticleList({ onToast }: Props) {
           query.kind === "tag"
             ? queryLabel
             : t(`smart.${query.kind}`)}
-          <span className="count">{browse.isLoading ? t("common.loading") : showCount}</span>
+          <span className="list-title-meta">
+            <span className="count">
+              {browse.isLoading ? t("common.loading") : showCount}
+            </span>
+            <span
+              className="list-translate-toggle"
+              role="group"
+              aria-label={t("articleList.translateMode")}
+            >
+              <button
+                className={`list-translate-btn ${
+                  listTranslateMode === "off" ? "on" : ""
+                }`}
+                type="button"
+                title={t("articleList.translateOff")}
+                aria-pressed={listTranslateMode === "off"}
+                onClick={() => setListTranslateMode("off")}
+              >
+                <Icon name="text" size={11} />
+                {t("articleList.translateOffShort")}
+              </button>
+              <button
+                className={`list-translate-btn ${
+                  listTranslateMode === "auto" ? "on" : ""
+                }`}
+                type="button"
+                title={t("articleList.translateAuto")}
+                aria-pressed={listTranslateMode === "auto"}
+                onClick={() => setListTranslateMode("auto")}
+              >
+                <Icon name="sparkle" size={11} />
+                {t("articleList.translateAutoShort")}
+              </button>
+            </span>
+          </span>
         </h1>
         <div className="list-meta">
           <button
@@ -518,6 +577,27 @@ export default function ArticleList({ onToast }: Props) {
             {vItems.map((vi) => {
               const a = items[vi.index];
               const feed = feedById[a.feedId];
+              const liveTranslation =
+                listTranslationJobs[listTranslationKey(a.id, targetLang, translateEngine)];
+              const showListTranslation = listTranslateMode === "auto";
+              const liveTranslated =
+                liveTranslation?.status === "done" &&
+                (!!liveTranslation.title || !!liveTranslation.snippet);
+              const hasListTranslation = showListTranslation && liveTranslated;
+              const isTranslating =
+                showListTranslation &&
+                (liveTranslation?.status === "queued" ||
+                  liveTranslation?.status === "translating");
+              const translateError =
+                showListTranslation && liveTranslation?.status === "error"
+                  ? liveTranslation.error || t("error.unknown")
+                  : null;
+              const translatedTitle = hasListTranslation
+                ? liveTranslation.title || a.title
+                : a.title;
+              const translatedSnippet = hasListTranslation
+                ? liveTranslation.snippet || a.snippet
+                : a.snippet;
               return (
                 // Key by the virtual slot, not the article id. The window of
                 // rendered rows is a fixed band that slides as you scroll, so
@@ -567,6 +647,29 @@ export default function ArticleList({ onToast }: Props) {
                       )}
                       <span className="art-sep">·</span>
                       <span className="art-time">{relTime(a.publishedAt)}</span>
+                      {(isTranslating || translateError) && (
+                        <span
+                          className={`art-translate-status ${
+                            translateError ? "error" : "loading"
+                          }`}
+                          data-no-hover-preview
+                          title={
+                            translateError ||
+                            t("articleList.translateStatusLoading")
+                          }
+                          aria-label={
+                            translateError ||
+                            t("articleList.translateStatusLoading")
+                          }
+                          onMouseEnter={leaveHover}
+                        >
+                          <Icon
+                            name={translateError ? "alert" : "refresh"}
+                            size={11}
+                            className={translateError ? undefined : "spinning"}
+                          />
+                        </span>
+                      )}
                       {a.isStarred && (
                         <span className="art-star">
                           <Icon name="star-fill" size={12} />
@@ -578,33 +681,17 @@ export default function ArticleList({ onToast }: Props) {
                         </span>
                       )}
                     </div>
-                    {(() => {
-                      const liveTranslation =
-                        listTranslationJobs[listTranslationKey(a.id, targetLang, translateEngine)];
-                      const liveTranslated =
-                        liveTranslation?.status === "done" &&
-                        (!!liveTranslation.title || !!liveTranslation.snippet);
-                      const hasListTranslation = liveTranslated;
-                      const title = liveTranslated ? liveTranslation.title || a.title : a.title;
-                      const snippet = liveTranslated
-                        ? liveTranslation.snippet || a.snippet
-                        : a.snippet;
-                      return (
-                        <>
-                          <h3 className="art-title" title={hasListTranslation ? a.title : undefined}>
-                            {title}
-                          </h3>
-                          {snippet && (
-                            <p
-                              className="art-snippet"
-                              title={hasListTranslation ? (a.snippet ?? undefined) : undefined}
-                            >
-                              {snippet}
-                            </p>
-                          )}
-                        </>
-                      );
-                    })()}
+                    <h3 className="art-title" title={hasListTranslation ? a.title : undefined}>
+                      {translatedTitle}
+                    </h3>
+                    {translatedSnippet && (
+                      <p
+                        className="art-snippet"
+                        title={hasListTranslation ? (a.snippet ?? undefined) : undefined}
+                      >
+                        {translatedSnippet}
+                      </p>
+                    )}
                   </div>
                 </div>
               );

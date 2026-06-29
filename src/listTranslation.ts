@@ -4,6 +4,7 @@
 
 import { create } from "zustand";
 import * as api from "./api";
+import { errorText } from "./lib/errors";
 import { reportError } from "./toast";
 import type { ArticlePreviewTranslation, ArticleSummary } from "./types";
 
@@ -65,10 +66,11 @@ export const useListTranslation = create<ListTranslationState>((set, get) => {
         }));
       })
       .catch((err) => {
+        const message = errorText(err);
         set((s) => ({
           jobs: {
             ...s.jobs,
-            [nextKey]: { ...s.jobs[nextKey], status: "error", error: String(err) },
+            [nextKey]: { ...s.jobs[nextKey], status: "error", error: message },
           },
         }));
         reportError(err);
