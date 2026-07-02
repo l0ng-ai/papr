@@ -113,7 +113,8 @@ fn install_claude(bin: &str) -> Result<String, String> {
     let file = dir.join("settings.json");
 
     let mut root: serde_json::Value = if file.exists() {
-        let text = std::fs::read_to_string(&file).map_err(|e| format!("read settings.json: {e}"))?;
+        let text =
+            std::fs::read_to_string(&file).map_err(|e| format!("read settings.json: {e}"))?;
         serde_json::from_str(&text).map_err(|e| format!("settings.json is not valid JSON: {e}"))?
     } else {
         serde_json::json!({})
@@ -132,7 +133,9 @@ fn install_claude(bin: &str) -> Result<String, String> {
         .ok_or("hooks is not an object")?
         .entry("SessionStart")
         .or_insert_with(|| serde_json::json!([]));
-    let arr = sessions.as_array_mut().ok_or("SessionStart is not an array")?;
+    let arr = sessions
+        .as_array_mut()
+        .ok_or("SessionStart is not an array")?;
 
     // Find an existing papr hook (command basename == "papr") to repair in place.
     let is_papr = |cmd: &str| cmd == "papr" || cmd.ends_with("/papr");
@@ -187,7 +190,9 @@ fn install_codex(bin: &str) -> Result<String, String> {
         .ok_or("hooks.json root is not an object")?
         .entry("SessionStart")
         .or_insert_with(|| serde_json::json!([]));
-    let arr = sessions.as_array_mut().ok_or("SessionStart is not an array")?;
+    let arr = sessions
+        .as_array_mut()
+        .ok_or("SessionStart is not an array")?;
     let is_papr = |cmd: &str| cmd == "papr" || cmd.ends_with("/papr");
     let mut found = false;
     for h in arr.iter_mut() {
@@ -316,8 +321,14 @@ mod tests {
 
     #[test]
     fn empty_config_gets_a_clean_features_section() {
-        assert_eq!(ensure_codex_hooks(""), Some("[features]\nhooks = true\n".to_string()));
-        assert_eq!(ensure_codex_hooks("   \n"), Some("[features]\nhooks = true\n".to_string()));
+        assert_eq!(
+            ensure_codex_hooks(""),
+            Some("[features]\nhooks = true\n".to_string())
+        );
+        assert_eq!(
+            ensure_codex_hooks("   \n"),
+            Some("[features]\nhooks = true\n".to_string())
+        );
     }
 
     #[test]

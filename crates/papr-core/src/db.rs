@@ -11,8 +11,9 @@ use std::sync::LazyLock;
 
 /// Append-only schema migrations. Never edit a shipped migration — add a new one.
 static MIGRATIONS: LazyLock<Migrations> = LazyLock::new(|| {
-    Migrations::new(vec![M::up(
-        r#"
+    Migrations::new(vec![
+        M::up(
+            r#"
         CREATE TABLE folders (
             id        INTEGER PRIMARY KEY,
             name      TEXT NOT NULL,
@@ -232,9 +233,7 @@ static MIGRATIONS: LazyLock<Migrations> = LazyLock::new(|| {
         // manual rename on the very next poll. This flag lets `update_feed_meta`
         // leave a user-named feed's title alone while still refreshing every
         // other piece of feed metadata.
-        M::up(
-            "ALTER TABLE feeds ADD COLUMN custom_title INTEGER NOT NULL DEFAULT 0;",
-        ),
+        M::up("ALTER TABLE feeds ADD COLUMN custom_title INTEGER NOT NULL DEFAULT 0;"),
         // v14 — cache a translated copy of the article body. `translated_lang`
         // records the target language the cache was produced for, so a later
         // change to the translation-target setting is detected as a cache miss.
@@ -248,9 +247,7 @@ static MIGRATIONS: LazyLock<Migrations> = LazyLock::new(|| {
         // v16 — per-feed auto-translate. 0 (the default) shows the original
         // text; 1 translates an article into the configured target language the
         // moment it is opened.
-        M::up(
-            "ALTER TABLE feeds ADD COLUMN auto_translate INTEGER NOT NULL DEFAULT 0;",
-        ),
+        M::up("ALTER TABLE feeds ADD COLUMN auto_translate INTEGER NOT NULL DEFAULT 0;"),
     ])
 });
 
@@ -320,6 +317,14 @@ pub fn list_folders(conn: &Connection) -> AppResult<Vec<Folder>> {
         })?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
+}
+
+pub fn folder_name(conn: &Connection, id: i64) -> AppResult<Option<String>> {
+    Ok(conn
+        .query_row("SELECT name FROM folders WHERE id = ?1", params![id], |r| {
+            r.get(0)
+        })
+        .optional()?)
 }
 
 /// Create a folder, or return the existing one when a folder with the same
@@ -397,7 +402,10 @@ pub fn rename_folder(conn: &Connection, id: i64, name: &str) -> AppResult<()> {
     if clash.is_some() {
         return Err(AppError::code("folderNameExists"));
     }
-    conn.execute("UPDATE folders SET name = ?2 WHERE id = ?1", params![id, name])?;
+    conn.execute(
+        "UPDATE folders SET name = ?2 WHERE id = ?1",
+        params![id, name],
+    )?;
     Ok(())
 }
 
@@ -410,9 +418,21 @@ pub fn delete_folder(conn: &Connection, id: i64) -> AppResult<()> {
 
 pub fn find_feed_by_url(conn: &Connection, url: &str) -> AppResult<Option<i64>> {
     Ok(conn
-        .query_row("SELECT id FROM feeds WHERE feed_url = ?1", params![url], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT id FROM feeds WHERE feed_url = ?1",
+            params![url],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
+pub fn feed_url(conn: &Connection, id: i64) -> AppResult<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT feed_url FROM feeds WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
         .optional()?)
 }
 
@@ -428,7 +448,14 @@ pub fn insert_feed(
     conn.execute(
         "INSERT INTO feeds(feed_url, site_url, title, description, source_type, folder_id)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![feed_url, site_url, title, description, source_type.as_str(), folder_id],
+        params![
+            feed_url,
+            site_url,
+            title,
+            description,
+            source_type.as_str(),
+            folder_id
+        ],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -522,10 +549,7 @@ pub const REFRESH_OFF_MINUTES: i64 = 525_600;
 /// whose effective interval is the "off" sentinel are excluded entirely. Used
 /// by the background scheduler; the manual refresh still fetches every feed via
 /// `feeds_to_refresh`.
-pub fn feeds_due_for_refresh(
-    conn: &Connection,
-    global_min: i64,
-) -> AppResult<Vec<FeedToRefresh>> {
+pub fn feeds_due_for_refresh(conn: &Connection, global_min: i64) -> AppResult<Vec<FeedToRefresh>> {
     let mut stmt = conn.prepare(
         "SELECT id, feed_url, etag, last_modified FROM feeds
          WHERE source_type != 'newsletter'
@@ -715,6 +739,18 @@ pub fn feed_urls_for_sync(conn: &Connection) -> AppResult<Vec<String>> {
     Ok(rows)
 }
 
+pub fn feed_sync_targets(conn: &Connection) -> AppResult<Vec<(String, Option<String>)>> {
+    let mut stmt = conn.prepare(
+        "SELECT f.feed_url, fo.name
+         FROM feeds f LEFT JOIN folders fo ON fo.id = f.folder_id
+         WHERE f.source_type != 'newsletter' AND f.feed_url <> ''",
+    )?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 /// Find a folder by name, creating it if absent. Used during OPML import.
 /// Resolve a folder name to its id, creating the folder when absent. Used by
 /// OPML import to attach imported feeds to their folders. `create_folder` is
@@ -726,7 +762,10 @@ pub fn folder_id_by_name(conn: &Connection, name: &str) -> AppResult<i64> {
 }
 
 pub fn move_feed(conn: &Connection, id: i64, folder_id: Option<i64>) -> AppResult<()> {
-    conn.execute("UPDATE feeds SET folder_id = ?2 WHERE id = ?1", params![id, folder_id])?;
+    conn.execute(
+        "UPDATE feeds SET folder_id = ?2 WHERE id = ?1",
+        params![id, folder_id],
+    )?;
     Ok(())
 }
 
@@ -738,6 +777,19 @@ pub fn feed_folder_id(conn: &Connection, id: i64) -> AppResult<Option<i64>> {
             "SELECT folder_id FROM feeds WHERE id = ?1",
             params![id],
             |r| r.get::<_, Option<i64>>(0),
+        )
+        .optional()?
+        .flatten())
+}
+
+pub fn feed_folder_name(conn: &Connection, id: i64) -> AppResult<Option<String>> {
+    Ok(conn
+        .query_row(
+            "SELECT fo.name
+             FROM feeds f LEFT JOIN folders fo ON fo.id = f.folder_id
+             WHERE f.id = ?1",
+            params![id],
+            |r| r.get::<_, Option<String>>(0),
         )
         .optional()?
         .flatten())
@@ -761,6 +813,34 @@ pub fn rename_feed(conn: &Connection, id: i64, title: &str) -> AppResult<()> {
     conn.execute(
         "UPDATE feeds SET title = ?2, custom_title = 1 WHERE id = ?1",
         params![id, title],
+    )?;
+    Ok(())
+}
+
+/// Change a feed's upstream URL. Existing articles stay attached to the feed;
+/// HTTP validators and fetch errors are cleared because they belong to the old
+/// URL.
+pub fn update_feed_url(
+    conn: &Connection,
+    id: i64,
+    feed_url: &str,
+    source_type: SourceType,
+) -> AppResult<()> {
+    let feed_url = feed_url.trim();
+    if feed_url.is_empty() {
+        return Err(AppError::code("emptyFeedUrl"));
+    }
+    if let Some(existing) = find_feed_by_url(conn, feed_url)? {
+        if existing != id {
+            return Err(AppError::code("alreadySubscribed"));
+        }
+    }
+    conn.execute(
+        "UPDATE feeds
+         SET feed_url = ?2, source_type = ?3, etag = NULL, last_modified = NULL,
+             fetch_error = NULL, last_fetched_at = NULL
+         WHERE id = ?1",
+        params![id, feed_url, source_type.as_str()],
     )?;
     Ok(())
 }
@@ -796,7 +876,14 @@ pub fn insert_newsletter_source(
     tx.execute(
         "INSERT INTO newsletter_sources(feed_id, host, port, username, password, folder)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        params![feed_id, cfg.host, cfg.port, cfg.username, cfg.password, cfg.folder],
+        params![
+            feed_id,
+            cfg.host,
+            cfg.port,
+            cfg.username,
+            cfg.password,
+            cfg.folder
+        ],
     )?;
     tx.commit()?;
     Ok(feed_id)
@@ -1051,9 +1138,18 @@ pub fn upsert_article(
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
          ON CONFLICT(feed_id, guid) DO NOTHING",
         params![
-            feed_id, a.guid, a.url, a.title, a.author, a.summary,
-            a.content_html, a.body_text, a.image_url, a.published_at,
-            start_read, start_starred
+            feed_id,
+            a.guid,
+            a.url,
+            a.title,
+            a.author,
+            a.summary,
+            a.content_html,
+            a.body_text,
+            a.image_url,
+            a.published_at,
+            start_read,
+            start_starred
         ],
     )?;
     if n == 0 {
@@ -1101,9 +1197,8 @@ fn article_filter(query: &ArticleQuery, unread_only: bool) -> (Vec<String>, Vec<
             binds.push(Value::Integer(*id));
         }
         ArticleQuery::Tag(id) => {
-            where_clauses.push(
-                "a.id IN (SELECT article_id FROM article_tags WHERE tag_id = ?)".into(),
-            );
+            where_clauses
+                .push("a.id IN (SELECT article_id FROM article_tags WHERE tag_id = ?)".into());
             binds.push(Value::Integer(*id));
         }
     }
@@ -1252,7 +1347,11 @@ pub fn card_image_backfill_scan(conn: &Connection) -> AppResult<Vec<(i64, String
         let img = content_html
             .as_deref()
             .and_then(crate::sanitize::first_image)
-            .or_else(|| extracted_html.as_deref().and_then(crate::sanitize::first_image));
+            .or_else(|| {
+                extracted_html
+                    .as_deref()
+                    .and_then(crate::sanitize::first_image)
+            });
         if let Some(img) = img {
             out.push((id, img));
         }
@@ -1406,17 +1505,26 @@ pub fn article_text(conn: &Connection, id: i64) -> AppResult<(String, String)> {
 }
 
 pub fn set_read(conn: &Connection, id: i64, read: bool) -> AppResult<()> {
-    conn.execute("UPDATE articles SET is_read = ?2 WHERE id = ?1", params![id, read])?;
+    conn.execute(
+        "UPDATE articles SET is_read = ?2 WHERE id = ?1",
+        params![id, read],
+    )?;
     Ok(())
 }
 
 pub fn set_starred(conn: &Connection, id: i64, starred: bool) -> AppResult<()> {
-    conn.execute("UPDATE articles SET is_starred = ?2 WHERE id = ?1", params![id, starred])?;
+    conn.execute(
+        "UPDATE articles SET is_starred = ?2 WHERE id = ?1",
+        params![id, starred],
+    )?;
     Ok(())
 }
 
 pub fn set_read_later(conn: &Connection, id: i64, v: bool) -> AppResult<()> {
-    conn.execute("UPDATE articles SET read_later = ?2 WHERE id = ?1", params![id, v])?;
+    conn.execute(
+        "UPDATE articles SET read_later = ?2 WHERE id = ?1",
+        params![id, v],
+    )?;
     Ok(())
 }
 
@@ -1450,7 +1558,10 @@ pub fn set_extracted_html(
 }
 
 pub fn set_ai_summary(conn: &Connection, id: i64, summary: &str) -> AppResult<()> {
-    conn.execute("UPDATE articles SET ai_summary = ?2 WHERE id = ?1", params![id, summary])?;
+    conn.execute(
+        "UPDATE articles SET ai_summary = ?2 WHERE id = ?1",
+        params![id, summary],
+    )?;
     Ok(())
 }
 
@@ -1489,8 +1600,7 @@ pub fn mark_all_read(
             Some(*id),
         ),
     };
-    let bind: Vec<&dyn rusqlite::ToSql> =
-        id.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
+    let bind: Vec<&dyn rusqlite::ToSql> = id.iter().map(|v| v as &dyn rusqlite::ToSql).collect();
 
     // Queue + flip together: the sync-queue rows and the is_read change must
     // commit atomically, or a mid-way failure leaves the queue claiming a
@@ -1638,7 +1748,10 @@ pub fn rename_tag(conn: &Connection, id: i64, name: &str) -> AppResult<()> {
 }
 
 pub fn set_tag_color(conn: &Connection, id: i64, color: &str) -> AppResult<()> {
-    conn.execute("UPDATE tags SET color = ?2 WHERE id = ?1", params![id, color])?;
+    conn.execute(
+        "UPDATE tags SET color = ?2 WHERE id = ?1",
+        params![id, color],
+    )?;
     Ok(())
 }
 
@@ -1719,8 +1832,9 @@ const RULE_COLS: &str = "id, name, enabled, feed_id, field, query, action, posit
 
 /// Every rule, enabled or not, ordered for the settings list.
 pub fn list_rules(conn: &Connection) -> AppResult<Vec<Rule>> {
-    let mut stmt =
-        conn.prepare(&format!("SELECT {RULE_COLS} FROM rules ORDER BY position, id"))?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {RULE_COLS} FROM rules ORDER BY position, id"
+    ))?;
     let rows = stmt
         .query_map([], row_to_rule)?
         .collect::<Result<Vec<_>, _>>()?;
@@ -1833,7 +1947,9 @@ fn rule_match_where(
             .replace('%', "\\%")
             .replace('_', "\\_");
         for col in cols {
-            ors.push(format!("unicode_lower(COALESCE({col},'')) LIKE ? ESCAPE '\\'"));
+            ors.push(format!(
+                "unicode_lower(COALESCE({col},'')) LIKE ? ESCAPE '\\'"
+            ));
             binds.push(Value::Text(format!("%{escaped}%")));
         }
     }
@@ -2032,9 +2148,11 @@ pub fn delete_highlight(conn: &Connection, id: i64) -> AppResult<()> {
 
 pub fn get_setting(conn: &Connection, key: &str) -> AppResult<Option<String>> {
     Ok(conn
-        .query_row("SELECT value FROM settings WHERE key = ?1", params![key], |r| {
-            r.get(0)
-        })
+        .query_row(
+            "SELECT value FROM settings WHERE key = ?1",
+            params![key],
+            |r| r.get(0),
+        )
         .optional()?)
 }
 
@@ -2146,7 +2264,11 @@ pub fn reset_settings(conn: &Connection) -> AppResult<()> {
 }
 
 pub fn count_unread(conn: &Connection) -> AppResult<i64> {
-    Ok(conn.query_row("SELECT COUNT(*) FROM articles WHERE is_read = 0", [], |r| r.get(0))?)
+    Ok(
+        conn.query_row("SELECT COUNT(*) FROM articles WHERE is_read = 0", [], |r| {
+            r.get(0)
+        })?,
+    )
 }
 
 /// Unread article count for a single feed — the same expression `list_feeds`
@@ -2163,9 +2285,11 @@ pub fn count_feed_unread(conn: &Connection, feed_id: i64) -> AppResult<i64> {
 
 /// Timestamp of the most recent successful feed fetch, if any.
 pub fn latest_fetch(conn: &Connection) -> AppResult<Option<String>> {
-    Ok(conn.query_row("SELECT MAX(last_fetched_at) FROM feeds", [], |r| {
-        r.get::<_, Option<String>>(0)
-    })?)
+    Ok(
+        conn.query_row("SELECT MAX(last_fetched_at) FROM feeds", [], |r| {
+            r.get::<_, Option<String>>(0)
+        })?,
+    )
 }
 
 // ─────────────────────────── sync ───────────────────────────
@@ -2176,6 +2300,21 @@ pub fn article_id_by_url(conn: &Connection, url: &str) -> AppResult<Option<i64>>
         .query_row(
             "SELECT id FROM articles WHERE url = ?1 LIMIT 1",
             params![url],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
+/// Local article id for a feed-scoped GUID.
+pub fn article_id_by_feed_guid(
+    conn: &Connection,
+    feed_id: i64,
+    guid: &str,
+) -> AppResult<Option<i64>> {
+    Ok(conn
+        .query_row(
+            "SELECT id FROM articles WHERE feed_id = ?1 AND guid = ?2 LIMIT 1",
+            params![feed_id, guid],
             |r| r.get(0),
         )
         .optional()?)
@@ -2203,13 +2342,18 @@ pub fn set_sync_state(
     Ok(())
 }
 
+/// Drop queued local state for an article once the remote server has been
+/// accepted as the source of truth.
+pub fn clear_sync_queue_for_article(conn: &Connection, article_id: i64) -> AppResult<()> {
+    conn.execute(
+        "DELETE FROM sync_queue WHERE article_id = ?1",
+        params![article_id],
+    )?;
+    Ok(())
+}
+
 /// Queue a local read/starred change to push on the next sync.
-pub fn enqueue_sync(
-    conn: &Connection,
-    article_id: i64,
-    field: &str,
-    value: bool,
-) -> AppResult<()> {
+pub fn enqueue_sync(conn: &Connection, article_id: i64, field: &str, value: bool) -> AppResult<()> {
     conn.execute(
         "INSERT INTO sync_queue(article_id, field, value) VALUES (?1, ?2, ?3)
          ON CONFLICT(article_id, field) DO UPDATE SET value = excluded.value",
@@ -2390,8 +2534,13 @@ mod tests {
     #[test]
     fn set_extracted_html_backfills_missing_image_url() {
         let (conn, id) = test_db();
-        set_extracted_html(&conn, id, "<p>full text</p>", Some("https://ex.com/lead.jpg"))
-            .unwrap();
+        set_extracted_html(
+            &conn,
+            id,
+            "<p>full text</p>",
+            Some("https://ex.com/lead.jpg"),
+        )
+        .unwrap();
 
         let after = get_article(&conn, id).unwrap();
         assert_eq!(after.extracted_html.as_deref(), Some("<p>full text</p>"));
@@ -2407,8 +2556,13 @@ mod tests {
         )
         .unwrap();
 
-        set_extracted_html(&conn, id, "<p>full text</p>", Some("https://ex.com/lead.jpg"))
-            .unwrap();
+        set_extracted_html(
+            &conn,
+            id,
+            "<p>full text</p>",
+            Some("https://ex.com/lead.jpg"),
+        )
+        .unwrap();
 
         let after = get_article(&conn, id).unwrap();
         assert_eq!(after.image_url.as_deref(), Some("https://ex.com/feed.jpg"));
@@ -2426,7 +2580,10 @@ mod tests {
         .unwrap();
 
         let updates = card_image_backfill_scan(&conn).unwrap();
-        assert_eq!(updates, vec![(id, "https://ex.com/from-extracted.jpg".into())]);
+        assert_eq!(
+            updates,
+            vec![(id, "https://ex.com/from-extracted.jpg".into())]
+        );
     }
 
     #[test]
@@ -2492,9 +2649,11 @@ mod tests {
             .query_row("SELECT id FROM feeds", [], |r| r.get(0))
             .unwrap();
         let kind = |c: &Connection| -> String {
-            c.query_row("SELECT source_type FROM feeds WHERE id = ?1", params![feed_id], |r| {
-                r.get(0)
-            })
+            c.query_row(
+                "SELECT source_type FROM feeds WHERE id = ?1",
+                params![feed_id],
+                |r| r.get(0),
+            )
             .unwrap()
         };
         // The test feed starts generic.
@@ -2541,7 +2700,9 @@ mod tests {
         assert_eq!(exported.len(), 1);
         assert_eq!(exported[0].1, "https://example.com/feed.xml");
         assert!(
-            !exported.iter().any(|(_, url, _)| url.starts_with("imap://")),
+            !exported
+                .iter()
+                .any(|(_, url, _)| url.starts_with("imap://")),
             "no synthetic imap:// url should reach the OPML"
         );
     }
@@ -2549,8 +2710,11 @@ mod tests {
     #[test]
     fn insert_and_list_highlight() {
         let (conn, aid) = test_db();
-        let id = insert_highlight(&conn, &hl(aid, "quoted text", "pre", "suf", 12, "yellow", ""))
-            .unwrap();
+        let id = insert_highlight(
+            &conn,
+            &hl(aid, "quoted text", "pre", "suf", 12, "yellow", ""),
+        )
+        .unwrap();
         let all = list_highlights(&conn, aid).unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].id, id);
@@ -2675,8 +2839,20 @@ mod tests {
         let feed_id: i64 = conn
             .query_row("SELECT id FROM feeds", [], |r| r.get(0))
             .unwrap();
-        add_article(&conn, feed_id, "rust", "Rust news", "the borrow checker explained");
-        add_article(&conn, feed_id, "privacy", "Privacy law", "a new data privacy regulation");
+        add_article(
+            &conn,
+            feed_id,
+            "rust",
+            "Rust news",
+            "the borrow checker explained",
+        );
+        add_article(
+            &conn,
+            feed_id,
+            "privacy",
+            "Privacy law",
+            "a new data privacy regulation",
+        );
 
         // A natural-language question shares only *some* words with each
         // article. An AND join would require every word to appear and return
@@ -2697,7 +2873,9 @@ mod tests {
         let (conn, _aid) = test_db();
         // An all-stopword / punctuation-only question must not error and must
         // return nothing (the match-nothing `""` expression).
-        assert!(search_articles_for_rag(&conn, "??? !!!", 6).unwrap().is_empty());
+        assert!(search_articles_for_rag(&conn, "??? !!!", 6)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -2762,9 +2940,7 @@ mod tests {
             "a tag created after a middle delete must sort last, got {order:?}",
         );
         // The pre-existing tags keep their relative order.
-        assert!(
-            order.iter().position(|&x| x == a) < order.iter().position(|&x| x == zoo),
-        );
+        assert!(order.iter().position(|&x| x == a) < order.iter().position(|&x| x == zoo),);
     }
 
     #[test]
@@ -2889,14 +3065,13 @@ mod tests {
         };
 
         // Pre-marked read by the rule → not new.
-        assert!(!upsert_article(&conn, feed_id, &mk("g-ad", "Sponsored Item"), false, &rules)
-            .unwrap());
+        assert!(
+            !upsert_article(&conn, feed_id, &mk("g-ad", "Sponsored Item"), false, &rules).unwrap()
+        );
         // A plain article → genuinely new.
-        assert!(upsert_article(&conn, feed_id, &mk("g-ok", "Real Story"), false, &rules)
-            .unwrap());
+        assert!(upsert_article(&conn, feed_id, &mk("g-ok", "Real Story"), false, &rules).unwrap());
         // A duplicate guid → not new (no double count).
-        assert!(!upsert_article(&conn, feed_id, &mk("g-ok", "Real Story"), false, &rules)
-            .unwrap());
+        assert!(!upsert_article(&conn, feed_id, &mk("g-ok", "Real Story"), false, &rules).unwrap());
     }
 
     // ── rule matching ────────────────────────────────────────────────
@@ -2986,9 +3161,11 @@ mod tests {
 
         // Lower-case non-ASCII keywords must still count the article.
         for keyword in ["café", "zürich"] {
-            let (count, samples) =
-                preview_rule(&conn, None, "title", keyword).unwrap();
-            assert_eq!(count, 1, "keyword `{keyword}` should match the CAFÉ article");
+            let (count, samples) = preview_rule(&conn, None, "title", keyword).unwrap();
+            assert_eq!(
+                count, 1,
+                "keyword `{keyword}` should match the CAFÉ article"
+            );
             assert_eq!(samples.len(), 1);
         }
 
@@ -3049,9 +3226,11 @@ mod tests {
         let n = apply_rule_to_existing(&conn, None, "title", "java", "star").unwrap();
         assert_eq!(n, 2, "both Java/JavaScript titles get starred");
         let starred: i64 = conn
-            .query_row("SELECT COUNT(*) FROM articles WHERE is_starred = 1", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT COUNT(*) FROM articles WHERE is_starred = 1",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(starred, 2);
 
@@ -3095,7 +3274,10 @@ mod tests {
         let fts: i64 = conn
             .query_row("SELECT COUNT(*) FROM articles_fts", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(arts, fts, "FTS index stays in sync after a skip-rule delete");
+        assert_eq!(
+            arts, fts,
+            "FTS index stays in sync after a skip-rule delete"
+        );
     }
 
     #[test]
@@ -3127,7 +3309,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(starred_in_a, 0, "a feed-scoped rule must not touch other feeds");
+        assert_eq!(
+            starred_in_a, 0,
+            "a feed-scoped rule must not touch other feeds"
+        );
     }
 
     // ── mark_all_read sync queueing ──────────────────────────────────
@@ -3211,9 +3396,11 @@ mod tests {
         // outside a 30-day window, yet a string compare wrongly keeps it.
         let (conn, fixture) = test_db();
         let feed_id: i64 = conn
-            .query_row("SELECT feed_id FROM articles WHERE id = ?1", [fixture], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT feed_id FROM articles WHERE id = ?1",
+                [fixture],
+                |r| r.get(0),
+            )
             .unwrap();
 
         // The cutoff is "now" minus 30 days, kept at the current wall-clock
@@ -3253,10 +3440,16 @@ mod tests {
         let old = (chrono::Utc::now() - chrono::Duration::days(90)).to_rfc3339();
         insert_read_article_published(&conn, feed_id, "starred", &old);
         insert_read_article_published(&conn, feed_id, "later", &old);
-        conn.execute("UPDATE articles SET is_starred = 1 WHERE guid = 'starred'", [])
-            .unwrap();
-        conn.execute("UPDATE articles SET read_later = 1 WHERE guid = 'later'", [])
-            .unwrap();
+        conn.execute(
+            "UPDATE articles SET is_starred = 1 WHERE guid = 'starred'",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE articles SET read_later = 1 WHERE guid = 'later'",
+            [],
+        )
+        .unwrap();
 
         cleanup_old_articles(&conn, 30).unwrap();
         let kept: i64 = conn
@@ -3284,9 +3477,11 @@ mod tests {
         insert_read_article_published(&conn, feed_id, "plain", &old);
 
         let annotated_id: i64 = conn
-            .query_row("SELECT id FROM articles WHERE guid = 'annotated'", [], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT id FROM articles WHERE guid = 'annotated'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         insert_highlight(
             &conn,
@@ -3326,8 +3521,16 @@ mod tests {
         let now = chrono::Utc::now().to_rfc3339();
         insert_read_article_published(&conn, feed_id, "fresh", &now);
 
-        assert_eq!(cleanup_old_articles(&conn, 0).unwrap(), 0, "0 days deletes nothing");
-        assert_eq!(cleanup_old_articles(&conn, -30).unwrap(), 0, "negative days deletes nothing");
+        assert_eq!(
+            cleanup_old_articles(&conn, 0).unwrap(),
+            0,
+            "0 days deletes nothing"
+        );
+        assert_eq!(
+            cleanup_old_articles(&conn, -30).unwrap(),
+            0,
+            "negative days deletes nothing"
+        );
 
         let kept: i64 = conn
             .query_row(
@@ -3356,9 +3559,11 @@ mod tests {
         // string compare the dated row wins (the `T`); `datetime()` fixes it.
         let (conn, fixture) = test_db();
         let feed_id: i64 = conn
-            .query_row("SELECT feed_id FROM articles WHERE id = ?1", [fixture], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT feed_id FROM articles WHERE id = ?1",
+                [fixture],
+                |r| r.get(0),
+            )
             .unwrap();
         // Drop the bare fixture article so only the two controlled rows remain.
         conn.execute("DELETE FROM articles WHERE id = ?1", [fixture])
@@ -3444,9 +3649,11 @@ mod tests {
         .unwrap();
 
         let (title, site_url): (String, Option<String>) = conn
-            .query_row("SELECT title, site_url FROM feeds WHERE id = ?1", [feed_id], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
+            .query_row(
+                "SELECT title, site_url FROM feeds WHERE id = ?1",
+                [feed_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
             .unwrap();
         assert_eq!(
             title, "My Custom Name",
@@ -3470,7 +3677,9 @@ mod tests {
             .query_row("SELECT id FROM feeds", [], |r| r.get(0))
             .unwrap();
         let original: String = conn
-            .query_row("SELECT title FROM feeds WHERE id = ?1", [feed_id], |r| r.get(0))
+            .query_row("SELECT title FROM feeds WHERE id = ?1", [feed_id], |r| {
+                r.get(0)
+            })
             .unwrap();
 
         for blank in ["", "   ", "\t\n"] {
@@ -3488,8 +3697,14 @@ mod tests {
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .unwrap();
-        assert_eq!(title, original, "a rejected rename must not alter the title");
-        assert!(!custom, "a rejected rename must not set the custom_title flag");
+        assert_eq!(
+            title, original,
+            "a rejected rename must not alter the title"
+        );
+        assert!(
+            !custom,
+            "a rejected rename must not set the custom_title flag"
+        );
     }
 
     #[test]
@@ -3502,9 +3717,91 @@ mod tests {
             .unwrap();
         rename_feed(&conn, feed_id, "  Tech News  ").unwrap();
         let title: String = conn
-            .query_row("SELECT title FROM feeds WHERE id = ?1", [feed_id], |r| r.get(0))
+            .query_row("SELECT title FROM feeds WHERE id = ?1", [feed_id], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(title, "Tech News");
+    }
+
+    #[test]
+    fn update_feed_url_trims_and_clears_fetch_state() {
+        let (conn, _aid) = test_db();
+        let feed_id: i64 = conn
+            .query_row("SELECT id FROM feeds", [], |r| r.get(0))
+            .unwrap();
+        set_feed_fetch_state(
+            &conn,
+            feed_id,
+            Some("old-etag"),
+            Some("old-lm"),
+            Some("old error"),
+        )
+        .unwrap();
+
+        update_feed_url(
+            &conn,
+            feed_id,
+            "  https://example.org/new.xml  ",
+            SourceType::Rss,
+        )
+        .unwrap();
+
+        let row: (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ) = conn
+            .query_row(
+                "SELECT feed_url, etag, last_modified, fetch_error, last_fetched_at
+                 FROM feeds WHERE id = ?1",
+                [feed_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            row,
+            ("https://example.org/new.xml".into(), None, None, None, None)
+        );
+    }
+
+    #[test]
+    fn update_feed_url_rejects_duplicate_feed() {
+        let (conn, _aid) = test_db();
+        let first_id: i64 = conn
+            .query_row("SELECT id FROM feeds", [], |r| r.get(0))
+            .unwrap();
+        let second_id = insert_feed(
+            &conn,
+            "https://example.net/feed.xml",
+            None,
+            "Other Feed",
+            None,
+            SourceType::Rss,
+            None,
+        )
+        .unwrap();
+
+        let err = update_feed_url(
+            &conn,
+            second_id,
+            "https://example.com/feed.xml",
+            SourceType::Rss,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("alreadySubscribed"));
+
+        let url: String = conn
+            .query_row(
+                "SELECT feed_url FROM feeds WHERE id = ?1",
+                [second_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(url, "https://example.net/feed.xml");
+        assert_ne!(first_id, second_id);
     }
 
     #[test]
@@ -3519,7 +3816,9 @@ mod tests {
         update_feed_meta(&conn, feed_id, Some("Renamed Upstream"), None, None, None).unwrap();
 
         let title: String = conn
-            .query_row("SELECT title FROM feeds WHERE id = ?1", [feed_id], |r| r.get(0))
+            .query_row("SELECT title FROM feeds WHERE id = ?1", [feed_id], |r| {
+                r.get(0)
+            })
             .unwrap();
         assert_eq!(title, "Renamed Upstream");
     }
@@ -3548,15 +3847,7 @@ mod tests {
         .unwrap();
 
         // A later refresh serves empty metadata — every field must be ignored.
-        update_feed_meta(
-            &conn,
-            feed_id,
-            Some(""),
-            Some(""),
-            Some(""),
-            Some(""),
-        )
-        .unwrap();
+        update_feed_meta(&conn, feed_id, Some(""), Some(""), Some(""), Some("")).unwrap();
 
         let (title, site_url, description, favicon): (
             String,

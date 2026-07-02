@@ -307,6 +307,18 @@ export default function Sidebar({
               guard(api.renameFeed(f.id, v), t("sidebar.toastRenamed")),
           }),
       },
+      {
+        icon: "open",
+        label: t("sidebar.editFeedUrl"),
+        onClick: () =>
+          setPrompt({
+            title: t("sidebar.editFeedUrlTitle"),
+            initial: f.feedUrl,
+            placeholder: t("sidebar.feedUrlPlaceholder"),
+            onSubmit: (v) =>
+              guard(api.updateFeedUrl(f.id, v), t("sidebar.toastUrlUpdated")),
+          }),
+      },
       ...(moves.length ? [{ separator: true } as MenuEntry, ...moves] : []),
       { separator: true },
       {

@@ -59,6 +59,8 @@ export const moveFeed = (id: number, folderId: number | null) =>
   invoke<void>("move_feed", { id, folderId });
 export const renameFeed = (id: number, title: string) =>
   invoke<void>("rename_feed", { id, title });
+export const updateFeedUrl = (id: number, url: string) =>
+  invoke<void>("update_feed_url", { id, url });
 /** Set a feed's refresh interval (minutes). `null` follows the global
  *  setting; `525600` opts the feed out of automatic refresh. */
 export const setFeedRefreshInterval = (id: number, minutes: number | null) =>
@@ -215,7 +217,8 @@ export const freshrssConnect = (
   username: string,
   password: string,
   provider: GReaderProvider = "freshrss",
-) => invoke<void>("freshrss_connect", { url, username, password, provider });
+  apiKey?: string,
+) => invoke<void>("freshrss_connect", { url, username, password, provider, apiKey });
 export const freshrssDisconnect = () => invoke<void>("freshrss_disconnect");
 export const freshrssSync = () => invoke<number>("freshrss_sync");
 

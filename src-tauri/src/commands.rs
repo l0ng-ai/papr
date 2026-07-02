@@ -10,9 +10,9 @@ use crate::ingestion::newsletter::{self, NewsletterConfig};
 use crate::ingestion::sources::{self, Normalized};
 use crate::ingestion::{fetch, parse};
 use crate::models::*;
-use crate::scheduler;
 use crate::opml;
 use crate::sanitize;
+use crate::scheduler;
 use crate::state::AppState;
 use crate::translate;
 use serde::{Deserialize, Serialize};
@@ -29,20 +29,55 @@ pub async fn list_folders(state: State<'_, AppState>) -> AppResult<Vec<Folder>> 
 
 #[tauri::command]
 pub async fn create_folder(state: State<'_, AppState>, name: String) -> AppResult<i64> {
-    let conn = state.db.lock().await;
-    db::create_folder(&conn, &name)
+    let id = {
+        let conn = state.db.lock().await;
+        db::create_folder(&conn, &name)?
+    };
+    match crate::sync::create_remote_folder(&state.db, &state.http(), &name).await {
+        Ok(true) => {}
+        Ok(false) => {}
+        Err(e) => log::warn!("failed to propagate folder create to sync server: {e}"),
+    }
+    if let Err(e) = crate::sync::sync_remote_folders(&state.db, &state.http()).await {
+        log::warn!("failed to sync remote folders after folder create: {e}");
+    }
+    Ok(id)
 }
 
 #[tauri::command]
 pub async fn rename_folder(state: State<'_, AppState>, id: i64, name: String) -> AppResult<()> {
-    let conn = state.db.lock().await;
-    db::rename_folder(&conn, id, &name)
+    let old_name = {
+        let conn = state.db.lock().await;
+        let old_name = db::folder_name(&conn, id)?;
+        db::rename_folder(&conn, id, &name)?;
+        old_name
+    };
+    if let Some(old_name) = old_name {
+        match crate::sync::rename_remote_folder(&state.db, &state.http(), &old_name, &name).await {
+            Ok(true) => {}
+            Ok(false) => {}
+            Err(e) => log::warn!("failed to propagate folder rename to sync server: {e}"),
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
 pub async fn delete_folder(state: State<'_, AppState>, id: i64) -> AppResult<()> {
-    let conn = state.db.lock().await;
-    db::delete_folder(&conn, id)
+    let old_name = {
+        let conn = state.db.lock().await;
+        let old_name = db::folder_name(&conn, id)?;
+        db::delete_folder(&conn, id)?;
+        old_name
+    };
+    if let Some(old_name) = old_name {
+        match crate::sync::delete_remote_folder(&state.db, &state.http(), &old_name).await {
+            Ok(true) => {}
+            Ok(false) => {}
+            Err(e) => log::warn!("failed to propagate folder delete to sync server: {e}"),
+        }
+    }
+    Ok(())
 }
 
 // ─────────────────────────── feeds ───────────────────────────
@@ -71,7 +106,11 @@ pub async fn add_feed(
     // expansion is a plain HTTP feed URL, so the rest of the pipeline handles
     // it with no further special-casing. Only touch the DB when it's actually
     // an rsshub link, so the common case pays nothing.
-    let url = if url.trim().get(..9).is_some_and(|s| s.eq_ignore_ascii_case("rsshub://")) {
+    let url = if url
+        .trim()
+        .get(..9)
+        .is_some_and(|s| s.eq_ignore_ascii_case("rsshub://"))
+    {
         let instance = {
             let conn = state.db.lock().await;
             db::get_setting(&conn, "rsshub_instance")?
@@ -125,11 +164,7 @@ pub async fn add_feed(
     let parsed = parse::parse_feed(&feed_bytes, &feed_url)?;
     let source_type = match forced_type {
         Some(t) => t,
-        None => parse::refine_source_type(
-            parse::detect_source_type(&feed_url),
-            &parsed,
-            &feed_url,
-        ),
+        None => parse::refine_source_type(parse::detect_source_type(&feed_url), &parsed, &feed_url),
     };
 
     let title = parsed
@@ -252,8 +287,21 @@ pub async fn search_feed_directory(
 
 #[tauri::command]
 pub async fn delete_feed(state: State<'_, AppState>, id: i64) -> AppResult<()> {
-    let conn = state.db.lock().await;
-    db::delete_feed(&conn, id)
+    let old_url = {
+        let conn = state.db.lock().await;
+        let old_url = db::feed_url(&conn, id)?;
+        db::delete_feed(&conn, id)?;
+        old_url
+    };
+    log::info!("feed unsubscribed locally: #{id} {:?}", old_url);
+    if let Some(url) = old_url {
+        match crate::sync::unsubscribe_subscription_url(&state.db, &state.http(), &url).await {
+            Ok(true) => {}
+            Ok(false) => log::info!("unsubscribe was not propagated to sync server"),
+            Err(e) => log::warn!("failed to propagate unsubscribe to sync server: {e}"),
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -262,8 +310,26 @@ pub async fn move_feed(
     id: i64,
     folder_id: Option<i64>,
 ) -> AppResult<()> {
-    let conn = state.db.lock().await;
-    db::move_feed(&conn, id, folder_id)
+    let (url, folder) = {
+        let conn = state.db.lock().await;
+        db::move_feed(&conn, id, folder_id)?;
+        (db::feed_url(&conn, id)?, db::feed_folder_name(&conn, id)?)
+    };
+    if let Some(url) = url {
+        match crate::sync::set_subscription_folder_url(
+            &state.db,
+            &state.http(),
+            &url,
+            folder.as_deref(),
+        )
+        .await
+        {
+            Ok(true) => {}
+            Ok(false) => log::info!("feed folder update was not propagated to sync server"),
+            Err(e) => log::warn!("failed to propagate feed folder update to sync server: {e}"),
+        }
+    }
+    Ok(())
 }
 
 /// Set a feed's per-feed refresh interval. `None` reverts it to the global
@@ -296,6 +362,30 @@ pub async fn rename_feed(state: State<'_, AppState>, id: i64, title: String) -> 
     // `db::rename_feed` trims and rejects an empty title — the one chokepoint.
     let conn = state.db.lock().await;
     db::rename_feed(&conn, id, &title)
+}
+
+#[tauri::command]
+pub async fn update_feed_url(state: State<'_, AppState>, id: i64, url: String) -> AppResult<()> {
+    let url = url.trim();
+    let parsed = Url::parse(url).map_err(|_| AppError::code("invalidFeedUrl"))?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err(AppError::code("invalidFeedUrl"));
+    }
+    let old_url = {
+        let conn = state.db.lock().await;
+        let old_url = db::feed_url(&conn, id)?.ok_or_else(|| AppError::code("feedNotFound"))?;
+        db::update_feed_url(&conn, id, url, parse::detect_source_type(url))?;
+        old_url
+    };
+    log::info!("feed URL updated locally: #{id} {old_url} -> {url}");
+    if old_url != url {
+        match crate::sync::replace_subscription_url(&state.db, &state.http(), &old_url, url).await {
+            Ok(true) => {}
+            Ok(false) => log::info!("feed URL update was not propagated to sync server"),
+            Err(e) => log::warn!("failed to propagate feed URL update to sync server: {e}"),
+        }
+    }
+    Ok(())
 }
 
 /// Refresh every feed, streaming progress to the frontend over `on_progress`.
@@ -588,8 +678,7 @@ pub async fn import_opml(app: AppHandle, content: String) -> AppResult<usize> {
     // skipping and leaving the imported feeds empty until the next tick.
     let app2 = app.clone();
     tauri::async_runtime::spawn(async move {
-        let _ =
-            scheduler::refresh_all(&app2, None, true, scheduler::RefreshScope::All).await;
+        let _ = scheduler::refresh_all(&app2, None, true, scheduler::RefreshScope::All).await;
     });
     Ok(count)
 }
@@ -610,11 +699,7 @@ pub async fn get_setting(state: State<'_, AppState>, key: String) -> AppResult<O
 }
 
 #[tauri::command]
-pub async fn set_setting(
-    state: State<'_, AppState>,
-    key: String,
-    value: String,
-) -> AppResult<()> {
+pub async fn set_setting(state: State<'_, AppState>, key: String, value: String) -> AppResult<()> {
     let conn = state.db.lock().await;
     db::set_setting(&conn, &key, &value)
 }
@@ -712,7 +797,12 @@ pub async fn ai_summarize(
     let (title, body, cfg, lang) = {
         let conn = state.read().await;
         let (title, body) = db::article_text(&conn, article_id)?;
-        (title, body, load_ai_config(&conn)?, response_language(&conn))
+        (
+            title,
+            body,
+            load_ai_config(&conn)?,
+            response_language(&conn),
+        )
     };
     // A title-only item (link-aggregator posts, some podcast/video feeds carry
     // no body text) gives the model nothing to summarize. Without this guard it
@@ -798,10 +888,7 @@ pub async fn ai_ask(
 
 /// Stream an AI briefing that synthesizes the most recent articles by theme.
 #[tauri::command]
-pub async fn ai_digest(
-    state: State<'_, AppState>,
-    on_token: Channel<AiEvent>,
-) -> AppResult<()> {
+pub async fn ai_digest(state: State<'_, AppState>, on_token: Channel<AiEvent>) -> AppResult<()> {
     let (cfg, articles, lang) = {
         let conn = state.read().await;
         (
@@ -902,7 +989,9 @@ pub async fn ai_translate(
     let system = translate::translate_system_prompt(translate::language_name(&target));
     let mut full = String::new();
     for (i, batch) in batches.iter().enumerate() {
-        let raw = backend.translate_batch(&http, &system, batch, &target).await?;
+        let raw = backend
+            .translate_batch(&http, &system, batch, &target)
+            .await?;
         // Engine output (LLM or machine translation) is untrusted, so each batch
         // passes through the same sanitizer as feed HTML before it reaches the
         // webview or the database. Source URLs are already absolute (sanitized at
@@ -910,7 +999,10 @@ pub async fn ai_translate(
         let clean = sanitize::sanitize(raw.trim(), None);
         full.push_str(&clean);
         full.push('\n');
-        let _ = on_event.send(TranslateEvent::Batch { html: clean, done: i + 1 });
+        let _ = on_event.send(TranslateEvent::Batch {
+            html: clean,
+            done: i + 1,
+        });
     }
 
     let final_html = full.trim().to_string();
@@ -1017,10 +1109,19 @@ pub async fn freshrss_connect(
     username: String,
     password: String,
     provider: Option<String>,
+    api_key: Option<String>,
 ) -> AppResult<()> {
     let state = app.state::<AppState>();
-    crate::sync::connect(&state.db, &state.http(), &url, &username, &password, provider.as_deref())
-        .await
+    crate::sync::connect(
+        &state.db,
+        &state.http(),
+        &url,
+        &username,
+        &password,
+        provider.as_deref(),
+        api_key.as_deref(),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -1042,7 +1143,7 @@ pub async fn freshrss_status(app: AppHandle) -> AppResult<FreshRssStatus> {
     })
 }
 
-/// Run a full FreshRSS sync now; returns the number of reconciled articles.
+/// Run a full FreshRSS/GReader sync now; returns newly inserted unread articles.
 #[tauri::command]
 pub async fn freshrss_sync(app: AppHandle) -> AppResult<usize> {
     let n = {
@@ -1098,11 +1199,7 @@ pub async fn rename_tag(state: State<'_, AppState>, id: i64, name: String) -> Ap
 }
 
 #[tauri::command]
-pub async fn set_tag_color(
-    state: State<'_, AppState>,
-    id: i64,
-    color: String,
-) -> AppResult<()> {
+pub async fn set_tag_color(state: State<'_, AppState>, id: i64, color: String) -> AppResult<()> {
     let conn = state.db.lock().await;
     db::set_tag_color(&conn, id, &color)
 }
@@ -1165,7 +1262,16 @@ pub async fn update_rule(
         return Err(AppError::code("emptyRuleQuery"));
     }
     let conn = state.db.lock().await;
-    db::update_rule(&conn, id, name.trim(), enabled, feed_id, &field, query.trim(), &action)
+    db::update_rule(
+        &conn,
+        id,
+        name.trim(),
+        enabled,
+        feed_id,
+        &field,
+        query.trim(),
+        &action,
+    )
 }
 
 #[tauri::command]
@@ -1265,7 +1371,11 @@ pub async fn add_newsletter_source(
         password: input.password.clone(),
         folder: {
             let f = input.folder.trim();
-            if f.is_empty() { "INBOX".to_string() } else { f.to_string() }
+            if f.is_empty() {
+                "INBOX".to_string()
+            } else {
+                f.to_string()
+            }
         },
     };
     if cfg.host.is_empty() || cfg.username.is_empty() || cfg.password.is_empty() {
@@ -1302,8 +1412,9 @@ pub async fn add_newsletter_source(
     )
     .await
     {
-        Ok(joined) => joined
-            .map_err(|e| AppError::other(format!("newsletter poll task: {e}")))??,
+        Ok(joined) => {
+            joined.map_err(|e| AppError::other(format!("newsletter poll task: {e}")))??
+        }
         Err(_) => return Err(AppError::code("newsletterPollTimeout")),
     };
 
@@ -1370,10 +1481,7 @@ pub async fn list_newsletter_sources(
 
 /// Remove a newsletter source and all of its ingested articles.
 #[tauri::command]
-pub async fn remove_newsletter_source(
-    state: State<'_, AppState>,
-    feed_id: i64,
-) -> AppResult<()> {
+pub async fn remove_newsletter_source(state: State<'_, AppState>, feed_id: i64) -> AppResult<()> {
     let conn = state.db.lock().await;
     db::delete_newsletter_source(&conn, feed_id)
 }
