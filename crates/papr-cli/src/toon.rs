@@ -72,7 +72,9 @@ mod tests {
     #[test]
     fn renders_scalars_in_insertion_order() {
         let mut d = Doc::new();
-        d.set("unread", 206).set("starred", 17).set("db", "~/x/papr.db");
+        d.set("unread", 206)
+            .set("starred", 17)
+            .set("db", "~/x/papr.db");
         assert_eq!(d.into_toon(), "unread: 206\nstarred: 17\ndb: ~/x/papr.db\n");
     }
 
@@ -83,7 +85,10 @@ mod tests {
         // decodes it back as a string, not as 42 / true / null.
         let mut d = Doc::new();
         d.set("title", "42").set("flag", "true").set("name", "null");
-        assert_eq!(d.into_toon(), "title: \"42\"\nflag: \"true\"\nname: \"null\"\n");
+        assert_eq!(
+            d.into_toon(),
+            "title: \"42\"\nflag: \"true\"\nname: \"null\"\n"
+        );
     }
 
     #[test]
@@ -116,8 +121,12 @@ mod tests {
         assert_eq!(empty.into_toon(), "ok: done\n");
 
         let mut with = Doc::new();
-        with.set("count", 1).help(vec!["Run `papr read <id>`".to_string()]);
-        assert_eq!(with.into_toon(), "count: 1\nhelp[1]: Run `papr read <id>`\n");
+        with.set("count", 1)
+            .help(vec!["Run `papr read <id>`".to_string()]);
+        assert_eq!(
+            with.into_toon(),
+            "count: 1\nhelp[1]: Run `papr read <id>`\n"
+        );
     }
 
     #[test]

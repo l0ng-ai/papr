@@ -19,9 +19,42 @@ mod translate;
 mod tray;
 
 use ingestion::discovery::{self, DeepLink};
+use log::{LevelFilter, Metadata, Record};
 use state::AppState;
 use std::fs;
+use std::sync::Once;
 use tauri::{Emitter, Manager};
+
+struct StderrLogger;
+static LOGGER: StderrLogger = StderrLogger;
+static LOGGER_INIT: Once = Once::new();
+
+impl log::Log for StderrLogger {
+    fn enabled(&self, metadata: &Metadata<'_>) -> bool {
+        metadata.level() <= log::max_level()
+    }
+
+    fn log(&self, record: &Record<'_>) {
+        if self.enabled(record.metadata()) {
+            eprintln!("[{}] {}", record.level(), record.args());
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+fn init_logger() {
+    LOGGER_INIT.call_once(|| {
+        let level = match std::env::var("RUST_LOG").unwrap_or_default().to_lowercase() {
+            s if s.contains("trace") => LevelFilter::Trace,
+            s if s.contains("debug") => LevelFilter::Debug,
+            s if s.contains("warn") => LevelFilter::Warn,
+            s if s.contains("error") => LevelFilter::Error,
+            _ => LevelFilter::Info,
+        };
+        let _ = log::set_logger(&LOGGER).map(|()| log::set_max_level(level));
+    });
+}
 
 /// Handle every URL delivered through the `papr://` deep-link scheme. A
 /// `papr://subscribe?url=…` link focuses the main window and emits a
@@ -56,6 +89,8 @@ const READ_POOL_SIZE: usize = 4;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    init_logger();
+
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
@@ -236,6 +271,7 @@ pub fn run() {
             commands::set_feed_refresh_interval,
             commands::set_feed_auto_translate,
             commands::rename_feed,
+            commands::update_feed_url,
             commands::refresh_feeds,
             commands::list_articles,
             commands::article_index,

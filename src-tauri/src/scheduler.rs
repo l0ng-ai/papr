@@ -10,7 +10,7 @@ use crate::error::AppResult;
 use crate::ingestion::refresh;
 use crate::models::RefreshProgress;
 use crate::state::AppState;
-use crate::{notify, sync, tray};
+use crate::{db, notify, sync, tray};
 use std::time::Duration;
 use tauri::{ipc::Channel, AppHandle, Emitter, Manager};
 
@@ -51,6 +51,33 @@ pub async fn refresh_all(
     };
 
     let client = state.http();
+    let sync_connected = {
+        let conn = state.read().await;
+        db::is_freshrss_connected(&conn)
+    };
+    if sync_connected {
+        log::info!("refresh: sync server connected; skipping local feed fetch");
+        if let Some(p) = &progress {
+            let _ = p.send(RefreshProgress::Started { total: 0 });
+        }
+        let synced = match sync::sync_now(&state.db, &client).await {
+            Ok(n) => n,
+            Err(e) => {
+                log::warn!("sync failed: {e}");
+                0
+            }
+        };
+        let _ = app.emit("feeds-updated", synced);
+        if let Some(p) = &progress {
+            let _ = p.send(RefreshProgress::Finished {
+                new_articles: synced,
+            });
+        }
+        notify::update_badge(app).await;
+        tray::refresh(app).await;
+        return Ok(synced);
+    }
+
     let summary = refresh::refresh_core(&state.db, &client, scope, |event| {
         if let Some(p) = &progress {
             let _ = p.send(event);

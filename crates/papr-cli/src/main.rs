@@ -34,10 +34,16 @@ const SEARCH_LIMIT: i64 = 20;
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let rt = match tokio::runtime::Builder::new_multi_thread().enable_all().build() {
+    let rt = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
         Ok(rt) => rt,
         Err(e) => {
-            print!("{}", render_error(&AxiError::runtime(format!("runtime: {e}"))));
+            print!(
+                "{}",
+                render_error(&AxiError::runtime(format!("runtime: {e}")))
+            );
             return ExitCode::FAILURE;
         }
     };
@@ -560,7 +566,11 @@ fn clamp_offset(n: i64) -> i64 {
 /// chain, so passing several silently honours just one — broadening a `list`
 /// and, worse, the set a `mark-all` mutates. Reject the ambiguity outright.
 fn ensure_single_filter(selectors: &[(&str, bool)]) -> Result<(), AxiError> {
-    let set: Vec<&str> = selectors.iter().filter(|(_, on)| *on).map(|(n, _)| *n).collect();
+    let set: Vec<&str> = selectors
+        .iter()
+        .filter(|(_, on)| *on)
+        .map(|(n, _)| *n)
+        .collect();
     if set.len() > 1 {
         return Err(AxiError::usage(
             format!("filters {} cannot be combined", set.join(" + ")),
@@ -575,7 +585,9 @@ fn ensure_single_filter(selectors: &[(&str, bool)]) -> Result<(), AxiError> {
 /// terminal scrollback.
 fn is_secret_key(key: &str) -> bool {
     let k = key.to_ascii_lowercase();
-    ["api_key", "password", "secret", "token"].iter().any(|needle| k.contains(needle))
+    ["api_key", "password", "secret", "token"]
+        .iter()
+        .any(|needle| k.contains(needle))
 }
 
 /// A masked preview of a secret: enough to confirm *which* value is set
@@ -608,8 +620,8 @@ fn cmd_home(path: &Path) -> Result<String, AxiError> {
     let feeds = db::list_feeds(&conn).map_err(db_err)?;
 
     // Most recent unread first; fall back to recent reads when the inbox is clear.
-    let recent = db::list_articles(&conn, &ArticleQuery::All, true, None, false, 10, 0)
-        .map_err(db_err)?;
+    let recent =
+        db::list_articles(&conn, &ArticleQuery::All, true, None, false, 10, 0).map_err(db_err)?;
     let inbox_clear = recent.is_empty();
     let recent = if inbox_clear {
         db::list_articles(&conn, &ArticleQuery::All, false, None, false, 10, 0).map_err(db_err)?
@@ -655,7 +667,9 @@ fn cmd_feeds(path: &Path) -> Result<String, AxiError> {
     if feeds.is_empty() {
         let mut d = Doc::new();
         d.set("feeds", json!([]));
-        d.help(vec!["Run `papr subscribe <url>` to add your first feed".into()]);
+        d.help(vec![
+            "Run `papr subscribe <url>` to add your first feed".into()
+        ]);
         return Ok(d.into_toon());
     }
 
@@ -670,12 +684,18 @@ fn cmd_feeds(path: &Path) -> Result<String, AxiError> {
     };
     let mut groups = serde_json::Map::new();
     for folder in &folders {
-        let group: Vec<_> = feeds.iter().filter(|f| f.folder_id == Some(folder.id)).collect();
+        let group: Vec<_> = feeds
+            .iter()
+            .filter(|f| f.folder_id == Some(folder.id))
+            .collect();
         if !group.is_empty() {
             groups.insert(folder.name.clone(), feed_rows(&group));
         }
     }
-    let loose: Vec<_> = feeds.iter().filter(|f| folder_name(f.folder_id).is_none()).collect();
+    let loose: Vec<_> = feeds
+        .iter()
+        .filter(|f| folder_name(f.folder_id).is_none())
+        .collect();
     if !loose.is_empty() {
         groups.insert("(no folder)".to_string(), feed_rows(&loose));
     }
@@ -759,11 +779,19 @@ fn cmd_read(path: &Path, args: ReadArgs) -> Result<String, AxiError> {
         } else {
             ArticleQuery::Tag(args.tag.unwrap())
         };
-        db::list_articles(&conn, &query, args.unread, None, false, clamp_limit(args.limit), 0)
-            .map_err(db_err)?
-            .into_iter()
-            .map(|a| a.id)
-            .collect()
+        db::list_articles(
+            &conn,
+            &query,
+            args.unread,
+            None,
+            false,
+            clamp_limit(args.limit),
+            0,
+        )
+        .map_err(db_err)?
+        .into_iter()
+        .map(|a| a.id)
+        .collect()
     } else {
         return Err(AxiError::usage(
             "read needs an article id or a filter",
@@ -796,7 +824,8 @@ fn cmd_read(path: &Path, args: ReadArgs) -> Result<String, AxiError> {
             }
         };
         let (_title, text) = db::article_text(&conn, *id).map_err(db_err)?;
-        let (shown, total_chars, truncated) = truncate(&text, if args.full { usize::MAX } else { budget });
+        let (shown, total_chars, truncated) =
+            truncate(&text, if args.full { usize::MAX } else { budget });
         any_truncated |= truncated;
         let body = if truncated {
             format!("{shown}\n... (truncated, {total_chars} chars total)")
@@ -823,7 +852,9 @@ fn cmd_read(path: &Path, args: ReadArgs) -> Result<String, AxiError> {
     }
     d.set("articles", Value::Array(articles));
     if any_truncated && !args.full {
-        d.help(vec!["Run `papr read <id> --full` to see the complete text".into()]);
+        d.help(vec![
+            "Run `papr read <id> --full` to see the complete text".into()
+        ]);
     }
     Ok(d.into_toon())
 }
@@ -890,7 +921,9 @@ fn cmd_tags(path: &Path) -> Result<String, AxiError> {
         .collect();
     d.set("tags", Value::Array(rows));
     if !tags.is_empty() {
-        d.help(vec!["Run `papr list --tag <id>` to list a tag's articles".into()]);
+        d.help(vec![
+            "Run `papr list --tag <id>` to list a tag's articles".into()
+        ]);
     }
     Ok(d.into_toon())
 }
@@ -930,16 +963,15 @@ async fn cmd_subscribe(path: &Path, url: &str, folder: Option<i64>) -> Result<St
     if let Some(existing) = db::find_feed_by_url(&conn, &feed_url).map_err(db_err)? {
         let mut d = Doc::new();
         d.set("ok", format!("feed #{existing} already subscribed (no-op)"));
-        d.help(vec![format!("Run `papr list --feed {existing}` to read it")]);
+        d.help(vec![format!(
+            "Run `papr list --feed {existing}` to read it"
+        )]);
         return Ok(d.into_toon());
     }
 
     let source_type =
         parse::refine_source_type(papr_core::models::SourceType::Rss, &parsed, &feed_url);
-    let title = parsed
-        .title
-        .clone()
-        .unwrap_or_else(|| feed_url.clone());
+    let title = parsed.title.clone().unwrap_or_else(|| feed_url.clone());
     let feed_id = db::insert_feed(
         &conn,
         &feed_url,
@@ -1007,7 +1039,11 @@ async fn cmd_refresh(
         use papr_core::models::RefreshProgress::*;
         match event {
             Started { total } => eprintln!("refreshing {total} feed(s)…"),
-            FeedDone { feed_id, new_articles, error } => {
+            FeedDone {
+                feed_id,
+                new_articles,
+                error,
+            } => {
                 if let Some(e) = error {
                     eprintln!("  feed {feed_id}: error — {e}");
                 } else if new_articles > 0 {
@@ -1021,10 +1057,13 @@ async fn cmd_refresh(
     .map_err(db_err)?;
 
     let mut d = Doc::new();
-    d.set("refresh", json!({
-        "scope": label,
-        "new": summary.new_articles,
-    }));
+    d.set(
+        "refresh",
+        json!({
+            "scope": label,
+            "new": summary.new_articles,
+        }),
+    );
     if summary.new_articles > 0 {
         d.help(vec!["Run `papr list` to see what's new".into()]);
     }
@@ -1045,7 +1084,10 @@ async fn cmd_sync(path: &Path, cmd: SyncCmd) -> Result<String, AxiError> {
             let mut d = Doc::new();
             match info {
                 Some((url, provider)) => {
-                    d.set("sync", json!({ "connected": true, "provider": provider, "url": url }));
+                    d.set(
+                        "sync",
+                        json!({ "connected": true, "provider": provider, "url": url }),
+                    );
                     d.help(vec!["Run `papr sync run` to reconcile now".into()]);
                 }
                 None => {
@@ -1058,10 +1100,23 @@ async fn cmd_sync(path: &Path, cmd: SyncCmd) -> Result<String, AxiError> {
             }
             Ok(d.into_toon())
         }
-        SyncCmd::Connect { url, user, password, provider } => {
-            sync::connect(&dbm, &client, &url, &user, &password, provider.as_deref())
-                .await
-                .map_err(|e| clean_err("sync connect failed", e))?;
+        SyncCmd::Connect {
+            url,
+            user,
+            password,
+            provider,
+        } => {
+            sync::connect(
+                &dbm,
+                &client,
+                &url,
+                &user,
+                &password,
+                provider.as_deref(),
+                None,
+            )
+            .await
+            .map_err(|e| clean_err("sync connect failed", e))?;
             let mut d = Doc::new();
             d.set("ok", format!("connected to {url}"));
             d.help(vec!["Run `papr sync run` to reconcile now".into()]);
@@ -1084,7 +1139,9 @@ async fn cmd_sync(path: &Path, cmd: SyncCmd) -> Result<String, AxiError> {
             let n = sync::sync_now(&dbm, &client)
                 .await
                 .map_err(|e| clean_err("sync failed", e))?;
-            Ok(Doc::new().set("sync", json!({ "reconciled": n })).into_toon())
+            Ok(Doc::new()
+                .set("sync", json!({ "reconciled": n }))
+                .into_toon())
         }
     }
 }
@@ -1125,7 +1182,9 @@ async fn cmd_extract(path: &Path, id: i64) -> Result<String, AxiError> {
     let detail = db::get_article(&conn, id)
         .map_err(|_| AxiError::runtime(format!("article #{id} not found")))?;
     let Some(url) = detail.url.clone() else {
-        return Err(AxiError::runtime(format!("article #{id} has no URL to extract")));
+        return Err(AxiError::runtime(format!(
+            "article #{id} has no URL to extract"
+        )));
     };
     let client = http_client()?;
     let (bytes, _e, final_url) = fetch::get(&client, &url)
@@ -1139,7 +1198,9 @@ async fn cmd_extract(path: &Path, id: i64) -> Result<String, AxiError> {
     let chars = papr_core::sanitize::html_to_text(&cleaned).chars().count();
     let mut d = Doc::new();
     d.set("extracted", json!({ "id": id, "chars": chars }));
-    d.help(vec![format!("Run `papr read {id} --full` to read the extracted text")]);
+    d.help(vec![format!(
+        "Run `papr read {id} --full` to read the extracted text"
+    )]);
     Ok(d.into_toon())
 }
 
@@ -1157,7 +1218,9 @@ fn cmd_folders(path: &Path) -> Result<String, AxiError> {
     let mut d = Doc::new();
     d.set("folders", Value::Array(rows));
     if !folders.is_empty() {
-        d.help(vec!["Run `papr list --folder <id>` to list a folder's articles".into()]);
+        d.help(vec![
+            "Run `papr list --folder <id>` to list a folder's articles".into(),
+        ]);
     }
     Ok(d.into_toon())
 }
@@ -1270,8 +1333,15 @@ fn cmd_rules(path: &Path) -> Result<String, AxiError> {
 fn cmd_rule(path: &Path, cmd: RuleCmd) -> Result<String, AxiError> {
     let conn = open_rw(path)?;
     match cmd {
-        RuleCmd::Create { name, query, field, action, feed } => {
-            let id = db::create_rule(&conn, &name, feed, &field, &query, &action).map_err(db_err)?;
+        RuleCmd::Create {
+            name,
+            query,
+            field,
+            action,
+            feed,
+        } => {
+            let id =
+                db::create_rule(&conn, &name, feed, &field, &query, &action).map_err(db_err)?;
             ok_line(format!("rule: #{id} {name} ({field} ~ {query} → {action})"))
         }
         RuleCmd::Delete { id, yes } => {
@@ -1295,9 +1365,14 @@ fn set_rule_enabled(conn: &Connection, id: i64, on: bool) -> Result<String, AxiE
             if on { "enabled" } else { "disabled" }
         ));
     }
-    db::update_rule(conn, id, &r.name, on, r.feed_id, &r.field, &r.query, &r.action)
-        .map_err(db_err)?;
-    ok_line(format!("rule: #{id} {}", if on { "enabled" } else { "disabled" }))
+    db::update_rule(
+        conn, id, &r.name, on, r.feed_id, &r.field, &r.query, &r.action,
+    )
+    .map_err(db_err)?;
+    ok_line(format!(
+        "rule: #{id} {}",
+        if on { "enabled" } else { "disabled" }
+    ))
 }
 
 // ───────────────────────────── highlights ─────────────────────────────
@@ -1326,7 +1401,12 @@ fn cmd_highlights(path: &Path, article: Option<i64>) -> Result<String, AxiError>
 fn cmd_highlight(path: &Path, cmd: HighlightCmd) -> Result<String, AxiError> {
     let conn = open_rw(path)?;
     match cmd {
-        HighlightCmd::Create { article, quote, note, color } => {
+        HighlightCmd::Create {
+            article,
+            quote,
+            note,
+            color,
+        } => {
             let h = db::NewHighlight {
                 article_id: article,
                 quote: &quote,
@@ -1348,7 +1428,11 @@ fn cmd_highlight(path: &Path, cmd: HighlightCmd) -> Result<String, AxiError> {
             ok_line(format!("highlight: #{id} colour {color}"))
         }
         HighlightCmd::Delete { id, yes } => {
-            require_yes(yes, "highlight delete", &format!("papr highlight delete {id}"))?;
+            require_yes(
+                yes,
+                "highlight delete",
+                &format!("papr highlight delete {id}"),
+            )?;
             db::delete_highlight(&conn, id).map_err(db_err)?;
             ok_line(format!("highlight: #{id} deleted"))
         }
@@ -1376,7 +1460,8 @@ fn cmd_newsletters(path: &Path) -> Result<String, AxiError> {
     d.set("newsletters", Value::Array(table));
     if rows.is_empty() {
         d.help(vec![
-            "Run `papr newsletter add --title .. --host .. --user .. --password ..` to add one".into(),
+            "Run `papr newsletter add --title .. --host .. --user .. --password ..` to add one"
+                .into(),
         ]);
     }
     Ok(d.into_toon())
@@ -1385,7 +1470,14 @@ fn cmd_newsletters(path: &Path) -> Result<String, AxiError> {
 fn cmd_newsletter(path: &Path, cmd: NewsletterCmd) -> Result<String, AxiError> {
     let conn = open_rw(path)?;
     match cmd {
-        NewsletterCmd::Add { title, host, port, user, password, folder } => {
+        NewsletterCmd::Add {
+            title,
+            host,
+            port,
+            user,
+            password,
+            folder,
+        } => {
             let cfg = papr_core::ingestion::newsletter::NewsletterConfig {
                 host: host.clone(),
                 port,
@@ -1396,16 +1488,28 @@ fn cmd_newsletter(path: &Path, cmd: NewsletterCmd) -> Result<String, AxiError> {
             // Synthetic, stable feed URL so the source de-dupes like an RSS feed.
             let feed_url = format!("newsletter://{user}@{host}/{folder}");
             if let Some(existing) = db::find_feed_by_url(&conn, &feed_url).map_err(db_err)? {
-                return ok_line(format!("newsletter: #{existing} already configured (no-op)"));
+                return ok_line(format!(
+                    "newsletter: #{existing} already configured (no-op)"
+                ));
             }
-            let id = db::insert_newsletter_source(&conn, &feed_url, &title, &cfg).map_err(db_err)?;
+            let id =
+                db::insert_newsletter_source(&conn, &feed_url, &title, &cfg).map_err(db_err)?;
             let mut d = Doc::new();
-            d.set("newsletter", json!({ "feed": id, "title": title, "host": format!("{host}:{port}") }));
-            d.help(vec![format!("Run `papr refresh --feed {id}` to poll it now")]);
+            d.set(
+                "newsletter",
+                json!({ "feed": id, "title": title, "host": format!("{host}:{port}") }),
+            );
+            d.help(vec![format!(
+                "Run `papr refresh --feed {id}` to poll it now"
+            )]);
             Ok(d.into_toon())
         }
         NewsletterCmd::Remove { feed_id, yes } => {
-            require_yes(yes, "newsletter remove", &format!("papr newsletter remove {feed_id}"))?;
+            require_yes(
+                yes,
+                "newsletter remove",
+                &format!("papr newsletter remove {feed_id}"),
+            )?;
             db::delete_newsletter_source(&conn, feed_id).map_err(db_err)?;
             db::delete_feed(&conn, feed_id).map_err(db_err)?;
             ok_line(format!("newsletter: #{feed_id} removed"))
@@ -1427,7 +1531,10 @@ fn cmd_opml(path: &Path, cmd: OpmlCmd) -> Result<String, AxiError> {
             let mut added = 0usize;
             let mut skipped = 0usize;
             for f in &imported {
-                if db::find_feed_by_url(&conn, &f.feed_url).map_err(db_err)?.is_some() {
+                if db::find_feed_by_url(&conn, &f.feed_url)
+                    .map_err(db_err)?
+                    .is_some()
+                {
                     skipped += 1;
                     continue;
                 }
@@ -1464,7 +1571,11 @@ fn cmd_opml(path: &Path, cmd: OpmlCmd) -> Result<String, AxiError> {
                     std::fs::write(&file, &xml).map_err(|e| {
                         AxiError::runtime(format!("could not write {}: {e}", file.display()))
                     })?;
-                    ok_line(format!("exported {} feeds to {}", feeds.len(), file.display()))
+                    ok_line(format!(
+                        "exported {} feeds to {}",
+                        feeds.len(),
+                        file.display()
+                    ))
                 }
                 None => Ok(xml),
             }
@@ -1505,14 +1616,17 @@ fn cmd_stats(path: &Path) -> Result<String, AxiError> {
     let (bytes, articles, feeds) = db::storage_stats(&conn).map_err(db_err)?;
     let (unread, starred, later) = db::smart_counts(&conn).map_err(db_err)?;
     Ok(Doc::new()
-        .set("stats", json!({
-            "db_size": human_bytes(bytes),
-            "articles": articles,
-            "feeds": feeds,
-            "unread": unread,
-            "starred": starred,
-            "read_later": later,
-        }))
+        .set(
+            "stats",
+            json!({
+                "db_size": human_bytes(bytes),
+                "articles": articles,
+                "feeds": feeds,
+                "unread": unread,
+                "starred": starred,
+                "read_later": later,
+            }),
+        )
         .into_toon())
 }
 
@@ -1528,11 +1642,14 @@ fn cmd_admin(path: &Path, cmd: AdminCmd) -> Result<String, AxiError> {
             }
             require_yes(yes, "cleanup", &format!("papr admin cleanup {days}"))?;
             let n = db::cleanup_old_articles(&conn, days).map_err(db_err)?;
-            ok_line(format!("cleanup: removed {n} article(s) older than {days} days"))
+            ok_line(format!(
+                "cleanup: removed {n} article(s) older than {days} days"
+            ))
         }
         AdminCmd::Vacuum { yes } => {
             require_yes(yes, "vacuum", "papr admin vacuum")?;
-            conn.execute_batch("VACUUM").map_err(|e| AxiError::runtime(format!("vacuum: {e}")))?;
+            conn.execute_batch("VACUUM")
+                .map_err(|e| AxiError::runtime(format!("vacuum: {e}")))?;
             ok_line("vacuum: database compacted".into())
         }
         AdminCmd::Reset { yes } => {
@@ -1710,9 +1827,10 @@ fn count_articles(
 ) -> papr_core::error::AppResult<i64> {
     let unread = if unread_only { " AND is_read = 0" } else { "" };
     let (sql, param): (String, Option<i64>) = match query {
-        ArticleQuery::All | ArticleQuery::Unread => {
-            (format!("SELECT count(*) FROM articles WHERE 1=1{unread}"), None)
-        }
+        ArticleQuery::All | ArticleQuery::Unread => (
+            format!("SELECT count(*) FROM articles WHERE 1=1{unread}"),
+            None,
+        ),
         ArticleQuery::Starred => (
             format!("SELECT count(*) FROM articles WHERE is_starred = 1{unread}"),
             None,
@@ -1830,7 +1948,10 @@ fn ensure_db(path: &Path) -> Result<(), AxiError> {
         return Ok(());
     }
     Err(AxiError::runtime_help(
-        format!("no Papr database at {}", collapse_home(&path.display().to_string())),
+        format!(
+            "no Papr database at {}",
+            collapse_home(&path.display().to_string())
+        ),
         vec![
             "Install and launch Papr to create it, or".into(),
             "Run any papr command with `--db <path>` / set PAPR_DB to point at one".into(),
@@ -1907,13 +2028,25 @@ struct AxiError {
 
 impl AxiError {
     fn runtime(message: impl Into<String>) -> Self {
-        Self { message: message.into(), help: Vec::new(), usage: false }
+        Self {
+            message: message.into(),
+            help: Vec::new(),
+            usage: false,
+        }
     }
     fn runtime_help(message: impl Into<String>, help: Vec<String>) -> Self {
-        Self { message: message.into(), help, usage: false }
+        Self {
+            message: message.into(),
+            help,
+            usage: false,
+        }
     }
     fn usage(message: impl Into<String>, help: Vec<String>) -> Self {
-        Self { message: message.into(), help, usage: true }
+        Self {
+            message: message.into(),
+            help,
+            usage: true,
+        }
     }
     fn exit_code(&self) -> ExitCode {
         if self.usage {

@@ -18,6 +18,7 @@ import type { Feed, Rule, RuleAction, RuleField, RulePreview } from "../types";
 import Icon, { type IconName } from "./Icon";
 import ConfirmDialog from "./ConfirmDialog";
 import FeedAvatar from "./FeedAvatar";
+import PromptDialog from "./PromptDialog";
 
 interface Props {
   onClose: () => void;
@@ -750,6 +751,7 @@ function SubscriptionsSection({
   const qc = useQueryClient();
   const actions = useArticleActions();
   const [search, setSearch] = useState("");
+  const [editingUrl, setEditingUrl] = useState<Feed | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const filtered = feeds.filter(
     (f) => !search || f.title.toLowerCase().includes(search.toLowerCase()),
@@ -817,8 +819,26 @@ function SubscriptionsSection({
       })
       .catch((e) => reportError(e));
 
+  const updateUrl = (f: Feed, url: string) =>
+    api
+      .updateFeedUrl(f.id, url)
+      .then(() => {
+        actions.refreshAfterBulk();
+        onToast(t("settings.subscriptions.urlUpdated", { title: f.title }));
+      })
+      .catch((e) => reportError(e));
+
   return (
     <>
+      {editingUrl && (
+        <PromptDialog
+          title={t("settings.subscriptions.editUrlTitle")}
+          initialValue={editingUrl.feedUrl}
+          placeholder={t("settings.subscriptions.feedUrlPlaceholder")}
+          onSubmit={(url) => updateUrl(editingUrl, url)}
+          onClose={() => setEditingUrl(null)}
+        />
+      )}
       <input
         ref={fileRef}
         type="file"
@@ -908,6 +928,13 @@ function SubscriptionsSection({
                 />
                 <button
                   className="icon-btn"
+                  title={t("settings.subscriptions.editUrl")}
+                  onClick={() => setEditingUrl(f)}
+                >
+                  <Icon name="open" size={13} />
+                </button>
+                <button
+                  className="icon-btn"
                   title={t("settings.subscriptions.unsubscribe")}
                   onClick={() => unsubscribe(f)}
                 >
@@ -995,6 +1022,7 @@ function SyncSection({ onToast }: { onToast: (m: string) => void }) {
   const [url, setUrl] = useState("");
   const [user, setUser] = useState("");
   const [pass, setPass] = useState("");
+  const [apiKey, setApiKey] = useState("");
   const [busy, setBusy] = useState(false);
   const connected = status.data?.connected ?? false;
   const connectedProvider: api.GReaderProvider =
@@ -1006,10 +1034,17 @@ function SyncSection({ onToast }: { onToast: (m: string) => void }) {
     if (!url.trim() || !user.trim()) return;
     setBusy(true);
     try {
-      await api.freshrssConnect(url.trim(), user.trim(), pass, provider);
+      await api.freshrssConnect(
+        url.trim(),
+        user.trim(),
+        pass,
+        provider,
+        provider === "miniflux" ? apiKey : undefined,
+      );
       await qc.invalidateQueries({ queryKey: ["freshrss-status"] });
       onToast(t("settings.sync.connected"));
       setPass("");
+      setApiKey("");
     } catch (e) {
       reportError(e);
     } finally {
@@ -1148,6 +1183,17 @@ function SyncSection({ onToast }: { onToast: (m: string) => void }) {
                 value={pass}
                 onChange={(e) => setPass(e.target.value)}
               />
+              {provider === "miniflux" && (
+                <input
+                  className="modal-input"
+                  style={{ margin: 0 }}
+                  type="password"
+                  placeholder={t("settings.sync.apiKeyPlaceholder")}
+                  {...NO_AUTOCORRECT}
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                />
+              )}
               {provider === "miniflux" && (
                 <p
                   style={{

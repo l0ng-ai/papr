@@ -42,7 +42,7 @@ pub struct RefreshSummary {
 }
 
 /// Which feeds a refresh run should touch.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RefreshScope {
     /// Every feed and newsletter — the manual refresh and OPML import.
     All,
@@ -174,6 +174,7 @@ pub async fn refresh_core(
     // Nothing due this cycle: emit a no-op Started/Finished and bow out before
     // the heavier tail. The manual refresh (scope All) always runs the pipeline.
     if scope == RefreshScope::Due && feeds.is_empty() && newsletters.is_empty() {
+        log::debug!("refresh: no due feeds");
         on_event(RefreshProgress::Started { total: 0 });
         on_event(RefreshProgress::Finished { new_articles: 0 });
         return Ok(RefreshSummary {
@@ -182,6 +183,11 @@ pub async fn refresh_core(
         });
     }
 
+    log::info!(
+        "refresh: starting {scope:?}; feeds={}, newsletters={}, concurrency={concurrency}",
+        feeds.len(),
+        newsletters.len()
+    );
     on_event(RefreshProgress::Started { total: feeds.len() });
 
     let sem = Arc::new(Semaphore::new(concurrency));
@@ -210,10 +216,12 @@ pub async fn refresh_core(
             Outcome::NotModified => {
                 let conn = db.lock().await;
                 let _ = db::touch_feed(&conn, feed_id);
+                log::info!("refresh: feed #{feed_id} not modified: {feed_url}");
             }
             Outcome::Failed(e) => {
                 let conn = db.lock().await;
                 let _ = db::set_feed_error(&conn, feed_id, &e);
+                log::warn!("refresh: feed #{feed_id} failed: {feed_url}: {e}");
                 error = Some(e);
             }
             Outcome::Updated {
@@ -244,6 +252,9 @@ pub async fn refresh_core(
                 // `/@user.rss` → mastodon). A no-op for an already classified feed.
                 let refined = parse::refine_source_type(SourceType::Rss, &parsed, &feed_url);
                 let _ = db::refine_feed_source_type(&conn, feed_id, refined);
+                log::info!(
+                    "refresh: feed #{feed_id} updated: {feed_url}; new_articles={new_here}"
+                );
             }
         }
 
@@ -285,6 +296,7 @@ pub async fn refresh_core(
     on_event(RefreshProgress::Finished {
         new_articles: total_new,
     });
+    log::info!("refresh: finished {scope:?}; new_articles={total_new}");
     Ok(RefreshSummary {
         new_articles: total_new,
         ran: true,
