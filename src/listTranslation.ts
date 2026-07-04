@@ -28,10 +28,37 @@ interface ListTranslationState {
 }
 
 const MAX_CONCURRENT = 3;
+// Cap the retained job map. The reader's body-translation store prunes via
+// `clear` once its result is read back; this store has no single read-back
+// point (every visible row reads its job on each render), so instead it evicts
+// the oldest *settled* jobs when the map grows past this bound. Completed
+// results are also persisted in the DB preview cache, so an evicted row simply
+// re-resolves from that cache on its next pass rather than losing anything.
+const MAX_JOBS = 400;
 const keyFor = (articleId: number, lang: string, engine: string) =>
   `${articleId}:${lang}:${engine}`;
 
 export const listTranslationKey = keyFor;
+
+// Drop the oldest done/error jobs once the map exceeds MAX_JOBS; queued and
+// in-flight jobs are never evicted (a running job must survive to record its
+// result). Object key insertion order approximates least-recently-added.
+const pruneJobs = (
+  jobs: Record<string, ListTranslationJob>,
+): Record<string, ListTranslationJob> => {
+  const keys = Object.keys(jobs);
+  const overflow = keys.length - MAX_JOBS;
+  if (overflow <= 0) return jobs;
+  const evictable = keys.filter((k) => {
+    const s = jobs[k].status;
+    return s === "done" || s === "error";
+  });
+  if (evictable.length === 0) return jobs;
+  const drop = new Set(evictable.slice(0, Math.min(overflow, evictable.length)));
+  const next: Record<string, ListTranslationJob> = {};
+  for (const k of keys) if (!drop.has(k)) next[k] = jobs[k];
+  return next;
+};
 
 export const useListTranslation = create<ListTranslationState>((set, get) => {
   const runNext = () => {
@@ -130,7 +157,7 @@ export const useListTranslation = create<ListTranslationState>((set, get) => {
       }
 
       if (!changed) return;
-      set((s) => ({ jobs: { ...s.jobs, ...additions } }));
+      set((s) => ({ jobs: pruneJobs({ ...s.jobs, ...additions }) }));
       runNext();
     },
   };
