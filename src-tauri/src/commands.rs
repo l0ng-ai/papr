@@ -870,17 +870,6 @@ pub struct ArticlePreviewTranslation {
     engine: String,
 }
 
-fn preview_translation_prompt(target: &str) -> String {
-    format!(
-        "You are a professional translator. Translate the text content of the \
-         HTML fragment into {target}.\n\n\
-         Rules:\n\
-         - Preserve the h1 and p tags exactly.\n\
-         - Translate only human-readable text.\n\
-         - Output only the translated HTML fragment: no preamble, no code fences."
-    )
-}
-
 fn escape_preview_text(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -945,7 +934,7 @@ pub async fn translate_article_preview(
         let (title, body) = db::article_preview_text(&conn, article_id)?;
         (
             title,
-            truncate(body.trim(), 280),
+            truncate(body.trim(), db::PREVIEW_SNIPPET_CHARS),
             build_translate_selection(&conn, &engine)?,
             target,
         )
@@ -956,7 +945,10 @@ pub async fn translate_article_preview(
 
     let http = state.http();
     let backend = translate::ready(&http, sel).await?;
-    let system = preview_translation_prompt(translate::language_name(&target));
+    // Reuse the reader's canonical translation prompt rather than a second copy:
+    // the preview fragment is just an `<h1>`/`<p>` pair, so "preserve every HTML
+    // tag" covers it, and a single prompt can never drift between the two paths.
+    let system = translate::translate_system_prompt(translate::language_name(&target));
     let source = preview_translation_html(&title, &snippet);
     let raw = backend.translate_batch(&http, &system, &source, &target).await?;
     let clean = sanitize::sanitize(raw.trim(), None);
@@ -969,7 +961,7 @@ pub async fn translate_article_preview(
     {
         let conn = state.db.lock().await;
         let (current_title, current_body) = db::article_preview_text(&conn, article_id)?;
-        let current_snippet = truncate(current_body.trim(), 280);
+        let current_snippet = truncate(current_body.trim(), db::PREVIEW_SNIPPET_CHARS);
         if current_title != title || current_snippet != snippet {
             return Err(AppError::code("articlePreviewChanged"));
         }
@@ -1605,6 +1597,38 @@ pub async fn delete_highlight(state: State<'_, AppState>, id: i64) -> AppResult<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- preview-translation helpers: the plain-text round-trip the list uses ---
+
+    #[test]
+    fn escape_preview_text_escapes_markup_sensitive_chars() {
+        assert_eq!(
+            escape_preview_text(r#"A & B < C > "D""#),
+            "A &amp; B &lt; C &gt; &quot;D&quot;",
+        );
+    }
+
+    #[test]
+    fn preview_html_escaping_survives_a_bracket_in_the_title() {
+        // A title like "Rust <T>: generics" must not inject a stray tag: after
+        // escaping and re-parsing, the fragment is still exactly one h1 + one p,
+        // and the text extracted back out matches the source verbatim.
+        let html = preview_translation_html("Rust <T>: generics", "a & b");
+        assert_eq!(text_for_selector(&html, "h1"), "Rust <T>: generics");
+        assert_eq!(text_for_selector(&html, "p"), "a & b");
+    }
+
+    #[test]
+    fn text_for_selector_extracts_and_collapses_whitespace() {
+        let frag = "<h1>  Hello   world </h1><p>one\n two</p>";
+        assert_eq!(text_for_selector(frag, "h1"), "Hello world");
+        assert_eq!(text_for_selector(frag, "p"), "one two");
+    }
+
+    #[test]
+    fn text_for_selector_returns_empty_when_the_tag_is_absent() {
+        assert_eq!(text_for_selector("<p>body only</p>", "h1"), "");
+    }
 
     // --- referer_candidates: the Referer fallback chain for image fetches. ---
 

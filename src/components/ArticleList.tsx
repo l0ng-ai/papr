@@ -7,6 +7,7 @@ import * as api from "../api";
 import { useUi } from "../store";
 import { useArticleActions } from "../hooks/articleActions";
 import { listTranslationKey, useListTranslation } from "../listTranslation";
+import { resolveRowTranslation } from "../lib/rowTranslation";
 import { relTime } from "../lib/feedMeta";
 import { isMac, modCombo } from "../lib/platform";
 import { reportError, toast } from "../toast";
@@ -583,25 +584,12 @@ export default function ArticleList({ onToast }: Props) {
               const feed = feedById[a.feedId];
               const liveTranslation =
                 listTranslationJobs[listTranslationKey(a.id, targetLang, translateEngine)];
-              const showListTranslation = listTranslateMode === "auto";
-              const liveTranslated =
-                liveTranslation?.status === "done" &&
-                (!!liveTranslation.title || !!liveTranslation.snippet);
-              const hasListTranslation = showListTranslation && liveTranslated;
-              const isTranslating =
-                showListTranslation &&
-                (liveTranslation?.status === "queued" ||
-                  liveTranslation?.status === "translating");
-              const translateError =
-                showListTranslation && liveTranslation?.status === "error"
-                  ? liveTranslation.error || t("error.unknown")
-                  : null;
-              const translatedTitle = hasListTranslation
-                ? liveTranslation.title || a.title
-                : a.title;
-              const translatedSnippet = hasListTranslation
-                ? liveTranslation.snippet || a.snippet
-                : a.snippet;
+              const rt = resolveRowTranslation(
+                a,
+                liveTranslation,
+                listTranslateMode,
+                t("error.unknown"),
+              );
               return (
                 // Key by the virtual slot, not the article id. The window of
                 // rendered rows is a fixed band that slides as you scroll, so
@@ -651,26 +639,24 @@ export default function ArticleList({ onToast }: Props) {
                       )}
                       <span className="art-sep">·</span>
                       <span className="art-time">{relTime(a.publishedAt)}</span>
-                      {(isTranslating || translateError) && (
+                      {(rt.isTranslating || rt.error) && (
                         <span
                           className={`art-translate-status ${
-                            translateError ? "error" : "loading"
+                            rt.error ? "error" : "loading"
                           }`}
                           data-no-hover-preview
                           title={
-                            translateError ||
-                            t("articleList.translateStatusLoading")
+                            rt.error || t("articleList.translateStatusLoading")
                           }
                           aria-label={
-                            translateError ||
-                            t("articleList.translateStatusLoading")
+                            rt.error || t("articleList.translateStatusLoading")
                           }
                           onMouseEnter={leaveHover}
                         >
                           <Icon
-                            name={translateError ? "alert" : "refresh"}
+                            name={rt.error ? "alert" : "refresh"}
                             size={11}
-                            className={translateError ? undefined : "spinning"}
+                            className={rt.error ? undefined : "spinning"}
                           />
                         </span>
                       )}
@@ -685,15 +671,15 @@ export default function ArticleList({ onToast }: Props) {
                         </span>
                       )}
                     </div>
-                    <h3 className="art-title" title={hasListTranslation ? a.title : undefined}>
-                      {translatedTitle}
+                    <h3 className="art-title" title={rt.hasTranslation ? a.title : undefined}>
+                      {rt.title}
                     </h3>
-                    {translatedSnippet && (
+                    {rt.snippet && (
                       <p
                         className="art-snippet"
-                        title={hasListTranslation ? (a.snippet ?? undefined) : undefined}
+                        title={rt.hasTranslation ? (a.snippet ?? undefined) : undefined}
                       >
-                        {translatedSnippet}
+                        {rt.snippet}
                       </p>
                     )}
                   </div>

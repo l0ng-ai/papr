@@ -10,6 +10,13 @@ use std::path::Path;
 use std::sync::LazyLock;
 
 /// Append-only schema migrations. Never edit a shipped migration — add a new one.
+/// How many leading characters of an article's `body_text` form the list
+/// "snippet". This single source of truth is shared by the list query (which
+/// derives `ArticleSummary.snippet`) and the preview-translation command (which
+/// translates the same slice), so the translated snippet always corresponds to
+/// the original the list would otherwise show.
+pub const PREVIEW_SNIPPET_CHARS: usize = 280;
+
 static MIGRATIONS: LazyLock<Migrations> = LazyLock::new(|| {
     Migrations::new(vec![M::up(
         r#"
@@ -263,7 +270,6 @@ static MIGRATIONS: LazyLock<Migrations> = LazyLock::new(|| {
                 engine     TEXT NOT NULL,
                 title      TEXT NOT NULL,
                 snippet    TEXT NOT NULL,
-                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                 PRIMARY KEY(article_id, lang, engine)
             );
             CREATE TRIGGER article_preview_translations_au
@@ -1188,11 +1194,12 @@ pub fn list_articles(
     let (mut where_clauses, mut binds) = article_filter(query, unread_only);
 
     let searching = search.map(|s| !s.trim().is_empty()).unwrap_or(false);
-    let mut sql = String::from(
+    let mut sql = format!(
         "SELECT a.id, a.feed_id, f.title, f.source_type, a.title, a.author,
-                substr(a.body_text,1,280), a.image_url, a.url, a.published_at,
+                substr(a.body_text,1,{snippet_len}), a.image_url, a.url, a.published_at,
                 a.is_read, a.is_starred, a.read_later
          FROM articles a JOIN feeds f ON f.id = a.feed_id ",
+        snippet_len = PREVIEW_SNIPPET_CHARS,
     );
     if searching {
         sql.push_str("JOIN articles_fts fts ON fts.rowid = a.id ");
@@ -1513,12 +1520,11 @@ pub fn set_preview_translation(
     engine: &str,
 ) -> AppResult<()> {
     conn.execute(
-        "INSERT INTO article_preview_translations(article_id, lang, engine, title, snippet, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, datetime('now'))
+        "INSERT INTO article_preview_translations(article_id, lang, engine, title, snippet)
+         VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(article_id, lang, engine) DO UPDATE SET
              title = excluded.title,
-             snippet = excluded.snippet,
-             updated_at = excluded.updated_at",
+             snippet = excluded.snippet",
         params![id, lang, engine, title.trim(), snippet.trim()],
     )?;
     Ok(())
