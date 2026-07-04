@@ -236,6 +236,7 @@ pub fn run() {
             commands::ai_ask,
             commands::ai_digest,
             commands::ai_translate,
+            commands::translate_article_preview,
             commands::storage_stats,
             commands::cleanup_articles,
             commands::vacuum_db,

@@ -100,6 +100,14 @@ export interface Rule {
   position: number;
 }
 
+export interface ArticlePreviewTranslation {
+  articleId: number;
+  title: string;
+  snippet: string;
+  lang: string;
+  engine: string;
+}
+
 export interface ArticleSummary {
   id: number;
   feedId: number;
