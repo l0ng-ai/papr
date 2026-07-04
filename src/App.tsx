@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
@@ -40,6 +41,13 @@ const ACCENT = {
 // darker `--paper` floor — otherwise the exposed strip flashes a shade darker
 // than the reader content it sits next to. Mirrors `--reader` in styles.css.
 const DARK_BACKING = "#1D1E1F";
+
+// "#RRGGBB" → [r, g, b]. Used to hand the native backing colour to the
+// set_native_backing command, which paints macOS surfaces the JS setters miss.
+function hexRgb(hex: string): [number, number, number] {
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 0xff, (n >> 8) & 0xff, n & 0xff];
+}
 
 export default function App() {
   const { t } = useTranslation();
@@ -91,7 +99,7 @@ export default function App() {
     root.style.setProperty("--accent-soft", dark ? a.dSoft : a.soft);
     root.style.setProperty("--accent-ink", dark ? a.dInk : a.ink);
     // Keep the native window backing on the themed reader colour. The webview is
-    // non-opaque on macOS (see lib.rs), so a live resize exposes the NSWindow
+    // non-opaque on macOS (see backing.rs), so a live resize exposes the NSWindow
     // background in the strip the webview hasn't repainted yet — use --reader so
     // that strip blends with the reader pane it sits next to. (On Win/Linux the
     // webview is opaque, so setBackgroundColor here mainly covers their own
@@ -99,6 +107,12 @@ export default function App() {
     const backing = dark ? DARK_BACKING : "#FBF9F3";
     getCurrentWindow().setBackgroundColor(backing).catch(() => {});
     getCurrentWebview().setBackgroundColor(backing).catch(() => {});
+    // macOS only: the calls above can't reach `underPageBackgroundColor`, the
+    // overscroll/resize *gutter* that otherwise stays stuck on the light config
+    // colour and flashes white at a fast-resize edge. set_native_backing pins it
+    // (plus drawsBackground + NSWindow) in one shot; a no-op off macOS.
+    const [r, g, b] = hexRgb(backing);
+    invoke("set_native_backing", { r, g, b }).catch(() => {});
   }, [theme, density]);
 
   // ── dismiss the boot splash once the app shell has mounted ──

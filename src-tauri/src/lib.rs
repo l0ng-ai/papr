@@ -8,6 +8,7 @@
 // `crate::ingestion`, etc. unchanged.
 pub use papr_core::{ai, db, error, extraction, ingestion, models, opml, sanitize, sync};
 
+mod backing;
 mod commands;
 mod notify;
 mod page_view;
@@ -128,55 +129,35 @@ pub fn run() {
                 }
             }
 
-            // ── Kill the WKWebview's opaque white backing (macOS) ─────
-            // On macOS wry creates the WKWebview isOpaque=true / drawsBackground
-            // =true (a solid WHITE backing) and only turns that off under its
-            // `transparent` cargo feature — which we don't enable. So during a
-            // live window resize the webview's renderer lags the new size and
-            // the freshly-exposed strip shows that white backing. No CSS, html
-            // background, or NSWindow colour can cover it: the opaque webview
-            // layer composites ON TOP of the page. The only fix is to make the
-            // webview non-opaque so the (themed) NSWindow background shows
-            // through that strip instead. See tauri-apps/tauri#14288.
-            #[cfg(target_os = "macos")]
-            if let Some(win) = app.get_webview_window("main") {
-                let _ = win.with_webview(|webview| {
-                    use objc2::msg_send;
-                    use objc2::runtime::AnyObject;
-                    use objc2_foundation::{NSNumber, NSString};
-                    let wk = webview.inner() as *mut AnyObject;
-                    if !wk.is_null() {
-                        unsafe {
-                            let _: () = msg_send![wk, setOpaque: false];
-                            // `drawsBackground` is a private KVC key on WKWebView
-                            // — the same one wry toggles for transparent windows.
-                            let no = NSNumber::numberWithBool(false);
-                            let key = NSString::from_str("drawsBackground");
-                            let _: () = msg_send![wk, setValue: &*no, forKey: &*key];
-                        }
-                    }
-                });
-            }
-
-            // ── Themed launch background ──────────────────────────────
-            // `tauri.conf.json` hardcodes a light window background, so a
-            // dark-theme user would see a brief light flash in the gap
-            // between window creation and the webview's first paint. Repaint
-            // the window in the saved theme's colour here in `setup` — which
-            // runs before that first frame — so the launch is flash-free.
-            // (The frontend re-asserts this on every theme change.)
-            if theme.as_deref() == Some("dark") {
-                if let Some(win) = app.get_webview_window("main") {
-                    // Match the dark-shade's `--reader` in styles.css / DARK_BACKING
-                    // — the webview is non-opaque, so a resize exposes this colour
-                    // and it must blend with the reader pane, not the darker floor.
-                    let (r, g, b) = match dark_shade.as_deref() {
+            // ── Themed native backing (kills the macOS resize flash) ──
+            // `tauri.conf.json` hardcodes a light window background and wry
+            // leaves the WKWebView painting an opaque white backing (it only
+            // disables that under its `transparent` feature, which we don't
+            // build). So between window creation and the webview's first paint —
+            // and in the strip a live resize exposes — a dark-theme user sees a
+            // white flash. `backing::apply` repaints every native surface that
+            // can show through (drawsBackground / underPageBackgroundColor /
+            // NSWindow). Done here before the first frame; the frontend
+            // re-asserts it on every theme change. See backing.rs / tauri#14288.
+            {
+                let (r, g, b) = if theme.as_deref() == Some("dark") {
+                    // Match the dark-shade's `--reader` in styles.css — the
+                    // exposed strip must blend with the reader pane, not the
+                    // darker floor.
+                    match dark_shade.as_deref() {
                         Some("dimmer") => (0x1C, 0x17, 0x15),
                         Some("black") => (0x15, 0x10, 0x0F),
-                        _ => (0x25, 0x20, 0x1F),
-                    };
-                    let _ = win
-                        .set_background_color(Some(tauri::window::Color(r, g, b, 0xFF)));
+                        // #1D1E1F — the shipped dark `--reader` (styles.css) and
+                        // the frontend's DARK_BACKING. Keep these in sync so the
+                        // cold-start frame matches before the frontend re-asserts
+                        // `set_native_backing`.
+                        _ => (0x1D, 0x1E, 0x1F),
+                    }
+                } else {
+                    (0xFB, 0xF9, 0xF3)
+                };
+                if let Some(win) = app.get_webview_window("main") {
+                    backing::apply(&win, r, g, b);
                 }
             }
 
@@ -266,6 +247,7 @@ pub fn run() {
             commands::freshrss_status,
             commands::freshrss_sync,
             commands::refresh_tray,
+            commands::set_native_backing,
             commands::take_pending_deep_link,
             commands::list_tags,
             commands::create_tag,
