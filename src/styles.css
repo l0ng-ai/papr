@@ -2944,3 +2944,325 @@ button { font-family: inherit; }
 }
 .hl-export-menu .ctx-item:disabled,
 .send-to-menu .ctx-item:disabled { opacity: 0.5; cursor: default; }
+
+/* ============================================================================
+   MOBILE (iOS) — stacked single-column navigation
+   ----------------------------------------------------------------------------
+   Every rule in this block is scoped under `[data-mobile]`, an attribute set
+   ONCE on <html> from the static platform detection (main.tsx), and only when
+   the app runs in an iOS webview. On desktop the attribute is absent, so all of
+   the below is inert and the three-pane grid renders exactly as it always has.
+   The strategy is layout-only: the same Sidebar / ArticleList / Reader are
+   reused; here they're stacked full-width and slid horizontally instead of laid
+   out side by side. Reduce-motion is honoured by the global rule near the top
+   of this file (it collapses these transitions to ~0ms).
+   ========================================================================== */
+
+/* The shell that replaces the desktop `.window` grid — a positioning context
+   for the three absolutely-stacked panes. */
+[data-mobile] .mobile-shell {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--reader);
+}
+
+/* Each pane fills the shell and is offset by an inline translateX (set from
+   MobileShell). The transition animates a push/pop; `.dragging` suspends it so
+   an in-progress back-swipe follows the finger 1:1. */
+[data-mobile] .ms-pane {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  will-change: transform;
+  transition: transform 0.34s cubic-bezier(0.32, 0.72, 0, 1);
+  /* A deeper pane sliding in must paint over the parallaxed pane behind it;
+     the reader (last in DOM) is naturally on top, sidebar (first) at the back,
+     which matches the push order. A subtle edge shadow sells the depth. */
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.16);
+}
+[data-mobile] .mobile-shell.dragging .ms-pane { transition: none; }
+/* The reused component roots don't set a fill height on their own (the desktop
+   grid sizes them) — stretch them to the pane here. */
+[data-mobile] .ms-pane > .sidebar,
+[data-mobile] .ms-pane > .list,
+[data-mobile] .ms-pane > .reader {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border-right: 0;
+}
+
+/* ── top-of-pane chrome / safe area ──
+   On an iPhone `isMac` is true, so the components render their macOS overlay
+   title-bar strip + drag region. Neither exists in a webview, so drop the drag
+   strip and re-inset each pane's header to the real status-bar / notch inset. */
+[data-mobile] .titlebar { display: none; }
+:root[data-mobile] .sidebar { padding-top: env(safe-area-inset-top); }
+:root[data-mobile] .sb-brand { margin-top: 14px; }
+:root[data-mobile] .list-header {
+  position: relative;
+  padding-top: calc(env(safe-area-inset-top) + 12px);
+  padding-left: 52px; /* clear the absolutely-positioned back chevron */
+}
+/* The title, the "N 篇" count and the translate pills all share one narrow row.
+   Let the title flex-shrink and truncate so the trailing pills can never be
+   pushed off the right edge / under the safe area. The meta group stays a fixed
+   size (flex-shrink: 0) so it's always fully visible; the title gives way. */
+[data-mobile] .list-title { gap: 8px; }
+[data-mobile] .list-title-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-mobile] .list-title-meta { flex-shrink: 0; }
+/* Second toolbar row: keep the controls on one line at narrow widths — the
+   labels are short enough at zh/en/ja to fit 390pt, and the flex:1 spacer
+   between the left filters and "mark read" absorbs the slack. */
+[data-mobile] .list-meta { flex-wrap: nowrap; }
+[data-mobile] .list-meta-btn { white-space: nowrap; flex-shrink: 0; }
+[data-mobile] .reader-toolbar {
+  height: auto;
+  min-height: 44px;
+  padding-top: calc(env(safe-area-inset-top) + 4px);
+  padding-left: 8px;
+  padding-right: 10px;
+  /* 8+ toolbar buttons can exceed a narrow phone width — let the row scroll
+     rather than overflow the viewport. */
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+[data-mobile] .reader-toolbar::-webkit-scrollbar { display: none; }
+
+/* ── back chevron (mobile only; injected into the list header + reader toolbar) ── */
+[data-mobile] .ms-back {
+  -webkit-appearance: none;
+  appearance: none;
+  background: none;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  color: var(--accent);
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+/* The icon set has no left chevron — flip the right one, as the lightbox does. */
+[data-mobile] .ms-back svg { transform: rotate(180deg); }
+[data-mobile] .list-header .ms-back {
+  position: absolute;
+  left: 8px;
+  top: calc(env(safe-area-inset-top) + 8px);
+}
+
+/* ── 44pt touch targets ── */
+[data-mobile] .sb-item { min-height: 44px; }
+[data-mobile] .sb-folder { min-height: 40px; }
+[data-mobile] .tb-btn { width: 40px; height: 40px; }
+[data-mobile] .list-meta-btn { min-height: 34px; }
+[data-mobile] .sidebar-search { height: 42px; font-size: 14px; }
+/* The ⌘K hint is meaningless without a hardware keyboard. */
+[data-mobile] .sidebar-search kbd { display: none; }
+
+/* ── the sidebar footer becomes a bottom tab bar ── */
+[data-mobile] .sb-footer {
+  padding: 8px 20px calc(8px + env(safe-area-inset-bottom));
+  gap: 8px;
+  justify-content: space-around;
+}
+[data-mobile] .sb-footer button { width: 44px; height: 44px; }
+
+/* ── toasts float above the bottom tab bar / home indicator ── */
+[data-mobile] .toast {
+  bottom: calc(env(safe-area-inset-bottom) + 72px);
+  max-width: calc(100vw - 24px);
+}
+
+/* ── dialogs become full-screen sheets ── */
+/* Command palette / full-screen search. */
+[data-mobile] .cp-backdrop {
+  padding-top: 0;
+  align-items: stretch;
+  justify-content: stretch;
+}
+[data-mobile] .cp {
+  width: 100%;
+  max-width: 100%;
+  border-radius: 0;
+  border: 0;
+  display: flex;
+  flex-direction: column;
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+/* Settings: full-screen sheet hosting an iOS-style two-level drill-down (the
+   desktop rail + content grid isn't rendered on mobile — see SettingsDialog).
+   `display: block` neutralises the desktop grid; the two `.settings-m-pane`s
+   are absolutely stacked and slid, mirroring MobileShell's push/pop. */
+[data-mobile] .settings-window {
+  width: 100%;
+  max-width: 100%;
+  height: 100%;
+  max-height: 100%;
+  border-radius: 0;
+  display: block;
+  overflow: hidden;
+}
+[data-mobile] .settings-mobile {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+[data-mobile] .settings-m-pane {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--panel-2);
+  will-change: transform;
+  /* Same curve/duration as .ms-pane so the whole app's push/pop feels like one
+     system. Reduce-motion collapses this via the global rule above. */
+  transition: transform 0.34s cubic-bezier(0.32, 0.72, 0, 1);
+}
+[data-mobile] .settings-m-section {
+  transform: translateX(100%);
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.16);
+}
+/* Pushed: section slides in, the list parallaxes left behind it (same -22%
+   "card behind" offset as the app shell). */
+[data-mobile] .settings-mobile.pushed .settings-m-nav { transform: translateX(-22%); }
+[data-mobile] .settings-mobile.pushed .settings-m-section { transform: translateX(0); }
+
+[data-mobile] .settings-m-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: calc(env(safe-area-inset-top) + 8px) 12px 8px;
+  border-bottom: 1px solid var(--hair);
+  flex-shrink: 0;
+}
+[data-mobile] .settings-m-header h2 {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The list header has no back chevron — inset its title to match the section
+   header's optical left edge. */
+[data-mobile] .settings-m-nav .settings-m-header h2 { padding-left: 8px; }
+/* The shared close (×) participates in the header row here instead of floating
+   over the desktop content pane; 40pt to be comfortably tappable. */
+[data-mobile] .settings-m-header .settings-close {
+  position: static;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+}
+
+[data-mobile] .settings-m-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 6px 16px calc(env(safe-area-inset-bottom) + 16px);
+}
+[data-mobile] .settings-m-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 48px;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--hair);
+  border-radius: 0;
+  padding: 0 2px;
+  font: inherit;
+  font-size: 15px;
+  color: var(--ink);
+  text-align: left;
+  cursor: pointer;
+}
+[data-mobile] .settings-m-item:last-of-type { border-bottom: 0; }
+[data-mobile] .settings-m-item .nav-ico {
+  width: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+[data-mobile] .settings-m-item-label { flex: 1; min-width: 0; }
+[data-mobile] .settings-m-chevron {
+  display: inline-flex;
+  color: var(--muted-2);
+  flex-shrink: 0;
+}
+
+/* ── settings content at phone width ──
+   The rows were laid out for a ~640px pane. At ~390px, let a row wrap: a small
+   control (toggle) stays beside its label, a wide one (segmented, slider,
+   select, input) drops below it, label-above-control style. */
+[data-mobile] .settings-scroll {
+  padding: 16px 16px calc(env(safe-area-inset-bottom) + 48px);
+}
+[data-mobile] .settings-row {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+/* Reserve enough of the line that any control wider than ~35% wraps below. */
+[data-mobile] .settings-row-text { min-width: 60%; }
+[data-mobile] .settings-row-control {
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+[data-mobile] .settings-row-control input { max-width: 100%; }
+/* Comfortable touch sizes for the row controls. */
+[data-mobile] .s-select { min-height: 36px; }
+[data-mobile] .s-btn { min-height: 38px; }
+[data-mobile] .s-toggle { width: 44px; height: 26px; }
+[data-mobile] .s-toggle::before { width: 22px; height: 22px; }
+[data-mobile] .s-toggle:checked::before { transform: translateX(18px); }
+/* The shortcut table's two columns don't fit a phone. */
+[data-mobile] .s-shortcuts { grid-template-columns: 1fr; }
+/* Subscription feed rows (name · url · actions) wrap instead of clipping. */
+[data-mobile] .s-feed-row { flex-wrap: wrap; }
+[data-mobile] .s-feed-row .name { max-width: 100%; }
+/* AddFeed / Explore / Prompt modals → bottom sheets. */
+[data-mobile] .modal-backdrop { align-items: flex-end; }
+[data-mobile] .modal,
+[data-mobile] .modal-explore {
+  width: 100%;
+  max-width: 100%;
+  border-radius: 16px 16px 0 0;
+  padding-bottom: calc(18px + env(safe-area-inset-bottom));
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+/* ── audio mini-player: full-width, clear of the home indicator ── */
+[data-mobile] .player-bar {
+  height: auto;
+  min-height: 56px;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* ── lightbox: honour the safe areas ── */
+[data-mobile] .lightbox { padding: 16px; }
+[data-mobile] .lightbox-close { top: calc(env(safe-area-inset-top) + 8px); }
+[data-mobile] .lightbox-counter {
+  bottom: calc(env(safe-area-inset-bottom) + 14px);
+}

@@ -9,7 +9,7 @@ import { useArticleActions } from "../hooks/articleActions";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { LANGUAGES, setLanguage, type Language } from "../i18n";
 import { feedHost } from "../lib/feedMeta";
-import { modKey, modCombo, isDesktop } from "../lib/platform";
+import { modKey, modCombo, isDesktop, isMobile } from "../lib/platform";
 import { reportError } from "../toast";
 import { checkForUpdates } from "../lib/updater";
 import { downloadFile } from "../lib/download";
@@ -70,6 +70,12 @@ export default function SettingsDialog({
 }: Props) {
   const { t } = useTranslation();
   const [section, setSection] = useState(initialSection ?? "general");
+  // Mobile only: whether a section is pushed over the section list (the same
+  // one-flag drill-down MobileShell uses). Opening with an explicit
+  // `initialSection` (⌘, → subscriptions from the OPML command, etc.) lands
+  // directly on that section, with the back chevron leading to the list.
+  // Unused on desktop, where the rail and content are side by side.
+  const [sectionOpen, setSectionOpen] = useState(initialSection != null);
   const feeds = useQuery({ queryKey: ["feeds"], queryFn: api.listFeeds });
   const windowRef = useRef<HTMLDivElement>(null);
   const version = useAppVersion();
@@ -102,6 +108,42 @@ export default function SettingsDialog({
     about: t("settings.sub.about"),
   };
 
+  // The active section's pane, shared verbatim by the desktop and mobile
+  // layouts — only the chrome around it differs, so the sections themselves
+  // are never forked.
+  const sectionContent = (
+    <div className="settings-scroll">
+      {section === "general" && <GeneralSection />}
+      {section === "appearance" && <AppearanceSection />}
+      {section === "reading" && <ReadingSection />}
+      {section === "subscriptions" && (
+        <SubscriptionsSection
+          feeds={feeds.data ?? []}
+          onToast={onToast}
+          onAddFeed={onAddFeed}
+        />
+      )}
+      {section === "filters" && (
+        <FiltersSection feeds={feeds.data ?? []} onToast={onToast} />
+      )}
+      {section === "sync" && <SyncSection onToast={onToast} />}
+      {section === "shortcuts" && <ShortcutsSection />}
+      {section === "notifications" && <NotificationsSection />}
+      {section === "advanced" && <AdvancedSection onToast={onToast} />}
+      {section === "about" && <AboutSection />}
+    </div>
+  );
+
+  const closeButton = (
+    <button
+      className="settings-close"
+      onClick={onClose}
+      title={t("settings.closeTitle")}
+    >
+      <Icon name="x" size={15} />
+    </button>
+  );
+
   return (
     <div className="settings-backdrop" onClick={onClose}>
       <div
@@ -112,63 +154,102 @@ export default function SettingsDialog({
         aria-label={t("settings.title")}
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="settings-sidebar">
-          <div className="settings-sidebar-title">
-            {t("settings.title")}
-            <span className="badge">{modCombo(",")}</span>
-          </div>
-          {SECTIONS.map((s) => (
+        {isMobile ? (
+          // Mobile: an iOS-style two-level drill-down instead of the desktop
+          // rail + content grid. Level 1 is the full-width section list; tapping
+          // a row pushes level 2 (that section's pane) with a back chevron.
+          // Both panes stay mounted and slide via the same translateX push/pop
+          // MobileShell uses (`.pushed` drives the CSS); `inert` keeps the
+          // off-screen pane out of the focus trap and screen-reader order.
+          <div className={`settings-mobile ${sectionOpen ? "pushed" : ""}`}>
             <div
-              key={s.id}
-              className={`settings-nav-item ${section === s.id ? "active" : ""}`}
-              onClick={() => setSection(s.id)}
+              className="settings-m-pane settings-m-nav"
+              inert={sectionOpen || undefined}
             >
-              <span className="nav-ico">
-                <Icon name={s.icon} size={15} />
-              </span>
-              {t(s.labelKey)}
+              <div className="settings-m-header">
+                <h2>{t("settings.title")}</h2>
+                {closeButton}
+              </div>
+              <div className="settings-m-list">
+                {SECTIONS.map((s) => (
+                  <button
+                    key={s.id}
+                    type="button"
+                    className="settings-m-item"
+                    onClick={() => {
+                      setSection(s.id);
+                      setSectionOpen(true);
+                    }}
+                  >
+                    <span className="nav-ico">
+                      <Icon name={s.icon} size={16} />
+                    </span>
+                    <span className="settings-m-item-label">{t(s.labelKey)}</span>
+                    <span className="settings-m-chevron" aria-hidden="true">
+                      <Icon name="chevron-right" size={14} />
+                    </span>
+                  </button>
+                ))}
+                <div className="settings-version">
+                  Papr{version && ` ${version}`}
+                </div>
+              </div>
             </div>
-          ))}
-          <div className="settings-nav-spacer" />
-          <div className="settings-version">
-            Papr{version && ` ${version}`}
+            <div
+              className="settings-m-pane settings-m-section"
+              inert={!sectionOpen || undefined}
+            >
+              <div className="settings-m-header">
+                <button
+                  className="ms-back"
+                  onClick={() => setSectionOpen(false)}
+                  aria-label={t("common.back")}
+                  title={t("common.back")}
+                >
+                  <Icon name="chevron-right" size={20} />
+                </button>
+                <h2>{t(cur.labelKey)}</h2>
+                {closeButton}
+              </div>
+              {sectionContent}
+            </div>
           </div>
-        </div>
+        ) : (
+          <>
+            <div className="settings-sidebar">
+              <div className="settings-sidebar-title">
+                {t("settings.title")}
+                <span className="badge">{modCombo(",")}</span>
+              </div>
+              {SECTIONS.map((s) => (
+                <div
+                  key={s.id}
+                  className={`settings-nav-item ${section === s.id ? "active" : ""}`}
+                  onClick={() => setSection(s.id)}
+                >
+                  <span className="nav-ico">
+                    <Icon name={s.icon} size={15} />
+                  </span>
+                  {t(s.labelKey)}
+                </div>
+              ))}
+              <div className="settings-nav-spacer" />
+              <div className="settings-version">
+                Papr{version && ` ${version}`}
+              </div>
+            </div>
 
-        <div className="settings-content">
-          <div className="settings-header">
-            <h2>{t(cur.labelKey)}</h2>
-            <span className="sub">{subs[section]}</span>
-          </div>
-          <button
-            className="settings-close"
-            onClick={onClose}
-            title={t("settings.closeTitle")}
-          >
-            <Icon name="x" size={15} />
-          </button>
+            <div className="settings-content">
+              <div className="settings-header">
+                <h2>{t(cur.labelKey)}</h2>
+                <span className="sub">{subs[section]}</span>
+              </div>
+              {closeButton}
 
-          <div className="settings-scroll">
-            {section === "general" && <GeneralSection />}
-            {section === "appearance" && <AppearanceSection />}
-            {section === "reading" && <ReadingSection />}
-            {section === "subscriptions" && (
-              <SubscriptionsSection
-                feeds={feeds.data ?? []}
-                onToast={onToast}
-                onAddFeed={onAddFeed}
-              />
-            )}
-            {section === "filters" && (
-              <FiltersSection feeds={feeds.data ?? []} onToast={onToast} />
-            )}
-            {section === "sync" && <SyncSection onToast={onToast} />}
-            {section === "shortcuts" && <ShortcutsSection />}
-            {section === "notifications" && <NotificationsSection />}
-            {section === "advanced" && <AdvancedSection onToast={onToast} />}
-            {section === "about" && <AboutSection />}
-          </div>
-        </div>
+              {sectionContent}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );

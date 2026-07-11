@@ -9,7 +9,8 @@ import { useArticleActions } from "../hooks/articleActions";
 import { listTranslationKey, useListTranslation } from "../listTranslation";
 import { resolveRowTranslation } from "../lib/rowTranslation";
 import { relTime } from "../lib/feedMeta";
-import { isMac, modCombo } from "../lib/platform";
+import { isMac, isMobile, modCombo } from "../lib/platform";
+import { isUrlOnlySnippet } from "../lib/snippetNoise";
 import { reportError, toast } from "../toast";
 import { clampToViewport } from "../lib/viewport";
 import type { ArticleSummary, Feed } from "../types";
@@ -20,6 +21,10 @@ const PAGE = 60;
 
 interface Props {
   onToast: (msg: string) => void;
+  /** Mobile only: pop back to the sidebar. Renders a back chevron in the
+   *  header. Absent on desktop, where the sidebar is always visible. */
+  onBack?: () => void;
+  backLabel?: string;
 }
 
 interface Hover {
@@ -28,7 +33,7 @@ interface Hover {
   left: number;
 }
 
-export default function ArticleList({ onToast }: Props) {
+export default function ArticleList({ onToast, onBack, backLabel }: Props) {
   const { t, i18n } = useTranslation();
   const qc = useQueryClient();
   const actions = useArticleActions(toast.error);
@@ -324,6 +329,10 @@ export default function ArticleList({ onToast }: Props) {
   };
 
   const onHover = (a: ArticleSummary, e: React.MouseEvent) => {
+    // The hover preview is a pointer affordance — on touch a tap synthesises a
+    // mouseenter, which would flash the preview over the row the user is
+    // opening. Long-press (below) is the touch equivalent for the row menu.
+    if (isMobile) return;
     if (
       e.target instanceof Element &&
       e.target.closest("[data-no-hover-preview]")
@@ -348,6 +357,28 @@ export default function ArticleList({ onToast }: Props) {
     window.clearTimeout(hoverTimer.current);
     setHover(null);
   };
+
+  // ── touch long-press → the row context menu (mobile) ──
+  // Touch has no right-click, so a ~500ms press opens the same menu the desktop
+  // raises on `onContextMenu`. A press that fires the menu also suppresses the
+  // tap that would otherwise open the article (`pressFired`), and any scroll
+  // (touchmove) cancels the pending press so it never fights a fling-scroll.
+  const pressTimer = useRef<number | undefined>(undefined);
+  const pressFired = useRef(false);
+  const onRowTouchStart = (a: ArticleSummary, e: React.TouchEvent) => {
+    if (!isMobile) return;
+    pressFired.current = false;
+    const tch = e.touches[0];
+    const x = tch.clientX;
+    const y = tch.clientY;
+    window.clearTimeout(pressTimer.current);
+    pressTimer.current = window.setTimeout(() => {
+      pressFired.current = true;
+      setMenu({ x, y, article: a });
+    }, 500);
+  };
+  const cancelPress = () => window.clearTimeout(pressTimer.current);
+  useEffect(() => () => window.clearTimeout(pressTimer.current), []);
 
   const articleMenu = (a: ArticleSummary): MenuEntry[] => [
     { icon: "open", label: t("articleList.menuOpen"), shortcut: "⏎", onClick: () => openArticle(a.id) },
@@ -449,16 +480,43 @@ export default function ArticleList({ onToast }: Props) {
       .catch((e) => reportError(e));
   };
 
+  // Feed/folder/tag views carry their own title; smart views re-translate live.
+  const headerTitle =
+    query.kind === "feed" || query.kind === "folder" || query.kind === "tag"
+      ? queryLabel
+      : t(`smart.${query.kind}`);
+
+  // In a single-feed view every row belongs to the same feed, so repeating the
+  // feed name on each row's meta line is pure redundancy. On mobile — where the
+  // row is narrow and the name pushes the timestamp around — drop it and show
+  // just the time. Mixed views (all/unread/starred/readLater/folder/tag) still
+  // need the per-row feed name to tell sources apart, so they keep it.
+  const hideRowFeed = isMobile && query.kind === "feed";
+
   return (
     <div className="list" role="region" aria-labelledby="article-list-title">
       <div className="list-header" {...(isMac && { "data-tauri-drag-region": true })}>
+        {onBack && (
+          <button
+            className="ms-back"
+            onClick={onBack}
+            aria-label={backLabel}
+            title={backLabel}
+          >
+            <Icon name="chevron-right" size={20} />
+          </button>
+        )}
         <h1 className="list-title" id="article-list-title">
           {/* Smart views re-translate live; feed/folder/tag keep their own title. */}
-          {query.kind === "feed" ||
-          query.kind === "folder" ||
-          query.kind === "tag"
-            ? queryLabel
-            : t(`smart.${query.kind}`)}
+          {/* On mobile the title shares one narrow row with the count + translate
+              pills, so it's wrapped in a shrinkable span that truncates with an
+              ellipsis (styled under [data-mobile]) — keeping the trailing pills
+              inside the safe area. Desktop keeps the bare text node unchanged. */}
+          {isMobile ? (
+            <span className="list-title-text">{headerTitle}</span>
+          ) : (
+            headerTitle
+          )}
           <span className="list-title-meta">
             <span className="count">
               {browse.isLoading ? t("common.loading") : showCount}
@@ -620,11 +678,23 @@ export default function ArticleList({ onToast }: Props) {
                     role="option"
                     id={`option-article-${a.id}`}
                     aria-selected={selectedId === a.id}
-                    onClick={() => openArticle(a.id)}
+                    onClick={() => {
+                      // A completed long-press already opened the menu — swallow
+                      // the tap so the article doesn't also open behind it.
+                      if (pressFired.current) {
+                        pressFired.current = false;
+                        return;
+                      }
+                      openArticle(a.id);
+                    }}
                     onContextMenu={(e) => {
                       e.preventDefault();
                       setMenu({ x: e.clientX, y: e.clientY, article: a });
                     }}
+                    onTouchStart={(e) => onRowTouchStart(a, e)}
+                    onTouchMove={cancelPress}
+                    onTouchEnd={cancelPress}
+                    onTouchCancel={cancelPress}
                     onMouseEnter={(e) => onHover(a, e)}
                     onMouseLeave={leaveHover}
                   >
@@ -633,11 +703,16 @@ export default function ArticleList({ onToast }: Props) {
                     )}
                     <div className="art-head">
                       {!a.isRead && <span className="art-dot" />}
-                      <span className="art-feed">{a.feedTitle}</span>
+                      {!hideRowFeed && (
+                        <span className="art-feed">{a.feedTitle}</span>
+                      )}
                       {feed && feed.sourceType !== "rss" && (
                         <span className="src-badge">{feed.sourceType}</span>
                       )}
-                      <span className="art-sep">·</span>
+                      {/* The separator only makes sense between the feed name
+                          and the time; with the name gone it would be a
+                          dangling "·", so drop it too. */}
+                      {!hideRowFeed && <span className="art-sep">·</span>}
                       <span className="art-time">{relTime(a.publishedAt)}</span>
                       {(rt.isTranslating || rt.error) && (
                         <span
@@ -674,7 +749,12 @@ export default function ArticleList({ onToast }: Props) {
                     <h3 className="art-title" title={rt.hasTranslation ? a.title : undefined}>
                       {rt.title}
                     </h3>
-                    {rt.snippet && (
+                    {/* On mobile, suppress snippets that are only link
+                        boilerplate (e.g. HN's "Article URL: … Comments URL: …"),
+                        which otherwise fill both snippet lines with noise. A
+                        translated snippet is real prose, so never suppress it. */}
+                    {rt.snippet &&
+                      !(isMobile && !rt.hasTranslation && isUrlOnlySnippet(rt.snippet)) && (
                       <p
                         className="art-snippet"
                         title={rt.hasTranslation ? (a.snippet ?? undefined) : undefined}
