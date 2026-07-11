@@ -54,6 +54,31 @@ function bodyPlainText(html: string): string {
   return new DOMParser().parseFromString(html, "text/html").body.textContent ?? "";
 }
 
+/** True when the body opens with its own visual media (image / video / iframe)
+ *  before any real text. Such an article already leads with a strong visual, so
+ *  prepending the list-thumbnail hero on top of it just shows a second, often
+ *  unrelated image — the exact complaint in issue #97, where the body starts
+ *  with a `<video>` cover while the feed's `media:thumbnail` is a different png.
+ *  Walking in document order (media element before the first non-whitespace text
+ *  node) is what the plain `body.includes(imageUrl)` guard can't catch, since
+ *  the hero image and the body's lead media are distinct URLs here. */
+function bodyLeadsWithMedia(html: string): boolean {
+  if (!html) return false;
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  const walker = doc.createTreeWalker(
+    doc.body,
+    NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT,
+  );
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      if ((node.textContent ?? "").trim().length > 0) return false;
+    } else if (node instanceof Element) {
+      if (["IMG", "VIDEO", "IFRAME", "PICTURE"].includes(node.tagName)) return true;
+    }
+  }
+  return false;
+}
+
 /** CJK ideographs + Japanese kana + Korean Hangul — scripts read by the
  *  character, not the whitespace-delimited word. */
 const CJK_CHAR = /[぀-ヿ㐀-鿿가-힯豈-﫿]/u;
@@ -472,6 +497,9 @@ export default function Reader({ onToast }: Props) {
       (translating ? `<p><em>${t("reader.translating")}</em></p>` : baseBody)
     : baseBody;
   const displayBody = proxiedBody?.source === body ? proxiedBody.html : body;
+  // Whether the body already opens with its own image/video — if so, the hero
+  // thumbnail is suppressed to avoid a redundant top image (issue #97).
+  const leadsWithMedia = useMemo(() => bodyLeadsWithMedia(baseBody), [baseBody]);
 
   // For hosts that require a Referer (notably 少数派's image CDN), proxy image
   // URLs before injecting the HTML. This avoids relying on WKWebView's image
@@ -944,8 +972,13 @@ export default function Reader({ onToast }: Props) {
             !heroBroken &&
             // Skip the hero when the body already embeds the same image, so
             // feeds that repeat their lead image don't show it twice.
-            !body.includes(a.imageUrl) && (
+            !body.includes(a.imageUrl) &&
+            // Also skip it when the body opens with its own image/video — the
+            // article already leads with a visual, so a separate thumbnail on
+            // top would just be a redundant (often mismatched) image (#97).
+            !leadsWithMedia && (
               <img
+                className="reader-hero"
                 src={heroDataUrl ?? a.imageUrl}
                 alt=""
                 // The original URL when src is a recovered data: URL, so the
