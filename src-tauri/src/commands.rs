@@ -211,6 +211,7 @@ pub async fn add_feed(
         unread_count: unread,
         refresh_interval_min: None,
         auto_translate: false,
+        open_mode: None,
     })
 }
 
@@ -301,6 +302,24 @@ pub async fn set_feed_auto_translate(
 ) -> AppResult<()> {
     let conn = state.db.lock().await;
     db::set_feed_auto_translate(&conn, id, enabled)
+}
+
+/// Set a feed's per-feed open mode — how its articles open in the reader pane.
+/// `None` reverts the feed to the default behaviour (reader view, honouring
+/// the global auto-extract preference).
+#[tauri::command]
+pub async fn set_feed_open_mode(
+    state: State<'_, AppState>,
+    id: i64,
+    mode: Option<String>,
+) -> AppResult<()> {
+    if let Some(m) = mode.as_deref() {
+        if !matches!(m, "reader" | "extracted" | "web") {
+            return Err(AppError::other(format!("unknown open mode: {m}")));
+        }
+    }
+    let conn = state.db.lock().await;
+    db::set_feed_open_mode(&conn, id, mode.as_deref())
 }
 
 #[tauri::command]
@@ -1483,6 +1502,7 @@ pub async fn add_newsletter_source(
         unread_count: unread,
         refresh_interval_min: None,
         auto_translate: false,
+        open_mode: None,
     })
 }
 

@@ -314,9 +314,9 @@
       "maxWidth": "本文の最大幅",
       "readingTime": "推定読了時間を表示",
       "readingTimeDesc": "記事情報バーに推定読了時間を表示します",
-      "fulltext": "全文",
-      "autoExtract": "全文を自動取得",
-      "autoExtractDesc": "要約のみの記事を開いたとき、ページ全文を自動的に取得します"
+      "openModeTitle": "表示方法",
+      "defaultOpenMode": "記事のデフォルト表示",
+      "defaultOpenModeDesc": "記事を開くときのデフォルトの表示方法。フィードごとに上書きできます"
     },
     "subscriptions": {
       "searchPlaceholder": "フィードを検索…",
@@ -334,6 +334,11 @@
       "refreshOff": "なし",
       "autoTranslate": "自動翻訳",
       "autoTranslateDesc": "このフィードの記事を開いたときに自動的に翻訳します",
+      "openMode": "記事の表示方法",
+      "openDefault": "全体設定に従う",
+      "openReader": "RSS 本文",
+      "openExtracted": "全文を自動取得",
+      "openWeb": "Web ページ",
       "unsubscribe": "購読解除",
       "noMatch": "一致するフィードがありません。",
       "opmlExported": "OPML をダウンロードフォルダにエクスポートしました",

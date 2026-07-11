@@ -62,6 +62,11 @@ pub struct Feed {
     /// translation into the configured target language. Off by default, so
     /// existing feeds keep showing the original text.
     pub auto_translate: bool,
+    /// How articles from this feed open in the reader pane: `"reader"` (RSS
+    /// content), `"extracted"` (auto-run full-text extraction) or `"web"`
+    /// (embedded web view of the original page). `None` follows the default
+    /// behaviour (reader view, honouring the global auto-extract preference).
+    pub open_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

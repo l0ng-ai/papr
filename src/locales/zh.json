@@ -314,9 +314,9 @@
       "maxWidth": "正文最大宽度",
       "readingTime": "显示预计阅读时间",
       "readingTimeDesc": "在文章信息栏显示估算阅读时长",
-      "fulltext": "全文",
-      "autoExtract": "自动提取全文",
-      "autoExtractDesc": "打开只有摘要的文章时，自动抓取网页正文"
+      "openModeTitle": "打开方式",
+      "defaultOpenMode": "默认打开方式",
+      "defaultOpenModeDesc": "文章默认的打开方式，可在订阅源列表中按源覆盖"
     },
     "subscriptions": {
       "searchPlaceholder": "在订阅源中查找…",
@@ -334,6 +334,11 @@
       "refreshOff": "从不",
       "autoTranslate": "自动翻译",
       "autoTranslateDesc": "打开此订阅源的文章时自动翻译",
+      "openMode": "打开方式",
+      "openDefault": "跟随全局",
+      "openReader": "RSS 正文",
+      "openExtracted": "自动全文",
+      "openWeb": "网页视图",
       "unsubscribe": "退订",
       "noMatch": "没有匹配的订阅源。",
       "opmlExported": "OPML 已导出到下载文件夹",

@@ -77,6 +77,11 @@ function clamp(n: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, n));
 }
 
+/** How an article opens by default: reader view, auto-extracted full text,
+ *  or the embedded web view. Individual feeds can override it (`Feed.openMode`). */
+export type OpenMode = "reader" | "extracted" | "web";
+export const OPEN_MODES: readonly OpenMode[] = ["reader", "extracted", "web"];
+
 /** Behavioural preferences driven by the Settings panel. */
 export interface Prefs {
   showSidebarCounts: boolean;
@@ -85,7 +90,7 @@ export interface Prefs {
   showReadingTime: boolean;
   markReadOnOpen: boolean;
   markReadOnScroll: boolean;
-  autoExtract: boolean;
+  defaultOpenMode: OpenMode;
   startupView: StartupView;
   hideReadOnStartup: boolean;
   /** Sidebar "unread only" mode — hide feeds with no unread articles. */
@@ -204,7 +209,7 @@ const PREF_KEYS: (keyof Prefs)[] = [
   "showReadingTime",
   "markReadOnOpen",
   "markReadOnScroll",
-  "autoExtract",
+  "defaultOpenMode",
   "startupView",
   "hideReadOnStartup",
   "sidebarUnreadOnly",
@@ -257,7 +262,13 @@ function loadPrefs(): Prefs {
     showReadingTime: ls.bool("pref.showReadingTime", true),
     markReadOnOpen: ls.bool("pref.markReadOnOpen", true),
     markReadOnScroll: ls.bool("pref.markReadOnScroll", false),
-    autoExtract: ls.bool("pref.autoExtract", false),
+    // Migrates the pre-0.15 boolean "auto-extract full text" toggle: a user
+    // who had it on keeps auto-extraction as their default open mode.
+    defaultOpenMode: ls.oneOf<OpenMode>(
+      "pref.defaultOpenMode",
+      OPEN_MODES,
+      ls.bool("pref.autoExtract", false) ? "extracted" : "reader",
+    ),
     startupView: ls.oneOf<StartupView>(
       "pref.startupView",
       ["all", "unread", "starred", "last"],
