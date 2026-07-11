@@ -1459,12 +1459,16 @@ button { font-family: inherit; }
 .hover-preview .hp-meta { margin-top: 10px; font-size: 11px; color: var(--muted); }
 
 /* ====== Focus mode (immersive reader) ====== */
-.window.focus .sidebar,
-.window.focus .list {
-  display: none;
-}
-.window.focus {
-  grid-template-columns: 1fr;
+/* Overlay the reader across the whole window rather than collapsing the grid
+   and `display: none`-ing the list. Hiding the list dropped its scroll to 0 and
+   collapsed the virtual list to zero height, so exiting focus mode lost the
+   user's scroll position (issue #86). Keeping the sidebar + list mounted and
+   measured underneath means exiting restores their exact prior state for free —
+   the reader simply uncovers them. */
+.window.focus .reader {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
 }
 .window.focus .article { max-width: 720px; }
 /* In focus mode the reader is the leftmost pane, so its toolbar must clear
