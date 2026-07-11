@@ -144,11 +144,21 @@ pub fn run() {
             // re-asserts it on every theme change. See backing.rs / tauri#14288.
             {
                 // Effective mode: explicit `mode`, else the legacy `theme` key
-                // ("dark" → dark) for installs that predate the palette/mode split.
+                // ("dark" → dark) for installs that predate the palette/mode
+                // split, else — for a fresh install that hasn't mirrored any
+                // preference yet — follow the OS scheme, so a dark-OS first
+                // launch (default "system" mode) doesn't flash a light window.
                 let is_dark = match mode.as_deref() {
                     Some("dark") => true,
                     Some("light") => false,
-                    _ => theme.as_deref() == Some("dark"),
+                    _ => match theme.as_deref() {
+                        Some("dark") => true,
+                        Some("light") => false,
+                        _ => app
+                            .get_webview_window("main")
+                            .map(|w| matches!(w.theme(), Ok(tauri::Theme::Dark)))
+                            .unwrap_or(false),
+                    },
                 };
                 let pal = palette.as_deref().unwrap_or("paper");
                 // Each colour matches that theme's `--reader` in styles.css and

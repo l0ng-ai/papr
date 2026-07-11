@@ -7,8 +7,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import * as api from "./api";
-import { useUi, READER_FONTS } from "./store";
-import type { Palette, Mode } from "./store";
+import { useUi, READER_FONTS, resolveMode, systemPrefersDark } from "./store";
+import type { Palette, ResolvedMode } from "./store";
 import { useArticleActions } from "./hooks/articleActions";
 import { readCurrentItems } from "./lib/currentList";
 import { checkForUpdates } from "./lib/updater";
@@ -32,7 +32,7 @@ import { PANEL_BOUNDS } from "./store";
 // wash. Paper keeps the terracotta clay brand mark in both modes; Frost and
 // Contrast use a system-blue so those families read cool. "One accent, used
 // rarely" still holds — it only ever tints small marks.
-const ACCENTS: Record<Palette, Record<Mode, { accent: string; soft: string; ink: string }>> = {
+const ACCENTS: Record<Palette, Record<ResolvedMode, { accent: string; soft: string; ink: string }>> = {
   paper: {
     light: { accent: "oklch(0.60 0.13 38)", soft: "oklch(0.94 0.04 50)", ink: "oklch(0.42 0.10 38)" },
     dark: { accent: "oklch(0.74 0.13 45)", soft: "oklch(0.32 0.06 40)", ink: "oklch(0.80 0.10 45)" },
@@ -53,7 +53,7 @@ const ACCENTS: Record<Palette, Record<Mode, { accent: string; soft: string; ink:
 // `--reader` (the widest pane, and the edge a resize is dragged from) so the
 // strip blends. Keep in lockstep with `--reader` / `--resize-backing` in
 // styles.css and the cold-start match in lib.rs.
-const BACKING: Record<Palette, Record<Mode, string>> = {
+const BACKING: Record<Palette, Record<ResolvedMode, string>> = {
   paper: { light: "#FBF9F3", dark: "#1D1E1F" },
   frost: { light: "#FFFFFF", dark: "#1D1F23" },
   contrast: { light: "#FFFFFF", dark: "#000000" },
@@ -73,6 +73,20 @@ export default function App() {
   const palette = useUi((s) => s.palette);
   const mode = useUi((s) => s.mode);
   const density = useUi((s) => s.density);
+  // OS colour scheme, tracked live so `mode: "system"` follows it without a
+  // restart. Only matters while `mode === "system"`, but the listener is cheap
+  // and always mounted so a switch to System takes effect immediately.
+  const [systemDark, setSystemDark] = useState(systemPrefersDark);
+  useEffect(() => {
+    const mq = window.matchMedia?.("(prefers-color-scheme: dark)");
+    if (!mq) return;
+    const onChange = () => setSystemDark(mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  // The concrete light/dark actually applied: `mode` unless it's "system", in
+  // which case the OS decides.
+  const effectiveMode: ResolvedMode = mode === "system" ? (systemDark ? "dark" : "light") : mode;
   const readerFont = useUi((s) => s.readerFont);
   const readerSize = useUi((s) => s.readerSize);
   const readerLeading = useUi((s) => s.readerLeading);
@@ -110,9 +124,12 @@ export default function App() {
   useEffect(() => {
     const root = document.documentElement;
     root.dataset.palette = palette;
-    root.dataset.mode = mode;
+    root.dataset.mode = effectiveMode;
     root.dataset.density = density;
-    const a = ACCENTS[palette][mode];
+    // Keep the backend's pre-paint copy on the *resolved* mode, so an OS scheme
+    // change while running (mode: "system") is reflected on the next launch too.
+    api.setSetting("mode", effectiveMode).catch(() => {});
+    const a = ACCENTS[palette][effectiveMode];
     root.style.setProperty("--accent", a.accent);
     root.style.setProperty("--accent-soft", a.soft);
     root.style.setProperty("--accent-ink", a.ink);
@@ -122,7 +139,7 @@ export default function App() {
     // that strip blends with the reader pane it sits next to. (On Win/Linux the
     // webview is opaque, so setBackgroundColor here mainly covers their own
     // resize/overscroll; harmless on macOS where it's the NSWindow colour.)
-    const backing = BACKING[palette][mode];
+    const backing = BACKING[palette][effectiveMode];
     getCurrentWindow().setBackgroundColor(backing).catch(() => {});
     getCurrentWebview().setBackgroundColor(backing).catch(() => {});
     // macOS only: the calls above can't reach `underPageBackgroundColor`, the
@@ -131,7 +148,7 @@ export default function App() {
     // (plus drawsBackground + NSWindow) in one shot; a no-op off macOS.
     const [r, g, b] = hexRgb(backing);
     invoke("set_native_backing", { r, g, b }).catch(() => {});
-  }, [palette, mode, density]);
+  }, [palette, effectiveMode, density]);
 
   // ── dismiss the boot splash once the app shell has mounted ──
   useEffect(() => {
@@ -328,7 +345,9 @@ export default function App() {
     switch (action) {
       case "mark-all-read": markAllRead(); break;
       case "toggle-theme":
-        useUi.getState().setMode(mode === "light" ? "dark" : "light");
+        // Flip to the opposite of what's *shown* — so from "system" it lands on
+        // an explicit light/dark rather than appearing to do nothing.
+        useUi.getState().setMode(effectiveMode === "dark" ? "light" : "dark");
         break;
       case "toggle-focus":
         useUi.getState().setFocusMode(!useUi.getState().focusMode);
@@ -477,7 +496,7 @@ export default function App() {
         case "d":
           if (e.shiftKey) {
             e.preventDefault();
-            st.setMode(st.mode === "light" ? "dark" : "light");
+            st.setMode(resolveMode(st.mode) === "dark" ? "light" : "dark");
           }
           break;
         case "escape":

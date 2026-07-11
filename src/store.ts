@@ -9,11 +9,34 @@ import type { ArticleQuery } from "./types";
 
 /** Appearance is two independent axes: a colour `Palette` (the family — warm
  *  Paper, cool Frost, high-contrast) and a light/dark `Mode`. Their product is
- *  the 6 themes; the CSS keys off `data-palette` + `data-mode` on the root. */
+ *  the 6 themes; the CSS keys off `data-palette` + `data-mode` on the root.
+ *
+ *  `Mode` also carries `"system"`, which isn't a theme of its own — it follows
+ *  the OS light/dark preference and resolves to one of the two concrete
+ *  `ResolvedMode`s (see `resolveMode`) that the CSS + native backing key off. */
 export type Palette = "paper" | "frost" | "contrast";
-export type Mode = "light" | "dark";
+export type Mode = "light" | "dark" | "system";
+export type ResolvedMode = "light" | "dark";
 export const PALETTES: Palette[] = ["paper", "frost", "contrast"];
-export const MODES: Mode[] = ["light", "dark"];
+export const MODES: Mode[] = ["light", "dark", "system"];
+
+/** Whether the OS currently prefers a dark colour scheme. Drives `"system"`
+ *  mode. `matchMedia` always exists in the Tauri webview; the guard is just
+ *  defensive so a non-DOM import site can't throw. */
+export function systemPrefersDark(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(prefers-color-scheme: dark)").matches
+  );
+}
+
+/** Resolve the stored appearance preference to the concrete light/dark that the
+ *  CSS `data-mode` and native window backing use. `"system"` follows the OS. */
+export function resolveMode(mode: Mode): ResolvedMode {
+  if (mode === "system") return systemPrefersDark() ? "dark" : "light";
+  return mode;
+}
 export type Density = "compact" | "cozy" | "spacious";
 export type ViewMode = "list" | "card";
 export type StartupView = "all" | "unread" | "starred" | "last";
@@ -195,7 +218,10 @@ const PREF_KEYS: (keyof Prefs)[] = [
  *  persists the language for backend-localised text. */
 function mirrorAppearance(palette: Palette, mode: Mode): void {
   api.setSetting("palette", palette).catch(() => {});
-  api.setSetting("mode", mode).catch(() => {});
+  // The backend paints in concrete light/dark, so mirror the *resolved* mode —
+  // it has no notion of `"system"`. (The frontend re-asserts this whenever the
+  // OS scheme changes while running, so the next launch's pre-paint matches.)
+  api.setSetting("mode", resolveMode(mode)).catch(() => {});
 }
 
 /** Pin the backend's `dark_shade` to the single shipped shade so the native
@@ -204,6 +230,15 @@ function mirrorAppearance(palette: Palette, mode: Mode): void {
  *  normalised back to "default". */
 function mirrorDarkShade(): void {
   api.setSetting("dark_shade", "default").catch(() => {});
+}
+
+/** Default `mode` for an install with no persisted `mode` yet: honour an
+ *  explicit legacy `theme` choice, else follow the OS (`"system"`). */
+function legacyModeDefault(): Mode {
+  const legacy = localStorage.getItem("theme");
+  if (legacy === "dark") return "dark";
+  if (legacy === "light") return "light";
+  return "system";
 }
 
 /** Resolve the persisted reader font, migrating the pre-0.2 boolean
@@ -242,13 +277,10 @@ export const useUi = create<UiState>((set, get) => ({
   listAnchor: 0,
 
   palette: ls.oneOf<Palette>("palette", PALETTES, "paper"),
-  // Migrate the pre-6-theme `theme` key: an existing dark user had `theme:
-  // "dark"`, which maps to Paper + dark. Absent that, default to light.
-  mode: ls.oneOf<Mode>(
-    "mode",
-    MODES,
-    localStorage.getItem("theme") === "dark" ? "dark" : "light",
-  ),
+  // Migrate the pre-6-theme `theme` key: a user who had explicitly chosen
+  // `theme: "light"|"dark"` keeps that exact mode. A fresh install (no legacy
+  // `theme` and no `mode`) defaults to `"system"`, following the OS.
+  mode: ls.oneOf<Mode>("mode", MODES, legacyModeDefault()),
   density: ls.oneOf<Density>(
     "density",
     ["compact", "cozy", "spacious"],
