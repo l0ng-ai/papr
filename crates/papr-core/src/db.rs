@@ -278,6 +278,24 @@ static MIGRATIONS: LazyLock<Migrations> = LazyLock::new(|| {
             END;
             "#,
         ),
+        // v18 — retention tombstones. A full-archive feed (Hugo's `index.xml`
+        // ships the site's entire history) keeps every past item in the feed
+        // document forever, so a read article that retention purges is re-fetched
+        // on the very next refresh and re-inserted as brand-new *unread* —
+        // resurfacing the whole archive the user just cleared, every day the
+        // daily cleanup runs (issue #98). `cleanup_old_articles` records each
+        // purged article's (feed_id, guid) here and `upsert_article` drops a
+        // matching re-fetch, so a retention-purged read article stays gone.
+        // Cascade-deletes with the feed.
+        M::up(
+            r#"
+            CREATE TABLE article_tombstones (
+                feed_id INTEGER NOT NULL REFERENCES feeds(id) ON DELETE CASCADE,
+                guid    TEXT NOT NULL,
+                PRIMARY KEY (feed_id, guid)
+            );
+            "#,
+        ),
     ])
 });
 
@@ -1053,6 +1071,20 @@ pub fn upsert_article(
                 return Ok(false);
             }
         }
+    }
+    // A previously retention-purged article (same feed + guid) must not be
+    // re-ingested as fresh unread. A full-archive feed keeps every past item in
+    // its document, so without this the daily cleanup and the next refresh would
+    // ping-pong the whole read history back as new, every day (issue #98).
+    // Checked regardless of the `dedup` flag — the tombstone, not URL dedup, is
+    // what closes the loop.
+    let tombstoned: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM article_tombstones WHERE feed_id = ?1 AND guid = ?2)",
+        params![feed_id, a.guid],
+        |r| r.get(0),
+    )?;
+    if tombstoned {
+        return Ok(false);
     }
     // Apply filter rules: skip wins outright; read / star tint the new row.
     let (mut start_read, mut start_starred) = (false, false);
@@ -2186,14 +2218,32 @@ pub fn cleanup_old_articles(conn: &Connection, days: i64) -> AppResult<usize> {
     // cascade-deletes with the article (`ON DELETE CASCADE`), so purging a
     // highlighted-but-read article would silently destroy that hand-made
     // annotation layer (feature F7). Exempt any article with highlights.
-    Ok(conn.execute(
-        "DELETE FROM articles
-         WHERE is_starred = 0 AND read_later = 0 AND is_read = 1
+    //
+    // The purge condition — shared verbatim by the tombstone INSERT and the
+    // DELETE so the two select exactly the same rows.
+    const PURGE_WHERE: &str = "is_starred = 0 AND read_later = 0 AND is_read = 1
            AND NOT EXISTS (SELECT 1 FROM highlights WHERE article_id = articles.id)
-           AND datetime(COALESCE(published_at, fetched_at))
-               < datetime('now', ?1)",
-        params![format!("-{days} days")],
-    )?)
+           AND datetime(COALESCE(published_at, fetched_at)) < datetime('now', ?1)";
+    let modifier = format!("-{days} days");
+
+    // Tombstone every row about to be purged *before* deleting it, in one
+    // transaction, so a full-archive feed can't re-insert it as fresh unread on
+    // the next refresh (issue #98). `INSERT OR IGNORE` because a feed that
+    // re-purges the same guid across cleanup runs already has its tombstone.
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        &format!(
+            "INSERT OR IGNORE INTO article_tombstones(feed_id, guid)
+             SELECT feed_id, guid FROM articles WHERE {PURGE_WHERE}"
+        ),
+        params![modifier],
+    )?;
+    let removed = tx.execute(
+        &format!("DELETE FROM articles WHERE {PURGE_WHERE}"),
+        params![modifier],
+    )?;
+    tx.commit()?;
+    Ok(removed)
 }
 
 /// Reclaim free pages — must run outside any transaction.
@@ -3448,6 +3498,106 @@ mod tests {
             )
             .unwrap();
         assert_eq!(kept, 1, "the fresh article survives a non-positive window");
+    }
+
+    /// Count `articles` rows carrying a given `(feed_id, guid)` — 0 or 1 given
+    /// the `UNIQUE(feed_id, guid)` constraint.
+    fn guid_count(conn: &Connection, feed_id: i64, guid: &str) -> i64 {
+        conn.query_row(
+            "SELECT count(*) FROM articles WHERE feed_id = ?1 AND guid = ?2",
+            params![feed_id, guid],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn retention_tombstone_blocks_reingestion_of_purged_article() {
+        // The #98 loop: a full-archive feed (Hugo's `index.xml` ships its entire
+        // history) keeps every past item in the document, so a read article that
+        // retention purges is re-fetched on the very next refresh. Without a
+        // tombstone it lands again as fresh *unread*, resurfacing the whole
+        // archive the user just cleared — every day the daily cleanup runs. The
+        // purge records a tombstone so the re-fetch is dropped.
+        let (conn, fixture) = test_db();
+        let feed_id: i64 = conn
+            .query_row("SELECT feed_id FROM articles WHERE id = ?1", [fixture], |r| {
+                r.get(0)
+            })
+            .unwrap();
+
+        let old = (chrono::Utc::now() - chrono::Duration::days(90)).to_rfc3339();
+        insert_read_article_published(&conn, feed_id, "archived", &old);
+
+        assert_eq!(cleanup_old_articles(&conn, 30).unwrap(), 1);
+        assert_eq!(guid_count(&conn, feed_id, "archived"), 0, "purged by retention");
+
+        // The next refresh re-fetches the still-in-feed item. dedup is off (the
+        // default), so only the tombstone can suppress the re-insertion.
+        let refetched = NewArticle {
+            guid: "archived".into(),
+            url: Some("https://example.com/archived".into()),
+            title: "Archived".into(),
+            author: None,
+            summary: None,
+            content_html: None,
+            body_text: String::new(),
+            image_url: None,
+            published_at: Some(old),
+            enclosures: Vec::new(),
+        };
+        assert!(
+            !upsert_article(&conn, feed_id, &refetched, false, &[]).unwrap(),
+            "a retention-purged article must not be re-ingested as new"
+        );
+        assert_eq!(
+            guid_count(&conn, feed_id, "archived"),
+            0,
+            "the purged article stays gone across refreshes"
+        );
+    }
+
+    #[test]
+    fn tombstone_is_scoped_to_its_feed() {
+        // The tombstone key is (feed_id, guid). A different feed carrying the
+        // same guid is unaffected — its article ingests normally.
+        let (conn, fixture) = test_db();
+        let feed_a: i64 = conn
+            .query_row("SELECT feed_id FROM articles WHERE id = ?1", [fixture], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let feed_b = insert_feed(
+            &conn,
+            "https://other.example/feed.xml",
+            None,
+            "Other",
+            None,
+            SourceType::Rss,
+            None,
+        )
+        .unwrap();
+
+        let old = (chrono::Utc::now() - chrono::Duration::days(90)).to_rfc3339();
+        insert_read_article_published(&conn, feed_a, "shared", &old);
+        assert_eq!(cleanup_old_articles(&conn, 30).unwrap(), 1);
+
+        let a = NewArticle {
+            guid: "shared".into(),
+            url: None,
+            title: "T".into(),
+            author: None,
+            summary: None,
+            content_html: None,
+            body_text: String::new(),
+            image_url: None,
+            published_at: Some(old),
+            enclosures: Vec::new(),
+        };
+        assert!(
+            upsert_article(&conn, feed_b, &a, false, &[]).unwrap(),
+            "the same guid under a different feed is not tombstoned"
+        );
     }
 
     // ── article-list chronological ordering ──────────────────────────
