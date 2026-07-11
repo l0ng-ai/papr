@@ -19,9 +19,23 @@ pub struct ParsedFeed {
     pub articles: Vec<NewArticle>,
 }
 
+/// Marker `feed-rs` hands back for any entry that carried no real `<guid>` /
+/// `<id>`. `feed-rs`'s default generator synthesises an id by hashing the
+/// entry's link + title, which quietly defeats dedup for feeds whose links
+/// carry a per-request token (e.g. CNKI, issue #99): the hash — and thus the
+/// stored guid — changes on every fetch, so each refresh re-ingests the whole
+/// issue as new. We override the generator to emit this sentinel instead, so
+/// `map_entry` can recognise "no stable id" and key off title + publish date.
+/// The control chars can't appear in a real feed id, so there's no collision
+/// with a legitimate guid.
+const NO_STABLE_ID: &str = "\u{1}papr:no-stable-id\u{1}";
+
 /// Parse raw feed bytes. `base_url` is the feed URL, used to resolve relatives.
 pub fn parse_feed(bytes: &[u8], base_url: &str) -> AppResult<ParsedFeed> {
-    let raw: RawFeed = feed_rs::parser::parse(bytes)?;
+    let raw: RawFeed = feed_rs::parser::Builder::new()
+        .id_generator(|_links, _title, _uri| NO_STABLE_ID.to_string())
+        .build()
+        .parse(bytes)?;
 
     let site_url = pick_site_url(&raw.links).or_else(|| Some(base_url.to_string()));
     let articles = raw
@@ -112,10 +126,33 @@ fn map_entry(e: &Entry, base: &str) -> Option<NewArticle> {
     // `resolve_url`. Done before `guid` falls back to the URL so the dedup
     // key is the absolute form too.
     let url = pick_site_url(&e.links).map(|u| resolve_url(&u, base));
-    let guid = if e.id.trim().is_empty() {
-        url.clone()?
-    } else {
+
+    // Title / publish date are needed early so a feed without a stable id can
+    // fall back to them for the dedup key (see `guid` below).
+    let title = e
+        .title
+        .as_ref()
+        .map(|t| t.content.trim().to_string())
+        .filter(|t| !t.is_empty());
+    let published_at = e
+        .published
+        .or(e.updated)
+        .map(clamp_publish_date)
+        .map(|d| d.to_rfc3339());
+
+    // A real, feed-provided id is the ideal dedup key. `NO_STABLE_ID` means the
+    // feed shipped no `<guid>`/`<id>` (see the const), so fall back to a key that
+    // stays constant across fetches: title + publish date. Both are stable for a
+    // given item, and the date disambiguates distinct items that share a title.
+    // `\u{1f}` (unit separator) can't occur in either field, so it's a safe
+    // delimiter. If there's not even a title to key on, the URL is all that's
+    // left — volatile-token feeds will still duplicate, but that's unavoidable.
+    let guid = if !e.id.trim().is_empty() && e.id != NO_STABLE_ID {
         e.id.clone()
+    } else if let Some(title) = title.as_deref() {
+        format!("{title}\u{1f}{}", published_at.as_deref().unwrap_or(""))
+    } else {
+        url.clone()?
     };
 
     let raw_html = e
@@ -205,21 +242,13 @@ fn map_entry(e: &Entry, base: &str) -> Option<NewArticle> {
     Some(NewArticle {
         guid,
         url,
-        title: e
-            .title
-            .as_ref()
-            .map(|t| t.content.clone())
-            .unwrap_or_else(|| "(untitled)".into()),
+        title: title.unwrap_or_else(|| "(untitled)".into()),
         author: e.authors.first().map(|p| p.name.clone()),
         summary,
         content_html,
         body_text,
         image_url,
-        published_at: e
-            .published
-            .or(e.updated)
-            .map(clamp_publish_date)
-            .map(|d| d.to_rfc3339()),
+        published_at,
         enclosures,
     })
 }
@@ -451,5 +480,51 @@ mod tests {
         let enc = &parsed.articles[0].enclosures;
         assert_eq!(enc.len(), 1, "uppercase-typed audio enclosure must survive");
         assert_eq!(enc[0].mime_type.as_deref(), Some("audio/mpeg"));
+    }
+
+    // A CNKI-style feed: no `<guid>`, and every `<link>` carries a per-request
+    // token that changes between fetches. Two fetches of the *same* item must
+    // yield the *same* guid so `(feed_id, guid)` dedup collapses them — otherwise
+    // every refresh re-ingests the whole issue as new articles (issue #99).
+    fn cnki_like(token: &str) -> Vec<u8> {
+        format!(
+            r#"<?xml version="1.0"?>
+            <rss version="2.0"><channel><title>CNKI</title>
+              <item>
+                <title>某某研究进展</title>
+                <link>https://kns.cnki.net/kcms2/article/abstract?v={token}</link>
+                <pubDate>Tue, 01 Jan 2026 00:00:00 GMT</pubDate>
+              </item>
+            </channel></rss>"#
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn guidless_feed_with_volatile_url_dedups_by_title_and_date() {
+        let a = super::parse_feed(&cnki_like("TOKEN_A"), "https://rss.cnki.net/x").unwrap();
+        let b = super::parse_feed(&cnki_like("TOKEN_B"), "https://rss.cnki.net/x").unwrap();
+        assert_eq!(
+            a.articles[0].guid, b.articles[0].guid,
+            "same item across fetches must share a guid despite the changing URL"
+        );
+        // The URL itself is still captured verbatim (its token differs).
+        assert_ne!(a.articles[0].url, b.articles[0].url);
+    }
+
+    #[test]
+    fn guidless_feed_keeps_distinct_titles_distinct() {
+        // Two different articles sharing a publish date must not collapse.
+        let rss = r#"<?xml version="1.0"?>
+            <rss version="2.0"><channel><title>CNKI</title>
+              <item><title>甲文章</title>
+                <link>https://kns.cnki.net/a?v=1</link>
+                <pubDate>Tue, 01 Jan 2026 00:00:00 GMT</pubDate></item>
+              <item><title>乙文章</title>
+                <link>https://kns.cnki.net/b?v=2</link>
+                <pubDate>Tue, 01 Jan 2026 00:00:00 GMT</pubDate></item>
+            </channel></rss>"#;
+        let p = super::parse_feed(rss.as_bytes(), "https://rss.cnki.net/x").unwrap();
+        assert_ne!(p.articles[0].guid, p.articles[1].guid);
     }
 }
