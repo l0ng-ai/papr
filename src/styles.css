@@ -2057,6 +2057,17 @@ button { font-family: inherit; }
 }
 
 /* rendered article images */
+/* Reader hero (the list-thumbnail shown above the body). It lives on
+   `.reader-content`, not inside `.article-body`, so the `.article-body img`
+   sizing below does not reach it — without its own constraint a large source
+   image renders at natural size and overflows the column (issue #97). */
+.reader-hero {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+  margin: 0 0 1.2em;
+  display: block;
+}
 .article-body img {
   max-width: 100%;
   height: auto;
