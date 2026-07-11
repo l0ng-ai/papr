@@ -207,7 +207,10 @@
     "aiDisclaimer": "ローカルモデルによる生成 · 参考用 · 内容は不正確な場合があります",
     "translateTitle": "翻訳先",
     "translateEngine": "エンジン",
-    "translateEngineLlm": "AI モデル"
+    "translateEngineLlm": "AI モデル",
+    "lightboxClose": "閉じる",
+    "lightboxPrev": "前の画像",
+    "lightboxNext": "次の画像"
   },
   "settings": {
     "title": "設定",

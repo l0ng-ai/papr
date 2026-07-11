@@ -2078,7 +2078,65 @@ button { font-family: inherit; }
   border-radius: 8px;
   margin: 1.2em 0;
   display: block;
+  cursor: zoom-in;
 }
+
+/* Full-screen image viewer (issue #87) */
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.86);
+  padding: 40px;
+  animation: lightbox-in 0.14s ease;
+}
+@keyframes lightbox-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.lightbox-img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 6px;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
+  user-select: none;
+}
+.lightbox-btn {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  cursor: pointer;
+  color: #fff;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 50%;
+  transition: background 0.15s ease;
+}
+.lightbox-btn:hover { background: rgba(255, 255, 255, 0.24); }
+.lightbox-close { top: 18px; right: 18px; width: 40px; height: 40px; }
+.lightbox-prev,
+.lightbox-next { top: 50%; transform: translateY(-50%); width: 46px; height: 46px; }
+.lightbox-prev { left: 18px; }
+.lightbox-prev svg { transform: rotate(180deg); }
+.lightbox-next { right: 18px; }
+.lightbox-counter {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  background: rgba(0, 0, 0, 0.4);
+  padding: 4px 12px;
+  border-radius: 999px;
+}
+:root[data-reduce-motion="true"] .lightbox { animation: none; }
 /* Feed-embedded <video> (see sanitize): keep it within the column like images. */
 .article-body video {
   max-width: 100%;
