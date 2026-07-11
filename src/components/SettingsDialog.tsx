@@ -9,7 +9,7 @@ import { useArticleActions } from "../hooks/articleActions";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { LANGUAGES, setLanguage, type Language } from "../i18n";
 import { feedHost } from "../lib/feedMeta";
-import { modKey, modCombo } from "../lib/platform";
+import { modKey, modCombo, isDesktop } from "../lib/platform";
 import { reportError } from "../toast";
 import { checkForUpdates } from "../lib/updater";
 import { downloadFile } from "../lib/download";
@@ -521,7 +521,9 @@ function GeneralSection() {
       </div>
       <div className="settings-group">
         <h3 className="settings-group-title">{t("settings.general.startup")}</h3>
-        <LaunchAtLogin />
+        {/* Launch-at-login rides the autostart plugin, which isn't registered on
+            mobile — hide the row there so its isEnabled() probe never runs. */}
+        {isDesktop && <LaunchAtLogin />}
         <Row
           label={t("settings.general.startupView")}
           desc={t("settings.general.startupViewDesc")}
@@ -2216,9 +2218,13 @@ function AboutSection() {
       <div className="version">
         Version{version && ` ${version}`}
       </div>
-      <button className="s-btn about-update" onClick={onCheck} disabled={checking}>
-        {checking ? t("update.checking") : t("update.checkButton")}
-      </button>
+      {/* The in-app updater is desktop-only (App Store owns mobile updates), so
+          the manual check would no-op there — hide the button on mobile. */}
+      {isDesktop && (
+        <button className="s-btn about-update" onClick={onCheck} disabled={checking}>
+          {checking ? t("update.checking") : t("update.checkButton")}
+        </button>
+      )}
       <p className="credits">
         {t("settings.about.creditsFonts")}
         <br />

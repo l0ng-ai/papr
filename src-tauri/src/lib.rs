@@ -11,12 +11,19 @@ pub use papr_core::{ai, db, error, extraction, ingestion, models, opml, sanitize
 mod backing;
 mod commands;
 mod notify;
+// The in-app original-page child webview is built on Tauri's `unstable`
+// multi-webview API, which only exists on desktop — mobile has no child-webview
+// support — so the module (and its commands) compile out of the mobile builds.
+#[cfg(desktop)]
 mod page_view;
 // The tauri-coupled refresh scheduler (progress channels, AppHandle) — built on
 // top of `papr_core::ingestion`. Was `ingestion::scheduler` before the split.
 mod scheduler;
 mod state;
 mod translate;
+// The macOS menu-bar tray keeps the desktop app resident for background
+// refreshes; there is no tray on mobile, so the module compiles out there.
+#[cfg(desktop)]
 mod tray;
 
 use ingestion::discovery::{self, DeepLink};
@@ -43,6 +50,9 @@ fn handle_deep_links(app: &tauri::AppHandle, urls: &[String]) {
         if let Some(DeepLink::Subscribe { url }) = discovery::parse_deep_link(raw) {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
+                // `unminimize` only exists on desktop — mobile windows are never
+                // minimised, so bringing the app forward is `show` + `set_focus`.
+                #[cfg(desktop)]
                 let _ = window.unminimize();
                 let _ = window.set_focus();
             }
@@ -57,22 +67,33 @@ const READ_POOL_SIZE: usize = 4;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // `mut` is used only by the desktop-plugin block below; on mobile that block
+    // is compiled out, so the binding is never reassigned there.
+    #[cfg_attr(not(desktop), allow(unused_mut))]
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_os::init())
-        .plugin(tauri_plugin_window_state::Builder::default().build())
-        .plugin(tauri_plugin_deep_link::init())
-        .plugin(tauri_plugin_autostart::init(
-            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
-        ));
+        // Deep links are cross-platform (custom-scheme on desktop, universal
+        // links on mobile), so the plugin stays on every target.
+        .plugin(tauri_plugin_deep_link::init());
 
-    // Desktop-only in-app update: the updater plugin pulls signed bundles from
-    // the GitHub release feed; the process plugin performs the relaunch.
+    // Desktop-only plugins — none has a mobile counterpart, so they compile out
+    // of the mobile builds (and their permissions are absent from the mobile
+    // capability set):
+    //   • window-state persists window geometry — mobile has no OS windows.
+    //   • autostart installs a macOS LaunchAgent — the OS owns app launch on
+    //     mobile.
+    //   • updater/process drive in-app updates from the GitHub release feed —
+    //     the App Store handles updates on mobile.
     #[cfg(desktop)]
     {
         builder = builder
+            .plugin(tauri_plugin_window_state::Builder::default().build())
+            .plugin(tauri_plugin_autostart::init(
+                tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+                None,
+            ))
             .plugin(tauri_plugin_updater::Builder::new().build())
             .plugin(tauri_plugin_process::init());
     }
@@ -93,12 +114,16 @@ pub fn run() {
             // The HTTP client honours the persisted proxy / timeout settings.
             let http = ingestion::fetch::build_client_from_settings(&conn);
             // Snapshot the state the tray menu needs (read before the
-            // connection moves behind the async mutex).
+            // connection moves behind the async mutex). Desktop-only — the tray
+            // is the sole consumer, so these reads compile out on mobile.
+            #[cfg(desktop)]
             let lang = db::get_setting(&conn, "language")
                 .ok()
                 .flatten()
                 .unwrap_or_default();
+            #[cfg(desktop)]
             let unread = db::count_unread(&conn).unwrap_or(0);
+            #[cfg(desktop)]
             let latest_fetch = db::latest_fetch(&conn).ok().flatten();
             // The persisted appearance (palette + mode), mirrored from the
             // frontend store. Used just below to paint the native window in the
@@ -184,6 +209,9 @@ pub fn run() {
             }
 
             // ── Menu-bar tray (keeps the app resident for refreshes) ──
+            // Desktop-only: there is no tray on mobile, where the OS keeps the
+            // app schedulable itself.
+            #[cfg(desktop)]
             tray::build(app.handle(), &lang, unread, latest_fetch.as_deref())?;
 
             // ── Background refresh scheduler ──────────────────────────
@@ -269,6 +297,7 @@ pub fn run() {
             commands::freshrss_disconnect,
             commands::freshrss_status,
             commands::freshrss_sync,
+            #[cfg(desktop)]
             commands::refresh_tray,
             commands::set_native_backing,
             commands::take_pending_deep_link,
@@ -294,9 +323,13 @@ pub fn run() {
             commands::update_highlight_note,
             commands::set_highlight_color,
             commands::delete_highlight,
+            #[cfg(desktop)]
             page_view::open_page_view,
+            #[cfg(desktop)]
             page_view::set_page_view_bounds,
+            #[cfg(desktop)]
             page_view::set_page_view_visible,
+            #[cfg(desktop)]
             page_view::close_page_view,
         ])
         .run(tauri::generate_context!())

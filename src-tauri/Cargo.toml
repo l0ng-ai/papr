@@ -33,16 +33,11 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["tray-icon", "image-png", "unstable"] }
 tauri-plugin-opener = "2"
 tauri-plugin-notification = "2"
-tauri-plugin-autostart = "2"
 tauri-plugin-os = "2"
-tauri-plugin-window-state = "2"
 # Custom-scheme deep links (feature F6): the browser extension's
 # "Subscribe in Papr" button opens a `papr://subscribe?url=…` link.
+# Cross-platform (custom scheme on desktop, universal links on mobile).
 tauri-plugin-deep-link = "2"
-# In-app auto-update: checks the GitHub release feed, downloads the signed
-# bundle, and relaunches into the new version (process plugin does the restart).
-tauri-plugin-updater = "2"
-tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
@@ -90,6 +85,20 @@ chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
 thiserror = "2"
 log = "0.4"
+
+# Desktop-only plugins — none has a mobile counterpart, and each is referenced
+# only behind `#[cfg(desktop)]` in `lib.rs`, so they are compiled out of the
+# mobile builds entirely (tauri's `desktop` cfg is set by its build script; for
+# Cargo dependency selection the equivalent target predicate is used here):
+#   • autostart      — installs a macOS LaunchAgent (login-item on other OSes).
+#   • window-state   — persists window geometry; mobile has no OS windows.
+#   • updater/process — in-app update from the GitHub release feed, then relaunch
+#     (the App Store owns updates on mobile).
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-autostart = "2"
+tauri-plugin-window-state = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
 
 # macOS-only: used in setup() to turn off the WKWebview's opaque white backing
 # (wry only does this under its `transparent` feature, which we don't enable),

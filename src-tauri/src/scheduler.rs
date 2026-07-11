@@ -10,7 +10,10 @@ use crate::error::AppResult;
 use crate::ingestion::refresh;
 use crate::models::RefreshProgress;
 use crate::state::AppState;
-use crate::{notify, sync, tray};
+use crate::{notify, sync};
+// The tray is a desktop-only unread surface; on mobile the badge stands alone.
+#[cfg(desktop)]
+use crate::tray;
 use std::time::Duration;
 use tauri::{ipc::Channel, AppHandle, Emitter, Manager};
 
@@ -81,6 +84,7 @@ pub async fn refresh_all(
     }
 
     notify::update_badge(app).await;
+    #[cfg(desktop)]
     tray::refresh(app).await;
     Ok(total_new)
 }

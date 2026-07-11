@@ -3,7 +3,15 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/papr.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- App-like webview viewport. `viewport-fit=cover` lets the UI extend
+         under the iOS safe-area insets (notch / home indicator); disabling
+         user scaling stops a double-tap or pinch from zooming the chrome the
+         way a native app never would. Inert on desktop, where the window has
+         no safe-area insets and no pinch-zoom gesture. -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    />
     <title>Papr</title>
 
     <link rel="preconnect" href="https://fonts.googleapis.com" />

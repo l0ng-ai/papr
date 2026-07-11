@@ -385,6 +385,9 @@ fn enqueue_if_connected(conn: &rusqlite::Connection, id: i64, field: &str, value
 /// after an operation that changed the unread count.
 async fn refresh_unread_surfaces(app: &AppHandle) {
     crate::notify::update_badge(app).await;
+    // The menu-bar tray is desktop-only; on mobile the badge is the sole
+    // unread surface.
+    #[cfg(desktop)]
     crate::tray::refresh(app).await;
 }
 
@@ -1191,7 +1194,9 @@ pub async fn freshrss_sync(app: AppHandle) -> AppResult<usize> {
     Ok(n)
 }
 
-/// Rebuild the tray menu — used after a language change.
+/// Rebuild the tray menu — used after a language change. Desktop-only: the tray
+/// exists only there, and the command is registered only for desktop targets.
+#[cfg(desktop)]
 #[tauri::command]
 pub async fn refresh_tray(app: AppHandle) -> AppResult<()> {
     crate::tray::refresh(&app).await;

@@ -8,6 +8,7 @@
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import i18n from "../i18n";
+import { isDesktop } from "./platform";
 import { toast, useToasts, reportError } from "../toast";
 
 // Guards against overlapping checks (startup auto-check racing a manual one).
@@ -19,6 +20,11 @@ let inFlight = false;
  * Settings passes `silent: false` so the user always gets feedback.
  */
 export async function checkForUpdates({ silent }: { silent: boolean }): Promise<void> {
+  // The updater and process plugins are desktop-only (not registered on iOS,
+  // where the App Store handles updates), so `check()` / `relaunch()` would
+  // throw. Bail before touching them — this covers any caller, including a
+  // manual check from Settings.
+  if (!isDesktop) return;
   if (inFlight) return;
   inFlight = true;
   try {

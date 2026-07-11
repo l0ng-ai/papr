@@ -12,7 +12,7 @@ import { renderMarkdown } from "../lib/markdown";
 import { downloadBlob, imageFilename } from "../lib/download";
 import { imageDataUrl } from "../lib/imageBytes";
 import { fullDate } from "../lib/feedMeta";
-import { isMac } from "../lib/platform";
+import { isMac, isMobile } from "../lib/platform";
 import { reportError, toast } from "../toast";
 import { tagColor } from "../lib/tagColors";
 import type { ArticleDetail } from "../types";
@@ -883,7 +883,15 @@ export default function Reader({ onToast }: Props) {
             title={t("reader.tbWebView")}
             aria-label={t("reader.tbWebView")}
             aria-pressed={viewMode === "web"}
-            onClick={() => setViewMode((v) => (v === "web" ? "reader" : "web"))}
+            // The embedded original-page view is a native child webview the
+            // desktop floats over the reading area — that machinery doesn't
+            // exist on mobile, so there the affordance falls back to opening the
+            // page in the system browser (Safari) instead of entering web mode.
+            onClick={() =>
+              isMobile
+                ? openUrl(a.url!).catch(() => {})
+                : setViewMode((v) => (v === "web" ? "reader" : "web"))
+            }
           >
             <Icon name="eye" size={16} />
           </button>

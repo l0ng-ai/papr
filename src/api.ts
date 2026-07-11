@@ -2,6 +2,7 @@
 
 import { invoke, Channel } from "@tauri-apps/api/core";
 import { imageBytes, type ImageBytesResponse } from "./lib/imageBytes";
+import { isMobile } from "./lib/platform";
 import type {
   AiEvent,
   ArticleDetail,
@@ -226,7 +227,10 @@ export const freshrssDisconnect = () => invoke<void>("freshrss_disconnect");
 export const freshrssSync = () => invoke<number>("freshrss_sync");
 
 // ── tray ──
-export const refreshTray = () => invoke<void>("refresh_tray");
+// There is no menu-bar tray on mobile, and `refresh_tray` isn't registered
+// there — no-op so callers (e.g. the language switcher) don't have to branch.
+export const refreshTray = () =>
+  isMobile ? Promise.resolve() : invoke<void>("refresh_tray");
 
 // ── deep links ──
 /** Drain a `papr://subscribe` URL delivered before the webview could receive
@@ -333,10 +337,16 @@ export interface PageViewBounds {
   width: number;
   height: number;
 }
+// The native child-webview page view is desktop-only (its commands aren't
+// registered on mobile, and iOS can't overlay a floating WKWebView the way the
+// desktop does). Reader.tsx never enters web mode on mobile — it falls back to
+// opening the URL externally — but no-op the whole wrapper set as a second line
+// of defence so a stray call can't throw.
 export const openPageView = (url: string, b: PageViewBounds) =>
-  invoke<void>("open_page_view", { url, ...b });
+  isMobile ? Promise.resolve() : invoke<void>("open_page_view", { url, ...b });
 export const setPageViewBounds = (b: PageViewBounds) =>
-  invoke<void>("set_page_view_bounds", { ...b });
+  isMobile ? Promise.resolve() : invoke<void>("set_page_view_bounds", { ...b });
 export const setPageViewVisible = (visible: boolean) =>
-  invoke<void>("set_page_view_visible", { visible });
-export const closePageView = () => invoke<void>("close_page_view");
+  isMobile ? Promise.resolve() : invoke<void>("set_page_view_visible", { visible });
+export const closePageView = () =>
+  isMobile ? Promise.resolve() : invoke<void>("close_page_view");

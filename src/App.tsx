@@ -12,6 +12,7 @@ import type { Palette, ResolvedMode } from "./store";
 import { useArticleActions } from "./hooks/articleActions";
 import { readCurrentItems } from "./lib/currentList";
 import { checkForUpdates } from "./lib/updater";
+import { isDesktop } from "./lib/platform";
 import { useToasts, toast as toastApi, reportError } from "./toast";
 import type { ArticleQuery, ArticleSummary, Feed } from "./types";
 import Sidebar from "./components/Sidebar";
@@ -139,15 +140,20 @@ export default function App() {
     // that strip blends with the reader pane it sits next to. (On Win/Linux the
     // webview is opaque, so setBackgroundColor here mainly covers their own
     // resize/overscroll; harmless on macOS where it's the NSWindow colour.)
-    const backing = BACKING[palette][effectiveMode];
-    getCurrentWindow().setBackgroundColor(backing).catch(() => {});
-    getCurrentWebview().setBackgroundColor(backing).catch(() => {});
-    // macOS only: the calls above can't reach `underPageBackgroundColor`, the
-    // overscroll/resize *gutter* that otherwise stays stuck on the light config
-    // colour and flashes white at a fast-resize edge. set_native_backing pins it
-    // (plus drawsBackground + NSWindow) in one shot; a no-op off macOS.
-    const [r, g, b] = hexRgb(backing);
-    invoke("set_native_backing", { r, g, b }).catch(() => {});
+    // Skipped on mobile: `set_native_backing` is a desktop-only command (not
+    // registered on iOS, so it would throw), and a phone webview has no
+    // user-resizable window whose gutter could flash — nothing to pin.
+    if (isDesktop) {
+      const backing = BACKING[palette][effectiveMode];
+      getCurrentWindow().setBackgroundColor(backing).catch(() => {});
+      getCurrentWebview().setBackgroundColor(backing).catch(() => {});
+      // macOS only: the calls above can't reach `underPageBackgroundColor`, the
+      // overscroll/resize *gutter* that otherwise stays stuck on the light config
+      // colour and flashes white at a fast-resize edge. set_native_backing pins it
+      // (plus drawsBackground + NSWindow) in one shot; a no-op off macOS.
+      const [r, g, b] = hexRgb(backing);
+      invoke("set_native_backing", { r, g, b }).catch(() => {});
+    }
   }, [palette, effectiveMode, density]);
 
   // ── dismiss the boot splash once the app shell has mounted ──
@@ -289,6 +295,11 @@ export default function App() {
   // Delayed so it doesn't compete with the first feed refresh for bandwidth;
   // `silent` keeps a missing release feed (or a dev build) from raising noise.
   useEffect(() => {
+    // The in-app updater relies on the updater/process plugins, which are only
+    // registered on desktop — never schedule the check on mobile (the App Store
+    // owns updates there). `checkForUpdates` also guards itself, but skipping
+    // the timer keeps the mobile path completely clear.
+    if (!isDesktop) return;
     const id = window.setTimeout(() => {
       void checkForUpdates({ silent: true });
     }, 4000);

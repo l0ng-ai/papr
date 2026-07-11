@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
-  "identifier": "default",
-  "description": "Capability for the main window (desktop)",
-  "platforms": ["macOS", "windows", "linux"],
+  "identifier": "mobile",
+  "description": "Capability for the main window (mobile). The desktop-only plugins — autostart, updater, process, window-state — are not compiled on mobile, so their permissions are omitted here.",
+  "platforms": ["iOS", "android"],
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -12,11 +12,6 @@
     "opener:allow-open-url",
     "notification:default",
     "os:default",
-    "autostart:allow-enable",
-    "autostart:allow-disable",
-    "autostart:allow-is-enabled",
-    "deep-link:default",
-    "updater:default",
-    "process:default"
+    "deep-link:default"
   ]
 }
