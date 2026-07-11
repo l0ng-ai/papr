@@ -2944,3 +2944,180 @@ button { font-family: inherit; }
 }
 .hl-export-menu .ctx-item:disabled,
 .send-to-menu .ctx-item:disabled { opacity: 0.5; cursor: default; }
+
+/* ============================================================================
+   MOBILE (iOS) — stacked single-column navigation
+   ----------------------------------------------------------------------------
+   Every rule in this block is scoped under `[data-mobile]`, an attribute set
+   ONCE on <html> from the static platform detection (main.tsx), and only when
+   the app runs in an iOS webview. On desktop the attribute is absent, so all of
+   the below is inert and the three-pane grid renders exactly as it always has.
+   The strategy is layout-only: the same Sidebar / ArticleList / Reader are
+   reused; here they're stacked full-width and slid horizontally instead of laid
+   out side by side. Reduce-motion is honoured by the global rule near the top
+   of this file (it collapses these transitions to ~0ms).
+   ========================================================================== */
+
+/* The shell that replaces the desktop `.window` grid — a positioning context
+   for the three absolutely-stacked panes. */
+[data-mobile] .mobile-shell {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--reader);
+}
+
+/* Each pane fills the shell and is offset by an inline translateX (set from
+   MobileShell). The transition animates a push/pop; `.dragging` suspends it so
+   an in-progress back-swipe follows the finger 1:1. */
+[data-mobile] .ms-pane {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  will-change: transform;
+  transition: transform 0.34s cubic-bezier(0.32, 0.72, 0, 1);
+  /* A deeper pane sliding in must paint over the parallaxed pane behind it;
+     the reader (last in DOM) is naturally on top, sidebar (first) at the back,
+     which matches the push order. A subtle edge shadow sells the depth. */
+  box-shadow: -8px 0 24px rgba(0, 0, 0, 0.16);
+}
+[data-mobile] .mobile-shell.dragging .ms-pane { transition: none; }
+/* The reused component roots don't set a fill height on their own (the desktop
+   grid sizes them) — stretch them to the pane here. */
+[data-mobile] .ms-pane > .sidebar,
+[data-mobile] .ms-pane > .list,
+[data-mobile] .ms-pane > .reader {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  border-right: 0;
+}
+
+/* ── top-of-pane chrome / safe area ──
+   On an iPhone `isMac` is true, so the components render their macOS overlay
+   title-bar strip + drag region. Neither exists in a webview, so drop the drag
+   strip and re-inset each pane's header to the real status-bar / notch inset. */
+[data-mobile] .titlebar { display: none; }
+:root[data-mobile] .sidebar { padding-top: env(safe-area-inset-top); }
+:root[data-mobile] .sb-brand { margin-top: 14px; }
+:root[data-mobile] .list-header {
+  position: relative;
+  padding-top: calc(env(safe-area-inset-top) + 12px);
+  padding-left: 52px; /* clear the absolutely-positioned back chevron */
+}
+[data-mobile] .reader-toolbar {
+  height: auto;
+  min-height: 44px;
+  padding-top: calc(env(safe-area-inset-top) + 4px);
+  padding-left: 8px;
+  padding-right: 10px;
+  /* 8+ toolbar buttons can exceed a narrow phone width — let the row scroll
+     rather than overflow the viewport. */
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+[data-mobile] .reader-toolbar::-webkit-scrollbar { display: none; }
+
+/* ── back chevron (mobile only; injected into the list header + reader toolbar) ── */
+[data-mobile] .ms-back {
+  -webkit-appearance: none;
+  appearance: none;
+  background: none;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  color: var(--accent);
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+/* The icon set has no left chevron — flip the right one, as the lightbox does. */
+[data-mobile] .ms-back svg { transform: rotate(180deg); }
+[data-mobile] .list-header .ms-back {
+  position: absolute;
+  left: 8px;
+  top: calc(env(safe-area-inset-top) + 8px);
+}
+
+/* ── 44pt touch targets ── */
+[data-mobile] .sb-item { min-height: 44px; }
+[data-mobile] .sb-folder { min-height: 40px; }
+[data-mobile] .tb-btn { width: 40px; height: 40px; }
+[data-mobile] .list-meta-btn { min-height: 34px; }
+[data-mobile] .sidebar-search { height: 42px; font-size: 14px; }
+/* The ⌘K hint is meaningless without a hardware keyboard. */
+[data-mobile] .sidebar-search kbd { display: none; }
+
+/* ── the sidebar footer becomes a bottom tab bar ── */
+[data-mobile] .sb-footer {
+  padding: 8px 20px calc(8px + env(safe-area-inset-bottom));
+  gap: 8px;
+  justify-content: space-around;
+}
+[data-mobile] .sb-footer button { width: 44px; height: 44px; }
+
+/* ── toasts float above the bottom tab bar / home indicator ── */
+[data-mobile] .toast {
+  bottom: calc(env(safe-area-inset-bottom) + 72px);
+  max-width: calc(100vw - 24px);
+}
+
+/* ── dialogs become full-screen sheets ── */
+/* Command palette / full-screen search. */
+[data-mobile] .cp-backdrop {
+  padding-top: 0;
+  align-items: stretch;
+  justify-content: stretch;
+}
+[data-mobile] .cp {
+  width: 100%;
+  max-width: 100%;
+  border-radius: 0;
+  border: 0;
+  display: flex;
+  flex-direction: column;
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+/* Settings: keep the two-pane grid but fill the screen with a narrower rail. */
+[data-mobile] .settings-window {
+  width: 100%;
+  max-width: 100%;
+  height: 100%;
+  max-height: 100%;
+  border-radius: 0;
+  grid-template-columns: 150px 1fr;
+  padding-top: env(safe-area-inset-top);
+}
+/* AddFeed / Explore / Prompt modals → bottom sheets. */
+[data-mobile] .modal-backdrop { align-items: flex-end; }
+[data-mobile] .modal,
+[data-mobile] .modal-explore {
+  width: 100%;
+  max-width: 100%;
+  border-radius: 16px 16px 0 0;
+  padding-bottom: calc(18px + env(safe-area-inset-bottom));
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+/* ── audio mini-player: full-width, clear of the home indicator ── */
+[data-mobile] .player-bar {
+  height: auto;
+  min-height: 56px;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* ── lightbox: honour the safe areas ── */
+[data-mobile] .lightbox { padding: 16px; }
+[data-mobile] .lightbox-close { top: calc(env(safe-area-inset-top) + 8px); }
+[data-mobile] .lightbox-counter {
+  bottom: calc(env(safe-area-inset-bottom) + 14px);
+}

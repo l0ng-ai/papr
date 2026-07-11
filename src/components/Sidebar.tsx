@@ -24,6 +24,10 @@ interface Props {
   onRefresh: (scope?: { feedId?: number; folderId?: number }) => void;
   refreshing: boolean;
   onToast: (msg: string) => void;
+  /** Mobile only: called after any view (smart view / feed / folder / tag) is
+   *  selected, so the shell can push the article-list level over the sidebar.
+   *  Absent on desktop, where the list is always visible beside the sidebar. */
+  onSelectView?: () => void;
 }
 
 const sameQuery = (a: ArticleQuery, b: ArticleQuery) =>
@@ -89,12 +93,23 @@ export default function Sidebar({
   onRefresh,
   refreshing,
   onToast,
+  onSelectView,
 }: Props) {
   const { t } = useTranslation();
   const qc = useQueryClient();
   const actions = useArticleActions();
   const query = useUi((s) => s.query);
-  const select = useUi((s) => s.select);
+  const rawSelect = useUi((s) => s.select);
+  // Wrap the store's `select` so every selection — from the many call sites
+  // below (smart views, feed rows, folders, tags) — also notifies the mobile
+  // shell to push the list level, without threading a callback through each.
+  // On desktop `onSelectView` is undefined, so this is exactly the raw select.
+  const select: typeof rawSelect = onSelectView
+    ? (query, label) => {
+        rawSelect(query, label);
+        onSelectView();
+      }
+    : rawSelect;
   const showCounts = useUi((s) => s.prefs.showSidebarCounts);
   const unreadOnly = useUi((s) => s.prefs.sidebarUnreadOnly);
   const setPref = useUi((s) => s.setPref);

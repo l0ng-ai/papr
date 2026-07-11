@@ -25,6 +25,29 @@ import Lightbox from "./Lightbox";
 
 interface Props {
   onToast: (msg: string) => void;
+  /** Mobile only: pop back to the article list. Renders a back chevron as the
+   *  first item of the reader toolbar. Absent on desktop, where the list stays
+   *  visible beside the reader. */
+  onBack?: () => void;
+  backLabel?: string;
+}
+
+/** The reader toolbar's leading back chevron — mobile only (rendered when a
+ *  pop handler is supplied). A shared helper so every toolbar variant (loaded,
+ *  loading, error) shows the identical affordance. */
+function BackButton({
+  onBack,
+  backLabel,
+}: {
+  onBack?: () => void;
+  backLabel?: string;
+}) {
+  if (!onBack) return null;
+  return (
+    <button className="ms-back" onClick={onBack} aria-label={backLabel} title={backLabel}>
+      <Icon name="chevron-right" size={20} />
+    </button>
+  );
 }
 
 function youtubeId(url: string | null): string | null {
@@ -175,7 +198,7 @@ function makeLinkClickHandler(sourceUrl: string | null) {
   };
 }
 
-export default function Reader({ onToast }: Props) {
+export default function Reader({ onToast, onBack, backLabel }: Props) {
   const { t, i18n } = useTranslation();
   const qc = useQueryClient();
   const actions = useArticleActions(toast.error);
@@ -734,7 +757,13 @@ export default function Reader({ onToast }: Props) {
   if (!a) {
     return (
       <div className="reader" role="main">
-        {isMac && <div className="reader-toolbar" data-tauri-drag-region />}
+        {/* Keep the back affordance while the article detail is still loading /
+            errored (mobile), so the user is never stranded on a blank reader. */}
+        {(isMac || onBack) && (
+          <div className="reader-toolbar" {...(isMac && { "data-tauri-drag-region": true })}>
+            <BackButton onBack={onBack} backLabel={backLabel} />
+          </div>
+        )}
         {article.isError ? (
           <div className="empty" style={{ flex: 1 }}>
             <div className="glyph">
@@ -797,6 +826,7 @@ export default function Reader({ onToast }: Props) {
         className={`reader-toolbar ${scrolled ? "scrolled" : ""}`}
         {...(isMac && { "data-tauri-drag-region": true })}
       >
+        <BackButton onBack={onBack} backLabel={backLabel} />
         <button
           className={`tb-btn ${a.isStarred ? "on" : ""}`}
           onClick={() => actions.setStarred(a.id, !a.isStarred)}

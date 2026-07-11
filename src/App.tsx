@@ -12,7 +12,7 @@ import type { Palette, ResolvedMode } from "./store";
 import { useArticleActions } from "./hooks/articleActions";
 import { readCurrentItems } from "./lib/currentList";
 import { checkForUpdates } from "./lib/updater";
-import { isDesktop } from "./lib/platform";
+import { isDesktop, isMobile } from "./lib/platform";
 import { useToasts, toast as toastApi, reportError } from "./toast";
 import type { ArticleQuery, ArticleSummary, Feed } from "./types";
 import Sidebar from "./components/Sidebar";
@@ -25,6 +25,7 @@ import ExploreDialog from "./components/ExploreDialog";
 import PromptDialog from "./components/PromptDialog";
 import PlayerBar from "./components/PlayerBar";
 import ResizeHandle from "./components/ResizeHandle";
+import MobileShell from "./components/MobileShell";
 import Icon from "./components/Icon";
 import { PANEL_BOUNDS } from "./store";
 
@@ -527,6 +528,21 @@ export default function App() {
   return (
     <>
       <div className="app-shell">
+        {isMobile ? (
+          // Mobile (iOS): a stacked single-column navigation over the same
+          // Sidebar / ArticleList / Reader. The desktop three-pane grid and its
+          // resize handles are never rendered here — nothing below this branch
+          // (the `.window` grid) reaches a phone.
+          <MobileShell
+            onAddFeed={() => setAddFeed(true)}
+            onExplore={() => setExplore(true)}
+            onOpenSettings={openSettings}
+            onSearchClick={() => setCpOpen(true)}
+            onRefresh={doRefresh}
+            refreshing={refreshing}
+            onToast={showToast}
+          />
+        ) : (
         <div className={`window ${focusMode ? "focus" : ""}`}>
           <Sidebar
             onAddFeed={() => setAddFeed(true)}
@@ -573,6 +589,7 @@ export default function App() {
             </>
           )}
         </div>
+        )}
         <PlayerBar />
       </div>
 
