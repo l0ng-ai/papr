@@ -207,7 +207,10 @@
     "aiDisclaimer": "由本地模型生成 · 仅供参考 · 内容可能不准确",
     "translateTitle": "翻译为",
     "translateEngine": "引擎",
-    "translateEngineLlm": "AI 模型"
+    "translateEngineLlm": "AI 模型",
+    "lightboxClose": "关闭",
+    "lightboxPrev": "上一张",
+    "lightboxNext": "下一张"
   },
   "settings": {
     "title": "设置",

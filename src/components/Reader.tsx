@@ -21,6 +21,7 @@ import TagPicker from "./TagPicker";
 import ResizeHandle from "./ResizeHandle";
 import HighlightLayer from "./HighlightLayer";
 import ContextMenu, { type MenuEntry } from "./ContextMenu";
+import Lightbox from "./Lightbox";
 
 interface Props {
   onToast: (msg: string) => void;
@@ -182,6 +183,11 @@ export default function Reader({ onToast }: Props) {
     imageUrl?: string;
     selection?: string;
   } | null>(null);
+  // Full-screen image viewer: the article's image srcs + the one to open on
+  // (issue #87). Null when closed.
+  const [lightbox, setLightbox] = useState<{ srcs: string[]; index: number } | null>(
+    null,
+  );
   const [heroBroken, setHeroBroken] = useState(false);
   // data: URL of a hero image recovered through the backend after the webview
   // failed to load it directly (see the body-image retry effect below). A data:
@@ -643,6 +649,32 @@ export default function Reader({ onToast }: Props) {
     }
   };
 
+  // Article-body clicks: an image opens the full-screen viewer (issue #87), with
+  // the article's other images available for ← / → navigation; anything else
+  // falls through to the link handler (in-page anchors, external links).
+  const linkClick = makeLinkClickHandler(a?.url ?? null);
+  const handleBodyClick = (e: React.MouseEvent) => {
+    const img = (e.target as HTMLElement).closest("img") as HTMLImageElement | null;
+    const root = bodyRef.current;
+    if (img && root?.contains(img)) {
+      // Use the src the DOM actually renders — a proxied data: URL when the
+      // original hotlink-protected host needed a Referer — and skip hidden /
+      // broken images so the gallery matches what the reader shows.
+      const imgs = Array.from(
+        root.querySelectorAll<HTMLImageElement>("img"),
+      ).filter(
+        (im) => im.style.display !== "none" && (im.currentSrc || im.getAttribute("src")),
+      );
+      const index = imgs.indexOf(img);
+      if (index >= 0) {
+        e.preventDefault();
+        setLightbox({ srcs: imgs.map((im) => im.currentSrc || im.src), index });
+        return;
+      }
+    }
+    linkClick(e);
+  };
+
   if (id == null) {
     const kbd = {
       fontFamily: "var(--mono)",
@@ -1078,13 +1110,21 @@ export default function Reader({ onToast }: Props) {
           <div
             className="article-body"
             ref={bodyRef}
-            onClick={makeLinkClickHandler(a.url)}
+            onClick={handleBodyClick}
             dangerouslySetInnerHTML={{
               __html: displayBody || `<p><em>${t("reader.noContent")}</em></p>`,
             }}
           />
         </article>
       </div>
+      )}
+
+      {lightbox && (
+        <Lightbox
+          srcs={lightbox.srcs}
+          index={lightbox.index}
+          onClose={() => setLightbox(null)}
+        />
       )}
 
       <AIDrawer
