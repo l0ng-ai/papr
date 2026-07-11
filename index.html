@@ -19,7 +19,20 @@
       (function () {
         try {
           var d = document.documentElement;
-          d.dataset.theme = localStorage.getItem("theme") || "light";
+          // Resolve the boot-splash light/dark. Prefer the current `mode`
+          // (light | dark | system), falling back to the legacy `theme` key,
+          // and default to "system" for a fresh install. "system" follows the
+          // OS via prefers-color-scheme so a dark-OS user never flashes light.
+          var mode =
+            localStorage.getItem("mode") ||
+            localStorage.getItem("theme") ||
+            "system";
+          var dark =
+            mode === "dark" ||
+            (mode === "system" &&
+              !!window.matchMedia &&
+              window.matchMedia("(prefers-color-scheme: dark)").matches);
+          d.dataset.theme = dark ? "dark" : "light";
           d.dataset.density = localStorage.getItem("density") || "cozy";
           var lng = localStorage.getItem("language");
           if (lng) d.lang = lng;
