@@ -10,6 +10,7 @@ import { listTranslationKey, useListTranslation } from "../listTranslation";
 import { resolveRowTranslation } from "../lib/rowTranslation";
 import { relTime } from "../lib/feedMeta";
 import { isMac, isMobile, modCombo } from "../lib/platform";
+import { isUrlOnlySnippet } from "../lib/snippetNoise";
 import { reportError, toast } from "../toast";
 import { clampToViewport } from "../lib/viewport";
 import type { ArticleSummary, Feed } from "../types";
@@ -479,6 +480,19 @@ export default function ArticleList({ onToast, onBack, backLabel }: Props) {
       .catch((e) => reportError(e));
   };
 
+  // Feed/folder/tag views carry their own title; smart views re-translate live.
+  const headerTitle =
+    query.kind === "feed" || query.kind === "folder" || query.kind === "tag"
+      ? queryLabel
+      : t(`smart.${query.kind}`);
+
+  // In a single-feed view every row belongs to the same feed, so repeating the
+  // feed name on each row's meta line is pure redundancy. On mobile — where the
+  // row is narrow and the name pushes the timestamp around — drop it and show
+  // just the time. Mixed views (all/unread/starred/readLater/folder/tag) still
+  // need the per-row feed name to tell sources apart, so they keep it.
+  const hideRowFeed = isMobile && query.kind === "feed";
+
   return (
     <div className="list" role="region" aria-labelledby="article-list-title">
       <div className="list-header" {...(isMac && { "data-tauri-drag-region": true })}>
@@ -494,11 +508,15 @@ export default function ArticleList({ onToast, onBack, backLabel }: Props) {
         )}
         <h1 className="list-title" id="article-list-title">
           {/* Smart views re-translate live; feed/folder/tag keep their own title. */}
-          {query.kind === "feed" ||
-          query.kind === "folder" ||
-          query.kind === "tag"
-            ? queryLabel
-            : t(`smart.${query.kind}`)}
+          {/* On mobile the title shares one narrow row with the count + translate
+              pills, so it's wrapped in a shrinkable span that truncates with an
+              ellipsis (styled under [data-mobile]) — keeping the trailing pills
+              inside the safe area. Desktop keeps the bare text node unchanged. */}
+          {isMobile ? (
+            <span className="list-title-text">{headerTitle}</span>
+          ) : (
+            headerTitle
+          )}
           <span className="list-title-meta">
             <span className="count">
               {browse.isLoading ? t("common.loading") : showCount}
@@ -685,11 +703,16 @@ export default function ArticleList({ onToast, onBack, backLabel }: Props) {
                     )}
                     <div className="art-head">
                       {!a.isRead && <span className="art-dot" />}
-                      <span className="art-feed">{a.feedTitle}</span>
+                      {!hideRowFeed && (
+                        <span className="art-feed">{a.feedTitle}</span>
+                      )}
                       {feed && feed.sourceType !== "rss" && (
                         <span className="src-badge">{feed.sourceType}</span>
                       )}
-                      <span className="art-sep">·</span>
+                      {/* The separator only makes sense between the feed name
+                          and the time; with the name gone it would be a
+                          dangling "·", so drop it too. */}
+                      {!hideRowFeed && <span className="art-sep">·</span>}
                       <span className="art-time">{relTime(a.publishedAt)}</span>
                       {(rt.isTranslating || rt.error) && (
                         <span
@@ -726,7 +749,12 @@ export default function ArticleList({ onToast, onBack, backLabel }: Props) {
                     <h3 className="art-title" title={rt.hasTranslation ? a.title : undefined}>
                       {rt.title}
                     </h3>
-                    {rt.snippet && (
+                    {/* On mobile, suppress snippets that are only link
+                        boilerplate (e.g. HN's "Article URL: … Comments URL: …"),
+                        which otherwise fill both snippet lines with noise. A
+                        translated snippet is real prose, so never suppress it. */}
+                    {rt.snippet &&
+                      !(isMobile && !rt.hasTranslation && isUrlOnlySnippet(rt.snippet)) && (
                       <p
                         className="art-snippet"
                         title={rt.hasTranslation ? (a.snippet ?? undefined) : undefined}

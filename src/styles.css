@@ -3008,6 +3008,24 @@ button { font-family: inherit; }
   padding-top: calc(env(safe-area-inset-top) + 12px);
   padding-left: 52px; /* clear the absolutely-positioned back chevron */
 }
+/* The title, the "N 篇" count and the translate pills all share one narrow row.
+   Let the title flex-shrink and truncate so the trailing pills can never be
+   pushed off the right edge / under the safe area. The meta group stays a fixed
+   size (flex-shrink: 0) so it's always fully visible; the title gives way. */
+[data-mobile] .list-title { gap: 8px; }
+[data-mobile] .list-title-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[data-mobile] .list-title-meta { flex-shrink: 0; }
+/* Second toolbar row: keep the controls on one line at narrow widths — the
+   labels are short enough at zh/en/ja to fit 390pt, and the flex:1 spacer
+   between the left filters and "mark read" absorbs the slack. */
+[data-mobile] .list-meta { flex-wrap: nowrap; }
+[data-mobile] .list-meta-btn { white-space: nowrap; flex-shrink: 0; }
 [data-mobile] .reader-toolbar {
   height: auto;
   min-height: 44px;
