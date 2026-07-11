@@ -3445,7 +3445,7 @@ dependencies = [
 
 [[package]]
 name = "papr"
-version = "0.13.1"
+version = "0.14.0"
 dependencies = [
  "ammonia",
  "anyhow",
@@ -3488,7 +3488,7 @@ dependencies = [
 
 [[package]]
 name = "papr-cli"
-version = "0.13.1"
+version = "0.14.0"
 dependencies = [
  "chrono",
  "clap",
@@ -3502,7 +3502,7 @@ dependencies = [
 
 [[package]]
 name = "papr-core"
-version = "0.13.1"
+version = "0.14.0"
 dependencies = [
  "ammonia",
  "anyhow",
