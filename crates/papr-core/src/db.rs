@@ -296,6 +296,10 @@ static MIGRATIONS: LazyLock<Migrations> = LazyLock::new(|| {
             );
             "#,
         ),
+        // v19 — per-feed open mode (issue #110): 'reader', 'extracted' or
+        // 'web'. NULL (the default) keeps today's behaviour — reader view,
+        // honouring the global auto-extract preference.
+        M::up("ALTER TABLE feeds ADD COLUMN open_mode TEXT;"),
     ])
 });
 
@@ -513,7 +517,7 @@ pub fn list_feeds(conn: &Connection) -> AppResult<Vec<Feed>> {
         "SELECT f.id, f.feed_url, f.site_url, f.title, f.description, f.favicon_url,
                 f.folder_id, f.source_type, f.last_fetched_at, f.fetch_error,
                 (SELECT COUNT(*) FROM articles a WHERE a.feed_id = f.id AND a.is_read = 0),
-                f.refresh_interval_min, f.auto_translate
+                f.refresh_interval_min, f.auto_translate, f.open_mode
          FROM feeds f ORDER BY f.title COLLATE NOCASE",
     )?;
     let rows = stmt
@@ -532,6 +536,7 @@ pub fn list_feeds(conn: &Connection) -> AppResult<Vec<Feed>> {
                 unread_count: r.get(10)?,
                 refresh_interval_min: r.get(11)?,
                 auto_translate: r.get::<_, i64>(12)? != 0,
+                open_mode: r.get(13)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -640,6 +645,16 @@ pub fn set_feed_auto_translate(conn: &Connection, id: i64, enabled: bool) -> App
     conn.execute(
         "UPDATE feeds SET auto_translate = ?2 WHERE id = ?1",
         params![id, enabled as i64],
+    )?;
+    Ok(())
+}
+
+/// Set (or clear) a feed's per-feed open mode: `"reader"`, `"extracted"` or
+/// `"web"`. `None` reverts the feed to the default behaviour.
+pub fn set_feed_open_mode(conn: &Connection, id: i64, mode: Option<&str>) -> AppResult<()> {
+    conn.execute(
+        "UPDATE feeds SET open_mode = ?2 WHERE id = ?1",
+        params![id, mode],
     )?;
     Ok(())
 }
@@ -2556,6 +2571,27 @@ mod tests {
         // the 20-minute-old fetch and a 5-minute global, it is due again.
         set_feed_refresh_interval(&conn, feed_id, None).unwrap();
         assert!(!feeds_due_for_refresh(&conn, 5).unwrap().is_empty());
+    }
+
+    #[test]
+    fn open_mode_round_trips_and_clears() {
+        let (conn, _) = test_db();
+        let feed_id: i64 = conn
+            .query_row("SELECT id FROM feeds", [], |r| r.get(0))
+            .unwrap();
+
+        // Fresh feed follows the default.
+        assert_eq!(list_feeds(&conn).unwrap()[0].open_mode, None);
+
+        set_feed_open_mode(&conn, feed_id, Some("web")).unwrap();
+        assert_eq!(
+            list_feeds(&conn).unwrap()[0].open_mode.as_deref(),
+            Some("web")
+        );
+
+        // `None` reverts to the default.
+        set_feed_open_mode(&conn, feed_id, None).unwrap();
+        assert_eq!(list_feeds(&conn).unwrap()[0].open_mode, None);
     }
 
     #[test]

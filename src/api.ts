@@ -68,6 +68,12 @@ export const setFeedRefreshInterval = (id: number, minutes: number | null) =>
  *  feed translates it into the configured target language straight away. */
 export const setFeedAutoTranslate = (id: number, enabled: boolean) =>
   invoke<void>("set_feed_auto_translate", { id, enabled });
+/** Set a feed's per-feed open mode. `null` reverts to the default behaviour
+ *  (reader view, honouring the global auto-extract preference). */
+export const setFeedOpenMode = (
+  id: number,
+  mode: "reader" | "extracted" | "web" | null,
+) => invoke<void>("set_feed_open_mode", { id, mode });
 
 /** Refresh feeds, reporting progress through the supplied callback. With no
  *  `scope` this refreshes every feed; pass `{ feedId }` for a single feed or

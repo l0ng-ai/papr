@@ -314,9 +314,9 @@
       "maxWidth": "Body max width",
       "readingTime": "Show estimated reading time",
       "readingTimeDesc": "Show estimated reading time in the article info bar",
-      "fulltext": "Full text",
-      "autoExtract": "Auto-extract full text",
-      "autoExtractDesc": "When opening a summary-only article, automatically fetch the full page content"
+      "openModeTitle": "Open mode",
+      "defaultOpenMode": "Open articles as",
+      "defaultOpenModeDesc": "How articles open by default — individual feeds can override this in Subscriptions"
     },
     "subscriptions": {
       "searchPlaceholder": "Search feeds…",
@@ -334,6 +334,11 @@
       "refreshOff": "Never",
       "autoTranslate": "Auto-translate",
       "autoTranslateDesc": "Translate articles from this feed automatically when opened",
+      "openMode": "Open articles as",
+      "openDefault": "Global default",
+      "openReader": "RSS text",
+      "openExtracted": "Full text",
+      "openWeb": "Web page",
       "unsubscribe": "Unsubscribe",
       "noMatch": "No matching feeds.",
       "opmlExported": "OPML exported to the Downloads folder",

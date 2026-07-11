@@ -187,13 +187,15 @@ export default function Reader({ onToast }: Props) {
   const markReadOnOpen = useUi((s) => s.prefs.markReadOnOpen);
   const markReadOnScroll = useUi((s) => s.prefs.markReadOnScroll);
   const showReadingTime = useUi((s) => s.prefs.showReadingTime);
-  const autoExtract = useUi((s) => s.prefs.autoExtract);
+  const defaultOpenMode = useUi((s) => s.prefs.defaultOpenMode);
 
   const [scrolled, setScrolled] = useState(false);
-  // Which body to show when an extraction exists follows the "auto-extract"
-  // setting: off (the default) shows the feed's own content and extraction is
-  // opt-in via the toolbar button; on shows the extracted full text.
-  const [showExtracted, setShowExtracted] = useState(autoExtract);
+  // Which body to show when an extraction exists follows the default open
+  // mode: "reader" (the default) shows the feed's own content and extraction
+  // is opt-in via the toolbar button; "extracted" shows the full text.
+  const [showExtracted, setShowExtracted] = useState(
+    defaultOpenMode === "extracted",
+  );
   const [showTranslation, setShowTranslation] = useState(false);
   // Reading vs. the article's original web page, shown in an in-app iframe.
   // Sites that set X-Frame-Options / CSP frame-ancestors refuse to load this
@@ -247,6 +249,16 @@ export default function Reader({ onToast }: Props) {
   const autoTranslateFeed = !!(
     a && feeds.data?.find((f) => f.id === a.feedId)?.autoTranslate
   );
+  // Effective open mode (issue #110): the feed's own setting, falling back to
+  // the global default. `undefined` while the article or feed list is still
+  // loading, so the open-mode/auto-extract effects below don't fire before the
+  // feed's own setting is known.
+  const feedOpenMode =
+    a && feeds.data
+      ? feeds.data.find((f) => f.id === a.feedId)?.openMode ?? null
+      : undefined;
+  const openMode =
+    feedOpenMode === undefined ? undefined : feedOpenMode ?? defaultOpenMode;
 
   const readMinutes = useMemo(() => {
     return estimateReadMinutes(bodyPlainText(a?.extractedHtml || a?.contentHtml || ""));
@@ -256,7 +268,7 @@ export default function Reader({ onToast }: Props) {
 
   // Reset scroll + extraction view on article change.
   useEffect(() => {
-    setShowExtracted(useUi.getState().prefs.autoExtract);
+    setShowExtracted(useUi.getState().prefs.defaultOpenMode === "extracted");
     setShowTranslation(false);
     setViewMode("reader");
     setScrolled(false);
@@ -266,6 +278,19 @@ export default function Reader({ onToast }: Props) {
     scrollMarkedRef.current = null;
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
   }, [id]);
+
+  // Apply the effective open mode once the article (and the feed list) is
+  // available — declared after the reset above so it wins the same commit.
+  // Applied once per article, so the toolbar toggles keep working afterwards
+  // and a feeds refetch never yanks the view back.
+  const openModeAppliedRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!a || openMode === undefined || openModeAppliedRef.current === a.id)
+      return;
+    openModeAppliedRef.current = a.id;
+    if (openMode === "web" && a.url) setViewMode("web");
+    else setShowExtracted(openMode === "extracted");
+  }, [a, openMode]);
 
   // Drive the native original-page child webview (page_view.rs) while in web
   // mode. It floats above the DOM, so we measure the host rect and keep the
@@ -567,14 +592,14 @@ export default function Reader({ onToast }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, job?.status]);
 
-  // With "auto-extract full text" on, a summary-only feed item is upgraded to
-  // the full page the moment it's opened, so the reader never shows a two-line
-  // stub. Skipped when the feed already carries the whole article, when there
-  // is no source URL to fetch, or once attempted for this article — so a
-  // failed fetch isn't retried on every re-render.
+  // With an "extracted" open mode in effect, a summary-only feed item is
+  // upgraded to the full page the moment it's opened, so the reader never
+  // shows a two-line stub. Skipped when the feed already carries the whole
+  // article, when there is no source URL to fetch, or once attempted for this
+  // article — so a failed fetch isn't retried on every re-render.
   const autoExtractedRef = useRef<number | null>(null);
   useEffect(() => {
-    if (!autoExtract || !a || !a.url || a.extractedHtml) return;
+    if (openMode !== "extracted" || !a || !a.url || a.extractedHtml) return;
     if (autoExtractedRef.current === a.id || extract.isPending) return;
     // Measure the *decoded* text, not the raw markup. A bare `<[^>]+>` tag
     // strip leaves HTML entities intact, so an entity-heavy stub
@@ -583,12 +608,16 @@ export default function Reader({ onToast }: Props) {
     // "complete", leaving the reader showing the very stub auto-extract is
     // meant to replace. `bodyPlainText` decodes entities and drops markup
     // cleanly, the same measurement the reading-time estimate already uses.
-    const plain = bodyPlainText(a.contentHtml || "").trim();
-    if (plain.length >= 800) return; // feed already delivers the full text
+    // An explicit per-feed "extracted" skips the bar entirely — the user asked
+    // for the page's own text even when the feed body looks complete.
+    if (feedOpenMode !== "extracted") {
+      const plain = bodyPlainText(a.contentHtml || "").trim();
+      if (plain.length >= 800) return; // feed already delivers the full text
+    }
     autoExtractedRef.current = a.id;
     extract.mutate(a.id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [a?.id, a?.extractedHtml, autoExtract]);
+  }, [a?.id, a?.extractedHtml, openMode, feedOpenMode]);
 
   // Per-feed auto-translate: when the article's source feed opts in, translate
   // it into the configured target the moment it opens. Fires once per article

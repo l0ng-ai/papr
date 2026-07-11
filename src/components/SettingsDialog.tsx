@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { getVersion } from "@tauri-apps/api/app";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import * as api from "../api";
-import { useUi, READER_BOUNDS } from "../store";
+import { useUi, READER_BOUNDS, type OpenMode } from "../store";
 import { useArticleActions } from "../hooks/articleActions";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { LANGUAGES, setLanguage, type Language } from "../i18n";
@@ -738,14 +738,22 @@ function ReadingSection() {
         </Row>
       </div>
       <div className="settings-group">
-        <h3 className="settings-group-title">{t("settings.reading.fulltext")}</h3>
+        <h3 className="settings-group-title">{t("settings.reading.openModeTitle")}</h3>
         <Row
-          label={t("settings.reading.autoExtract")}
-          desc={t("settings.reading.autoExtractDesc")}
+          label={t("settings.reading.defaultOpenMode")}
+          desc={t("settings.reading.defaultOpenModeDesc")}
         >
-          <Toggle
-            checked={prefs.autoExtract}
-            onChange={(v) => setPref({ autoExtract: v })}
+          <Select
+            value={prefs.defaultOpenMode}
+            options={[
+              { value: "reader", label: t("settings.subscriptions.openReader") },
+              {
+                value: "extracted",
+                label: t("settings.subscriptions.openExtracted"),
+              },
+              { value: "web", label: t("settings.subscriptions.openWeb") },
+            ]}
+            onChange={(v) => setPref({ defaultOpenMode: v as OpenMode })}
           />
         </Row>
       </div>
@@ -799,6 +807,22 @@ function SubscriptionsSection({
   const updateAutoTranslate = (f: Feed, enabled: boolean) => {
     api
       .setFeedAutoTranslate(f.id, enabled)
+      .then(() => qc.invalidateQueries({ queryKey: ["feeds"] }))
+      .catch((e) => reportError(e));
+  };
+  // Per-feed open mode (issue #110): how the feed's articles open in the
+  // reader pane. "default" ⇒ null (reader view, honouring the global
+  // auto-extract preference).
+  const openModeOptions = [
+    { value: "default", label: t("settings.subscriptions.openDefault") },
+    { value: "reader", label: t("settings.subscriptions.openReader") },
+    { value: "extracted", label: t("settings.subscriptions.openExtracted") },
+    { value: "web", label: t("settings.subscriptions.openWeb") },
+  ];
+  const updateOpenMode = (f: Feed, v: string) => {
+    const mode = v === "default" ? null : (v as "reader" | "extracted" | "web");
+    api
+      .setFeedOpenMode(f.id, mode)
       .then(() => qc.invalidateQueries({ queryKey: ["feeds"] }))
       .catch((e) => reportError(e));
   };
@@ -917,6 +941,12 @@ function SubscriptionsSection({
                     aria-label={t("settings.subscriptions.autoTranslate")}
                   />
                 </label>
+                <Select
+                  value={f.openMode ?? "default"}
+                  options={openModeOptions}
+                  onChange={(v) => updateOpenMode(f, v)}
+                  aria-label={t("settings.subscriptions.openMode")}
+                />
                 <Select
                   value={intervalValue(f.refreshIntervalMin)}
                   options={intervalOptions}

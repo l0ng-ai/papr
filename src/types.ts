@@ -64,6 +64,10 @@ export interface Feed {
   /** When true, opening an article from this feed auto-translates it into the
    *  configured target language. Defaults to false (show the original). */
   autoTranslate: boolean;
+  /** How articles from this feed open: reader view, auto-extracted full text,
+   *  or the embedded web view of the original page. `null` follows the default
+   *  behaviour (reader view, honouring the global auto-extract preference). */
+  openMode: "reader" | "extracted" | "web" | null;
 }
 
 export interface Enclosure {
