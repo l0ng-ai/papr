@@ -100,9 +100,12 @@ pub fn run() {
                 .unwrap_or_default();
             let unread = db::count_unread(&conn).unwrap_or(0);
             let latest_fetch = db::latest_fetch(&conn).ok().flatten();
-            // The persisted UI theme, mirrored from the frontend store. Used
-            // just below to paint the native window in the matching colour
-            // before the webview's first frame.
+            // The persisted appearance (palette + mode), mirrored from the
+            // frontend store. Used just below to paint the native window in the
+            // matching colour before the webview's first frame. `theme` is the
+            // legacy pre-6-theme key, kept for installs that predate the split.
+            let palette = db::get_setting(&conn, "palette").ok().flatten();
+            let mode = db::get_setting(&conn, "mode").ok().flatten();
             let theme = db::get_setting(&conn, "theme").ok().flatten();
             let dark_shade = db::get_setting(&conn, "dark_shade").ok().flatten();
 
@@ -140,21 +143,30 @@ pub fn run() {
             // NSWindow). Done here before the first frame; the frontend
             // re-asserts it on every theme change. See backing.rs / tauri#14288.
             {
-                let (r, g, b) = if theme.as_deref() == Some("dark") {
-                    // Match the dark-shade's `--reader` in styles.css — the
-                    // exposed strip must blend with the reader pane, not the
-                    // darker floor.
-                    match dark_shade.as_deref() {
+                // Effective mode: explicit `mode`, else the legacy `theme` key
+                // ("dark" → dark) for installs that predate the palette/mode split.
+                let is_dark = match mode.as_deref() {
+                    Some("dark") => true,
+                    Some("light") => false,
+                    _ => theme.as_deref() == Some("dark"),
+                };
+                let pal = palette.as_deref().unwrap_or("paper");
+                // Each colour matches that theme's `--reader` in styles.css and
+                // the frontend's BACKING map (App.tsx). Keep them in sync so the
+                // cold-start frame matches before the frontend re-asserts
+                // `set_native_backing`.
+                let (r, g, b) = match (pal, is_dark) {
+                    ("frost", false) => (0xFF, 0xFF, 0xFF),
+                    ("frost", true) => (0x1D, 0x1F, 0x23),
+                    ("contrast", false) => (0xFF, 0xFF, 0xFF),
+                    ("contrast", true) => (0x00, 0x00, 0x00),
+                    // Paper — dark honours the legacy dark-shade key.
+                    (_, true) => match dark_shade.as_deref() {
                         Some("dimmer") => (0x1C, 0x17, 0x15),
                         Some("black") => (0x15, 0x10, 0x0F),
-                        // #1D1E1F — the shipped dark `--reader` (styles.css) and
-                        // the frontend's DARK_BACKING. Keep these in sync so the
-                        // cold-start frame matches before the frontend re-asserts
-                        // `set_native_backing`.
                         _ => (0x1D, 0x1E, 0x1F),
-                    }
-                } else {
-                    (0xFB, 0xF9, 0xF3)
+                    },
+                    (_, false) => (0xFB, 0xF9, 0xF3),
                 };
                 if let Some(win) = app.get_webview_window("main") {
                     backing::apply(&win, r, g, b);

@@ -8,6 +8,7 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import * as api from "./api";
 import { useUi, READER_FONTS } from "./store";
+import type { Palette, Mode } from "./store";
 import { useArticleActions } from "./hooks/articleActions";
 import { readCurrentItems } from "./lib/currentList";
 import { checkForUpdates } from "./lib/updater";
@@ -26,21 +27,37 @@ import ResizeHandle from "./components/ResizeHandle";
 import Icon from "./components/Icon";
 import { PANEL_BOUNDS } from "./store";
 
-// The single accent — terracotta clay. "One accent, used rarely"; it is a
-// fixed brand mark, not a user preference, so it lives here rather than in
-// Settings. (Ported from the design prototype's ACCENTS.clay.)
-const ACCENT = {
-  accent: "oklch(0.60 0.13 38)", soft: "oklch(0.94 0.04 50)", ink: "oklch(0.42 0.10 38)",
-  dAccent: "oklch(0.74 0.13 45)", dSoft: "oklch(0.32 0.06 40)", dInk: "oklch(0.80 0.10 45)",
+// The accent per (palette, mode), fed to --accent / --accent-soft / --accent-ink.
+// `accent` is the mark, `soft` the active-row/selection wash, `ink` text on that
+// wash. Paper keeps the terracotta clay brand mark in both modes; Frost and
+// Contrast use a system-blue so those families read cool. "One accent, used
+// rarely" still holds — it only ever tints small marks.
+const ACCENTS: Record<Palette, Record<Mode, { accent: string; soft: string; ink: string }>> = {
+  paper: {
+    light: { accent: "oklch(0.60 0.13 38)", soft: "oklch(0.94 0.04 50)", ink: "oklch(0.42 0.10 38)" },
+    dark: { accent: "oklch(0.74 0.13 45)", soft: "oklch(0.32 0.06 40)", ink: "oklch(0.80 0.10 45)" },
+  },
+  frost: {
+    light: { accent: "#007AFF", soft: "rgba(0, 122, 255, 0.13)", ink: "#0062CC" },
+    dark: { accent: "#0A84FF", soft: "rgba(10, 132, 255, 0.20)", ink: "#6FB4FF" },
+  },
+  contrast: {
+    light: { accent: "#0057D9", soft: "rgba(0, 87, 217, 0.14)", ink: "#003E9E" },
+    dark: { accent: "#0A84FF", soft: "rgba(10, 132, 255, 0.24)", ink: "#8CC4FF" },
+  },
 };
 
-// Native window backing for the dark theme. The webview is made non-opaque in
+// Native window backing per (palette, mode). The webview is made non-opaque in
 // lib.rs (to kill the white resize flash), so a resize exposes THIS colour in
-// the strip the webview hasn't repainted yet. Use `--reader` (the widest pane,
-// 1fr, and the right/bottom edge a resize is dragged from) rather than the
-// darker `--paper` floor — otherwise the exposed strip flashes a shade darker
-// than the reader content it sits next to. Mirrors `--reader` in styles.css.
-const DARK_BACKING = "#1D1E1F";
+// the strip the webview hasn't repainted yet. Each mirrors that theme's
+// `--reader` (the widest pane, and the edge a resize is dragged from) so the
+// strip blends. Keep in lockstep with `--reader` / `--resize-backing` in
+// styles.css and the cold-start match in lib.rs.
+const BACKING: Record<Palette, Record<Mode, string>> = {
+  paper: { light: "#FBF9F3", dark: "#1D1E1F" },
+  frost: { light: "#FFFFFF", dark: "#1D1F23" },
+  contrast: { light: "#FFFFFF", dark: "#000000" },
+};
 
 // "#RRGGBB" → [r, g, b]. Used to hand the native backing colour to the
 // set_native_backing command, which paints macOS surfaces the JS setters miss.
@@ -53,7 +70,8 @@ export default function App() {
   const { t } = useTranslation();
   const qc = useQueryClient();
 
-  const theme = useUi((s) => s.theme);
+  const palette = useUi((s) => s.palette);
+  const mode = useUi((s) => s.mode);
   const density = useUi((s) => s.density);
   const readerFont = useUi((s) => s.readerFont);
   const readerSize = useUi((s) => s.readerSize);
@@ -91,20 +109,20 @@ export default function App() {
   // ── apply appearance to the document root ──
   useEffect(() => {
     const root = document.documentElement;
-    root.dataset.theme = theme;
+    root.dataset.palette = palette;
+    root.dataset.mode = mode;
     root.dataset.density = density;
-    const a = ACCENT;
-    const dark = theme === "dark";
-    root.style.setProperty("--accent", dark ? a.dAccent : a.accent);
-    root.style.setProperty("--accent-soft", dark ? a.dSoft : a.soft);
-    root.style.setProperty("--accent-ink", dark ? a.dInk : a.ink);
+    const a = ACCENTS[palette][mode];
+    root.style.setProperty("--accent", a.accent);
+    root.style.setProperty("--accent-soft", a.soft);
+    root.style.setProperty("--accent-ink", a.ink);
     // Keep the native window backing on the themed reader colour. The webview is
     // non-opaque on macOS (see backing.rs), so a live resize exposes the NSWindow
     // background in the strip the webview hasn't repainted yet — use --reader so
     // that strip blends with the reader pane it sits next to. (On Win/Linux the
     // webview is opaque, so setBackgroundColor here mainly covers their own
     // resize/overscroll; harmless on macOS where it's the NSWindow colour.)
-    const backing = dark ? DARK_BACKING : "#FBF9F3";
+    const backing = BACKING[palette][mode];
     getCurrentWindow().setBackgroundColor(backing).catch(() => {});
     getCurrentWebview().setBackgroundColor(backing).catch(() => {});
     // macOS only: the calls above can't reach `underPageBackgroundColor`, the
@@ -113,7 +131,7 @@ export default function App() {
     // (plus drawsBackground + NSWindow) in one shot; a no-op off macOS.
     const [r, g, b] = hexRgb(backing);
     invoke("set_native_backing", { r, g, b }).catch(() => {});
-  }, [theme, density]);
+  }, [palette, mode, density]);
 
   // ── dismiss the boot splash once the app shell has mounted ──
   useEffect(() => {
@@ -310,7 +328,7 @@ export default function App() {
     switch (action) {
       case "mark-all-read": markAllRead(); break;
       case "toggle-theme":
-        useUi.getState().setTheme(theme === "light" ? "dark" : "light");
+        useUi.getState().setMode(mode === "light" ? "dark" : "light");
         break;
       case "toggle-focus":
         useUi.getState().setFocusMode(!useUi.getState().focusMode);
@@ -459,7 +477,7 @@ export default function App() {
         case "d":
           if (e.shiftKey) {
             e.preventDefault();
-            st.setTheme(st.theme === "light" ? "dark" : "light");
+            st.setMode(st.mode === "light" ? "dark" : "light");
           }
           break;
         case "escape":
