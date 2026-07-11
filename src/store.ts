@@ -7,9 +7,13 @@ import i18n from "./i18n";
 import * as api from "./api";
 import type { ArticleQuery } from "./types";
 
-export type Theme = "light" | "dark";
-/** Background depth for the dark theme. Only meaningful while `theme` is
- *  "dark"; lets users pick a darker paper than the default warm charcoal. */
+/** Appearance is two independent axes: a colour `Palette` (the family — warm
+ *  Paper, cool Frost, high-contrast) and a light/dark `Mode`. Their product is
+ *  the 6 themes; the CSS keys off `data-palette` + `data-mode` on the root. */
+export type Palette = "paper" | "frost" | "contrast";
+export type Mode = "light" | "dark";
+export const PALETTES: Palette[] = ["paper", "frost", "contrast"];
+export const MODES: Mode[] = ["light", "dark"];
 export type Density = "compact" | "cozy" | "spacious";
 export type ViewMode = "list" | "card";
 export type StartupView = "all" | "unread" | "starred" | "last";
@@ -117,7 +121,8 @@ interface UiState {
   listAnchor: number;
 
   // appearance preferences
-  theme: Theme;
+  palette: Palette;
+  mode: Mode;
   density: Density;
   viewMode: ViewMode;
   readerFont: ReaderFont;
@@ -153,7 +158,8 @@ interface UiState {
   toggleSort: () => void;
   setListAnchor: (offset: number) => void;
 
-  setTheme: (t: Theme) => void;
+  setPalette: (p: Palette) => void;
+  setMode: (m: Mode) => void;
   setDensity: (d: Density) => void;
   setViewMode: (v: ViewMode) => void;
   setReaderFont: (v: ReaderFont) => void;
@@ -181,14 +187,15 @@ const PREF_KEYS: (keyof Prefs)[] = [
   "sidebarUnreadOnly",
 ];
 
-/** Mirror the active theme into the backend settings table so the Rust side
- *  can paint the native window in the matching colour *before* the webview
- *  loads on the next launch — without this, a dark-theme user sees a brief
- *  light flash at window-create time (the `tauri.conf.json` background is a
- *  fixed light colour the backend has no other way to override). Mirrors the
- *  way `i18n.ts` persists the language for backend-localised text. */
-function mirrorTheme(theme: Theme): void {
-  api.setSetting("theme", theme).catch(() => {});
+/** Mirror the active palette + mode into the backend settings table so the Rust
+ *  side can paint the native window in the matching colour *before* the webview
+ *  loads on the next launch — without this, a dark user sees a brief light flash
+ *  at window-create time (the `tauri.conf.json` background is a fixed light
+ *  colour the backend has no other way to override). Mirrors the way `i18n.ts`
+ *  persists the language for backend-localised text. */
+function mirrorAppearance(palette: Palette, mode: Mode): void {
+  api.setSetting("palette", palette).catch(() => {});
+  api.setSetting("mode", mode).catch(() => {});
 }
 
 /** Pin the backend's `dark_shade` to the single shipped shade so the native
@@ -226,7 +233,7 @@ function loadPrefs(): Prefs {
   };
 }
 
-export const useUi = create<UiState>((set) => ({
+export const useUi = create<UiState>((set, get) => ({
   query: { kind: "all" },
   queryLabel: i18n.t("smart.all"),
   selectedArticleId: null,
@@ -234,7 +241,14 @@ export const useUi = create<UiState>((set) => ({
   sortOldest: false,
   listAnchor: 0,
 
-  theme: ls.oneOf<Theme>("theme", ["light", "dark"], "light"),
+  palette: ls.oneOf<Palette>("palette", PALETTES, "paper"),
+  // Migrate the pre-6-theme `theme` key: an existing dark user had `theme:
+  // "dark"`, which maps to Paper + dark. Absent that, default to light.
+  mode: ls.oneOf<Mode>(
+    "mode",
+    MODES,
+    localStorage.getItem("theme") === "dark" ? "dark" : "light",
+  ),
   density: ls.oneOf<Density>(
     "density",
     ["compact", "cozy", "spacious"],
@@ -275,7 +289,8 @@ export const useUi = create<UiState>((set) => ({
   toggleSort: () => set((s) => ({ sortOldest: !s.sortOldest, listAnchor: 0 })),
   setListAnchor: (listAnchor) => set({ listAnchor }),
 
-  setTheme: (theme) => { ls.set("theme", theme); mirrorTheme(theme); set({ theme }); },
+  setPalette: (palette) => { ls.set("palette", palette); mirrorAppearance(palette, get().mode); set({ palette }); },
+  setMode: (mode) => { ls.set("mode", mode); mirrorAppearance(get().palette, mode); set({ mode }); },
   setDensity: (density) => { ls.set("density", density); set({ density }); },
   setViewMode: (viewMode) => { ls.set("viewMode", viewMode); set({ viewMode }); },
   setReaderFont: (readerFont) => { ls.set("readerFont", readerFont); set({ readerFont }); },
@@ -334,8 +349,8 @@ export const useUi = create<UiState>((set) => ({
   setMenuOpen: (menuOpen) => set({ menuOpen }),
 }));
 
-// Seed the backend's theme copy on startup so an existing install — whose
+// Seed the backend's appearance copy on startup so an existing install — whose
 // theme has lived only in localStorage until now — still gets the native
 // launch background themed correctly from the next launch onward.
-mirrorTheme(useUi.getState().theme);
+mirrorAppearance(useUi.getState().palette, useUi.getState().mode);
 mirrorDarkShade();

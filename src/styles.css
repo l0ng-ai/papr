@@ -3,10 +3,12 @@
 :root {
   /* Drives the native UI (scrollbars, form controls, text selection) — macOS
      draws the overlay scrollbar itself and only this picks its light/dark
-     variant. [data-theme="dark"] flips it below. */
+     variant. [data-mode="dark"] flips it below. */
   color-scheme: light;
 
-  /* base palette — light */
+  /* base palette — Paper, light (the default of the 6 = palette × mode).
+     Frost and Contrast palettes override the surfaces below; [data-mode="dark"]
+     variants sit further down. */
   --paper: #F6F3EC;
   --panel: #FBF9F3;
   --panel-2: #FFFEFA;
@@ -63,8 +65,22 @@
   --col-list: 388px;
 }
 
-[data-theme="dark"] {
+/* Dark is a mode-level concern (native controls, scrollbars, text selection)
+   shared by every dark palette; the surfaces themselves are set per palette.
+   Status colours live here too — a red/green/amber tuned for dark backgrounds
+   reads correctly on any dark palette, so every dark theme inherits them. */
+[data-mode="dark"] {
   color-scheme: dark;
+  --danger: oklch(0.68 0.16 28);
+  --danger-soft: oklch(0.30 0.07 28);
+  --danger-line: oklch(0.42 0.09 28);
+  --success: oklch(0.72 0.12 150);
+  --success-soft: oklch(0.30 0.06 150);
+  --warn: oklch(0.70 0.16 40);
+  --toast-alert: oklch(0.50 0.17 28);
+}
+
+[data-palette="paper"][data-mode="dark"] {
   /* "Editorial Quiet", dark. ALL surfaces are one cohesive NEUTRAL graphite
      family (hue ~250, chroma ≈0). They STEP in lightness — window floor
      darkest, sidebar, list, reader lightest — so the panes read as depth, not
@@ -107,13 +123,8 @@
   --accent-soft: oklch(0.34 0.045 44); /* #4c3025 */
   --accent-ink: oklch(0.78 0.10 44);
 
-  --danger: oklch(0.68 0.16 28);
-  --danger-soft: oklch(0.30 0.07 28);
-  --danger-line: oklch(0.42 0.09 28);
-  --success: oklch(0.72 0.12 150);
-  --success-soft: oklch(0.30 0.06 150);
-  --warn: oklch(0.70 0.16 40);
-  --toast-alert: oklch(0.50 0.17 28);
+  /* Status colours are hoisted to [data-mode="dark"] (shared by all dark
+     palettes); only the warm elevation below is Paper-specific. */
 
   /* Quiet, faintly warm elevation — depth without joining the colour story. */
   --shadow-raise: 0 1px 2px oklch(0.06 0.006 40 / 0.5);
@@ -128,15 +139,16 @@
    neutral lift, the list item a thin terracotta bar, and per-row feed names go
    quiet — so the warm accent only ever shows up as a small mark. Small uses of
    --accent-soft (text selection, focus rings, tag hover) are left alone; at that
-   size they don't muddy. Light theme keeps its pale terracotta washes. */
-[data-theme="dark"] .sb-item.active {
+   size they don't muddy. Light theme keeps its pale terracotta washes.
+   Paper-dark only — Frost/Contrast use a defined blue selection (further down). */
+[data-palette="paper"][data-mode="dark"] .sb-item.active {
   background: rgba(246, 240, 238, 0.10);
   color: var(--ink);
 }
-[data-theme="dark"] .sb-item.active .sb-count { color: var(--muted); }
+[data-palette="paper"][data-mode="dark"] .sb-item.active .sb-count { color: var(--muted); }
 
-[data-theme="dark"] .art.active { background: rgba(246, 240, 238, 0.09); }
-[data-theme="dark"] .art.active::before {
+[data-palette="paper"][data-mode="dark"] .art.active { background: rgba(246, 240, 238, 0.09); }
+[data-palette="paper"][data-mode="dark"] .art.active::before {
   content: "";
   position: absolute;
   left: 0; top: 0; bottom: 0;
@@ -144,7 +156,141 @@
   background: var(--accent);
 }
 
-[data-theme="dark"] .art-feed { color: var(--muted); }
+[data-palette="paper"][data-mode="dark"] .art-feed { color: var(--muted); }
+
+/* ══ Frost palette — crisp white / cool graphite, system-blue accent ═══════════
+   The cool counterpart to warm Paper: grey chrome that recedes, white or
+   graphite content, and the macOS system blue as the accent (set on :root by
+   App.tsx ACCENTS.frost). Surfaces are true cool neutrals (hue ~260, chroma ≈0),
+   never warmed toward paper. --paper / --resize-backing stay hex — they paint
+   the root html, and a root-propagated oklch background flashes white on resize
+   (see the Paper notes above). */
+[data-palette="frost"] {
+  --paper: #E3E3E8;                 /* window floor, deepest cool grey */
+  --panel: #F2F2F5;                 /* sidebar, recedes (macOS sidebar grey) */
+  --panel-2: #FFFFFF;               /* list rows + floating menus, pure white */
+  --reader: #FFFFFF;                /* reading surface, pure white */
+  --resize-backing: #FFFFFF;        /* hex mirror of --reader (see App.tsx BACKING) */
+
+  --ink: #1D1D1F;                   /* near-black cool */
+  --ink-2: #3A3A3C;
+  --muted: #6E6E73;
+  --muted-2: #8E8E93;
+  --hair: rgba(60, 60, 67, 0.11);   /* cool-grey separators, macOS style */
+  --hair-strong: rgba(60, 60, 67, 0.18);
+  --hover: rgba(60, 60, 67, 0.05);
+  --selected: rgba(0, 122, 255, 0.12);
+
+  /* Blue-tinted elevation to sit with the cool surfaces (a warm shadow would
+     read yellow against white). */
+  --shadow-raise: 0 1px 2px rgba(20, 24, 40, 0.10);
+  --shadow-pop: 0 12px 32px rgba(20, 24, 40, 0.14);
+  --shadow-modal: 0 24px 60px rgba(20, 24, 40, 0.22);
+  --shadow-ring: 0 0 0 1px rgba(20, 24, 40, 0.05);
+
+  --accent-soft: rgba(0, 122, 255, 0.13); /* fallback; App.tsx sets it inline */
+}
+
+[data-palette="frost"][data-mode="dark"] {
+  --paper: #131417;                 /* floor, deepest */
+  --panel: #191A1D;                 /* sidebar */
+  --reader: #1D1F23;                /* reading surface */
+  --panel-2: #212328;               /* list rows + menus, lightest */
+  --resize-backing: #1D1F23;        /* hex mirror of --reader */
+
+  --ink: #E6E8EC;                   /* cool near-white */
+  --ink-2: #B9BDC5;
+  --muted: #868B95;
+  --muted-2: #5C616B;
+  --hair: rgba(220, 226, 235, 0.09);
+  --hair-strong: rgba(220, 226, 235, 0.15);
+  --hover: rgba(220, 226, 235, 0.05);
+  --selected: rgba(10, 132, 255, 0.22);
+
+  --shadow-raise: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-pop: 0 14px 38px rgba(0, 0, 0, 0.6);
+  --shadow-modal: 0 26px 64px rgba(0, 0, 0, 0.68);
+  --shadow-ring: 0 0 0 1px rgba(0, 0, 0, 0.3);
+
+  --accent-soft: rgba(10, 132, 255, 0.20);
+}
+
+/* ══ Contrast palette — high-contrast light / pure-black OLED ══════════════════
+   Maximum legibility: black on white, or bright white on true black, with
+   defined hairlines doing the pane separation (the surfaces are near-identical,
+   so borders carry the structure). A strong accessible blue keeps links and the
+   selection distinguishable. */
+[data-palette="contrast"] {
+  --paper: #FFFFFF;
+  --panel: #FFFFFF;
+  --panel-2: #FFFFFF;
+  --reader: #FFFFFF;
+  --resize-backing: #FFFFFF;
+
+  --ink: #000000;
+  --ink-2: #1A1A1A;
+  --muted: #595959;                 /* still AA on white */
+  --muted-2: #757575;
+  --hair: rgba(0, 0, 0, 0.22);      /* strong, defined dividers */
+  --hair-strong: rgba(0, 0, 0, 0.40);
+  --hover: rgba(0, 0, 0, 0.06);
+  --selected: rgba(0, 87, 217, 0.14);
+
+  --shadow-raise: 0 1px 2px rgba(0, 0, 0, 0.18);
+  --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.22);
+  --shadow-modal: 0 24px 60px rgba(0, 0, 0, 0.32);
+  --shadow-ring: 0 0 0 1px rgba(0, 0, 0, 0.12);
+
+  --accent-soft: rgba(0, 87, 217, 0.14);
+}
+
+[data-palette="contrast"][data-mode="dark"] {
+  --paper: #000000;                 /* true black for OLED */
+  --panel: #000000;
+  --panel-2: #0A0A0A;               /* a hair off black so menus/rows lift */
+  --reader: #000000;
+  --resize-backing: #000000;
+
+  --ink: #FFFFFF;
+  --ink-2: #E0E0E0;
+  --muted: #B0B0B0;
+  --muted-2: #8A8A8A;
+  --hair: rgba(255, 255, 255, 0.24);
+  --hair-strong: rgba(255, 255, 255, 0.42);
+  --hover: rgba(255, 255, 255, 0.08);
+  --selected: rgba(10, 132, 255, 0.30);
+
+  --shadow-raise: 0 0 0 1px rgba(255, 255, 255, 0.10);
+  --shadow-pop: 0 14px 38px rgba(0, 0, 0, 0.8);
+  --shadow-modal: 0 26px 64px rgba(0, 0, 0, 0.9);
+  --shadow-ring: 0 0 0 1px rgba(255, 255, 255, 0.14);
+
+  --accent-soft: rgba(10, 132, 255, 0.24);
+}
+
+/* ── Frost + Contrast: macOS-style defined selection (both modes) ───────────
+   The sidebar's selected row is a solid accent pill with white text (the
+   Finder/Mail signature); the article list stays a lighter accent wash with a
+   3px bar, so the two panes don't both flood the accent colour. Paper keeps its
+   own quieter treatment above. */
+[data-palette="frost"] .sb-item.active,
+[data-palette="contrast"] .sb-item.active {
+  background: var(--accent);
+  color: #fff;
+}
+[data-palette="frost"] .sb-item.active .sb-ico,
+[data-palette="frost"] .sb-item.active .sb-count,
+[data-palette="contrast"] .sb-item.active .sb-ico,
+[data-palette="contrast"] .sb-item.active .sb-count { color: #fff; }
+
+[data-palette="frost"] .art.active::before,
+[data-palette="contrast"] .art.active::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: var(--accent);
+}
 
 [data-density="compact"] { --row-py: 10px; --list-px: 14px; }
 [data-density="cozy"]    { --row-py: 14px; --list-px: 18px; }
@@ -1102,7 +1248,7 @@ button { font-family: inherit; }
    reads as a black tile punched into the page. Lift it with a faint neutral
    wash instead — the same way active rows lift in dark — so it sits as a quiet
    mark on the sheet, not a hole in it. */
-[data-theme="dark"] .empty .glyph { background: rgba(246, 240, 238, 0.05); }
+[data-mode="dark"] .empty .glyph { background: rgba(246, 240, 238, 0.05); }
 .empty-retry {
   background: var(--panel);
   border: 1px solid var(--hair);
@@ -1425,7 +1571,7 @@ button { font-family: inherit; }
    run of text it floods as a muddy khaki block (the same "accent must not fill"
    problem the active row solves). So selection gets a neutral lift instead and
    keeps the text its own ink colour. */
-[data-theme="dark"] ::selection { background: rgba(246, 240, 238, 0.16); color: var(--ink); }
+[data-mode="dark"] ::selection { background: rgba(246, 240, 238, 0.16); color: var(--ink); }
 
 /* ====== Settings ====== */
 .settings-backdrop {

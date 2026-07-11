@@ -551,8 +551,10 @@ function GeneralSection() {
 /* ── appearance ──────────────────────────────────────────── */
 function AppearanceSection() {
   const { t, i18n } = useTranslation();
-  const theme = useUi((s) => s.theme);
-  const setTheme = useUi((s) => s.setTheme);
+  const palette = useUi((s) => s.palette);
+  const setPalette = useUi((s) => s.setPalette);
+  const mode = useUi((s) => s.mode);
+  const setMode = useUi((s) => s.setMode);
   const density = useUi((s) => s.density);
   const setDensity = useUi((s) => s.setDensity);
   const viewMode = useUi((s) => s.viewMode);
@@ -578,16 +580,30 @@ function AppearanceSection() {
       <div className="settings-group">
         <h3 className="settings-group-title">{t("settings.appearance.theme")}</h3>
         <Row
+          label={t("settings.appearance.palette")}
+          desc={t("settings.appearance.paletteDesc")}
+        >
+          <Segmented
+            value={palette}
+            options={[
+              { value: "paper", label: t("settings.appearance.palettePaper") },
+              { value: "frost", label: t("settings.appearance.paletteFrost") },
+              { value: "contrast", label: t("settings.appearance.paletteContrast") },
+            ]}
+            onChange={setPalette}
+          />
+        </Row>
+        <Row
           label={t("settings.appearance.appearance")}
           desc={t("settings.appearance.appearanceDesc")}
         >
           <Segmented
-            value={theme}
+            value={mode}
             options={[
               { value: "light", label: t("settings.appearance.light") },
               { value: "dark", label: t("settings.appearance.dark") },
             ]}
-            onChange={setTheme}
+            onChange={setMode}
           />
         </Row>
       </div>
@@ -1545,7 +1561,9 @@ function DangerZone({ onToast }: { onToast: (m: string) => void }) {
             // "accent" / "darkShade" are intentionally still cleared: they
             // remove any value persisted by older builds that exposed an
             // accent picker / dark-shade picker.
-            "theme", "accent", "darkShade", "density", "viewMode", "readerFont",
+            // "theme" is the pre-6-theme key; still cleared so a reset wipes it
+            // for migrated installs. "palette"/"mode" are the current keys.
+            "palette", "mode", "theme", "accent", "darkShade", "density", "viewMode", "readerFont",
             "useSerif", "readerSize", "readerLeading", "readerWidth",
             "collapsedFolders",
           ].includes(k)
