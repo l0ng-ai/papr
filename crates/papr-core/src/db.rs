@@ -2327,6 +2327,78 @@ pub fn set_sync_state(
     Ok(())
 }
 
+/// Resolve a set of feed URLs to the ids of the local feeds that carry them,
+/// skipping any URL the local DB doesn't track. Used to scope a sync
+/// reconciliation to the feeds the server actually knows about.
+pub fn feed_ids_by_urls(
+    conn: &Connection,
+    urls: &std::collections::HashSet<String>,
+) -> AppResult<Vec<i64>> {
+    let mut ids = Vec::with_capacity(urls.len());
+    for url in urls {
+        if let Some(id) = find_feed_by_url(conn, url)? {
+            ids.push(id);
+        }
+    }
+    Ok(ids)
+}
+
+/// Reconcile local read/starred state against the server's authoritative unread
+/// + starred URL sets, for every article under one of `feed_ids`. An article is
+/// marked read unless its URL is in `unread_urls`, and starred iff its URL is in
+/// `starred_urls` — so the server's read state wins even for the long tail of
+/// items a pull of only the recent unread set never enumerates (issue #96).
+///
+/// Articles carrying an un-pushed local edit (in `sync_queue`) are skipped, so a
+/// pull never clobbers a change still waiting to be sent. Only rows whose state
+/// actually changes are written. Returns the number of articles changed.
+pub fn reconcile_sync_state(
+    conn: &Connection,
+    feed_ids: &[i64],
+    unread_urls: &std::collections::HashSet<String>,
+    starred_urls: &std::collections::HashSet<String>,
+) -> AppResult<usize> {
+    let pending: std::collections::HashSet<i64> =
+        pending_sync_article_ids(conn)?.into_iter().collect();
+    let tx = conn.unchecked_transaction()?;
+    let mut changed: Vec<(i64, bool, bool)> = Vec::new();
+    {
+        let mut sel = tx.prepare(
+            "SELECT id, url, is_read, is_starred FROM articles
+             WHERE feed_id = ?1 AND url IS NOT NULL",
+        )?;
+        for &fid in feed_ids {
+            let rows = sel.query_map(params![fid], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, bool>(2)?,
+                    r.get::<_, bool>(3)?,
+                ))
+            })?;
+            for row in rows {
+                let (id, url, cur_read, cur_starred) = row?;
+                if pending.contains(&id) {
+                    continue;
+                }
+                let read = !unread_urls.contains(&url);
+                let starred = starred_urls.contains(&url);
+                if read != cur_read || starred != cur_starred {
+                    changed.push((id, read, starred));
+                }
+            }
+        }
+    }
+    for (id, read, starred) in &changed {
+        tx.execute(
+            "UPDATE articles SET is_read = ?2, is_starred = ?3 WHERE id = ?1",
+            params![id, read, starred],
+        )?;
+    }
+    tx.commit()?;
+    Ok(changed.len())
+}
+
 /// Queue a local read/starred change to push on the next sync.
 pub fn enqueue_sync(
     conn: &Connection,
@@ -3330,6 +3402,75 @@ mod tests {
             .query_row("SELECT count(*) FROM sync_queue", [], |r| r.get(0))
             .unwrap();
         assert_eq!(queued, 0);
+    }
+
+    // ── sync state reconciliation (issue #96) ────────────────────────
+
+    #[test]
+    fn reconcile_marks_tail_read_and_scopes_to_server_feeds() {
+        let (conn, _aid) = test_db();
+        let feed_id: i64 = conn
+            .query_row("SELECT feed_id FROM articles LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        // Fixture article a1 (guid g1) plus two more in the same server feed —
+        // all start unread, as a raw RSS poll would leave them.
+        seed(&conn, feed_id, "a2", "Two");
+        seed(&conn, feed_id, "a3", "Three");
+        // A local-only feed the server doesn't know about.
+        let local = insert_feed(
+            &conn,
+            "https://local.example/feed.xml",
+            None,
+            "Local",
+            None,
+            SourceType::Rss,
+            None,
+        )
+        .unwrap();
+        seed(&conn, local, "b1", "Local one");
+
+        // Server: only a2 is unread, a3 is starred.
+        let unread: std::collections::HashSet<String> =
+            ["https://example.com/a2".to_string()].into_iter().collect();
+        let starred: std::collections::HashSet<String> =
+            ["https://example.com/a3".to_string()].into_iter().collect();
+
+        let changed = reconcile_sync_state(&conn, &[feed_id], &unread, &starred).unwrap();
+        assert_eq!(changed, 2, "a1 -> read and a3 -> read+starred; a2 unchanged");
+
+        let read = |g: &str| -> bool {
+            conn.query_row("SELECT is_read FROM articles WHERE guid = ?1", [g], |r| r.get(0))
+                .unwrap()
+        };
+        let is_starred = |g: &str| -> bool {
+            conn.query_row("SELECT is_starred FROM articles WHERE guid = ?1", [g], |r| {
+                r.get(0)
+            })
+            .unwrap()
+        };
+        assert!(read("g1"), "tail item not in unread set is marked read");
+        assert!(!read("a2"), "server-unread item stays unread");
+        assert!(read("a3") && is_starred("a3"), "a3 is read and starred");
+        assert!(!read("b1"), "local-only feed is out of scope and untouched");
+    }
+
+    #[test]
+    fn reconcile_skips_pending_local_edits() {
+        let (conn, aid) = test_db();
+        let feed_id: i64 = conn
+            .query_row("SELECT feed_id FROM articles LIMIT 1", [], |r| r.get(0))
+            .unwrap();
+        // User marked a1 unread locally; the change hasn't been pushed yet.
+        enqueue_sync(&conn, aid, "read", false).unwrap();
+        // Server considers a1 read (empty unread set) — but the pending local
+        // edit must win, so nothing changes.
+        let empty = std::collections::HashSet::new();
+        let changed = reconcile_sync_state(&conn, &[feed_id], &empty, &empty).unwrap();
+        assert_eq!(changed, 0, "pending article is skipped");
+        let read: bool = conn
+            .query_row("SELECT is_read FROM articles WHERE id = ?1", [aid], |r| r.get(0))
+            .unwrap();
+        assert!(!read, "a1 keeps its local (unread) state");
     }
 
     // ── retention cleanup ────────────────────────────────────────────

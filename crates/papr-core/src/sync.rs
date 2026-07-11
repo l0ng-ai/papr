@@ -194,12 +194,13 @@ impl SubCat {
 struct Contents {
     #[serde(default)]
     items: Vec<Item>,
+    // Present when the stream has more pages; fed back as `c=` to page on.
+    #[serde(default)]
+    continuation: Option<String>,
 }
 #[derive(Deserialize)]
 struct Item {
     id: String,
-    #[serde(default)]
-    categories: Vec<String>,
     #[serde(default)]
     canonical: Vec<Href>,
     #[serde(default)]
@@ -317,6 +318,65 @@ fn feeds_to_push<'a>(
         .filter(|u| !server.contains(*u))
         .map(String::as_str)
         .collect()
+}
+
+/// A single article the server flags as unread or starred: its item id and the
+/// canonical URL we match local articles on.
+struct RemoteItem {
+    id: String,
+    url: String,
+}
+
+/// Fetch every item of a GReader stream, following `continuation` pages. `xt`,
+/// when set, is an "exclude tag" filter (e.g. exclude read to get only unread).
+///
+/// Paging is capped: the sets we fetch this way (unread, starred) are bounded by
+/// what the user hasn't yet read/has starred — normally a few hundred items — so
+/// `MAX_PAGES` pages of `n=1000` (tens of thousands of items) is a generous
+/// ceiling that also stops a pathological server from looping us forever.
+async fn fetch_stream_items(
+    session: &Session,
+    http: &Client,
+    stream: &str,
+    xt: Option<&str>,
+) -> AppResult<Vec<RemoteItem>> {
+    const PAGE: &str = "1000";
+    const MAX_PAGES: usize = 30;
+    let path = format!("stream/contents/{stream}");
+    let mut out = Vec::new();
+    let mut cont: Option<String> = None;
+    for _ in 0..MAX_PAGES {
+        let mut params: Vec<(&str, &str)> = vec![("output", "json"), ("n", PAGE)];
+        if let Some(xt) = xt {
+            params.push(("xt", xt));
+        }
+        if let Some(c) = cont.as_deref() {
+            params.push(("c", c));
+        }
+        let page: Contents = session
+            .get(http, &path)
+            .query(&params)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        for item in page.items {
+            if let Some(url) = item
+                .canonical
+                .first()
+                .or_else(|| item.alternate.first())
+                .map(|h| h.href.clone())
+            {
+                out.push(RemoteItem { id: item.id, url });
+            }
+        }
+        match page.continuation {
+            Some(c) if !c.is_empty() => cont = Some(c),
+            _ => break,
+        }
+    }
+    Ok(out)
 }
 
 /// Push queued changes, then pull subscriptions and read/starred state.
@@ -450,43 +510,39 @@ pub async fn sync_now(db: &Db, http: &Client) -> AppResult<usize> {
         }
     }
 
-    // 3 ── pull read/starred state for recent items, matched by URL.
-    let contents: Contents = session
-        .get(
-            http,
-            &format!("stream/contents/{READING_LIST}?output=json&n=1000"),
-        )
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+    // 3 ── reconcile read/starred state, treating the server as the source of
+    // truth. Papr polls each subscribed feed's raw RSS independently and marks
+    // every fetched item unread, so the local unread counts drift far above the
+    // server's. Rather than pull the (unbounded) full history, fetch just the
+    // server's *unread* and *starred* sets — both small — then mark every other
+    // synced article read. This is what a pure GReader client effectively does,
+    // and it fixes the runaway unread counts of issue #96 where the old
+    // "reconcile the most recent 1000 items" pass never reached the long tail.
+    let unread = fetch_stream_items(&session, http, READING_LIST, Some(READ_TAG)).await?;
+    let starred = fetch_stream_items(&session, http, STARRED_TAG, None).await?;
 
-    let mut reconciled = 0usize;
-    {
+    let unread_urls: std::collections::HashSet<String> =
+        unread.iter().map(|i| i.url.clone()).collect();
+    let starred_urls: std::collections::HashSet<String> =
+        starred.iter().map(|i| i.url.clone()).collect();
+
+    let reconciled = {
         let conn = db.lock().await;
-        // Articles with still-unsent local edits keep their local state; we
-        // only assign their remote id so the next sync can push them.
-        let pending: std::collections::HashSet<i64> =
-            db::pending_sync_article_ids(&conn)?.into_iter().collect();
-        for item in contents.items {
-            let url = item
-                .canonical
-                .first()
-                .or_else(|| item.alternate.first())
-                .map(|h| h.href.clone());
-            let Some(url) = url else { continue };
-            if let Some(aid) = db::article_id_by_url(&conn, &url)? {
+        // Assign remote ids for the items we did fetch, so a later local edit on
+        // one of them has an id to push. (Read articles in the long tail carry
+        // no id until they next appear in an unread/starred response — pushing a
+        // change on those waits, exactly as before this change.)
+        for item in unread.iter().chain(starred.iter()) {
+            if let Some(aid) = db::article_id_by_url(&conn, &item.url)? {
                 db::set_remote_id(&conn, aid, &item.id)?;
-                if !pending.contains(&aid) {
-                    let read = item.categories.iter().any(|c| c == READ_TAG);
-                    let starred = item.categories.iter().any(|c| c == STARRED_TAG);
-                    db::set_sync_state(&conn, aid, read, starred)?;
-                }
-                reconciled += 1;
             }
         }
-    }
+        // Scope the read/starred sweep to feeds the server actually knows about,
+        // so a local-only feed not yet mirrored server-side isn't wrongly marked
+        // all-read. Articles with an un-pushed local edit are left untouched.
+        let server_feed_ids = db::feed_ids_by_urls(&conn, &server_urls)?;
+        db::reconcile_sync_state(&conn, &server_feed_ids, &unread_urls, &starred_urls)?
+    };
     Ok(reconciled)
 }
 
