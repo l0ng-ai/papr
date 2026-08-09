@@ -1,5 +1,17 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import * as api from "../api";
@@ -236,12 +248,31 @@ export default function Reader({ onToast }: Props) {
   const playTrack = usePlayer((s) => s.play);
   const playingSrc = usePlayer((s) => (s.playing ? s.track?.src : null));
 
+  // `keepPreviousData` is what keeps the reader from blinking on every article
+  // switch (issue #122). Without it a new id means a new query key, so `data`
+  // is momentarily undefined and the component falls through to the skeleton
+  // below — for just a few milliseconds, since the detail comes from the local
+  // DB. The result was a visible flash: the toolbar's buttons vanished and came
+  // back, the pane's content jumped, and the `rc-in` transition played twice
+  // (once for the skeleton, once for the article). Holding the previous article
+  // on screen until the next one is ready removes that intermediate state
+  // entirely; the skeleton now only shows on a genuine cold load.
   const article = useQuery({
     queryKey: ["article", id],
     queryFn: () => api.getArticle(id as number),
     enabled: id != null,
+    placeholderData: keepPreviousData,
   });
   const a: ArticleDetail | undefined = article.data;
+  // True while `a` is the *previous* article, held over during the switch. The
+  // toolbar is inert for that window, so a click can't act on the article on
+  // its way out (starring the wrong one, extracting the wrong one).
+  const stale = article.isPlaceholderData;
+  // The article actually on screen, which during that hold-over window is not
+  // the selected one. Per-article view state (the translation job, the
+  // temporary language/engine overrides) keys off this, so nothing belonging
+  // to the incoming article is ever rendered into the outgoing article's body.
+  const shownId = a?.id ?? null;
 
   // Feed list, so the article's source feed can be checked for its per-feed
   // auto-translate flag. Shared cache key with the sidebar — no extra fetch.
@@ -266,8 +297,18 @@ export default function Reader({ onToast }: Props) {
     // replaces the short feed snippet, which keeps the same article id.
   }, [a?.extractedHtml, a?.contentHtml]);
 
-  // Reset scroll + extraction view on article change.
-  useEffect(() => {
+  // Reset scroll + extraction view on article change. Keyed on the *rendered*
+  // article rather than the selected id: with the previous article held over
+  // during a switch (above), keying on `id` would reset the view of the article
+  // still on screen — flipping a translation back to the original and yanking
+  // its scroll to the top for the frames before the next one lands. Every reset
+  // here now lands in the same commit as the new article's first paint.
+  //
+  // A layout effect, because `.reader-scroll` is no longer torn down between
+  // articles (it used to be, by the skeleton in between) — so its scrollTop
+  // carries over, and a passive effect would let the new article paint once at
+  // the previous one's offset before snapping to the top.
+  useLayoutEffect(() => {
     setShowExtracted(useUi.getState().prefs.defaultOpenMode === "extracted");
     setShowTranslation(false);
     setViewMode("reader");
@@ -277,7 +318,7 @@ export default function Reader({ onToast }: Props) {
     setHeroDataUrl(null);
     scrollMarkedRef.current = null;
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
-  }, [id]);
+  }, [shownId]);
 
   // Apply the effective open mode once the article (and the feed list) is
   // available — declared after the reset above so it wins the same commit.
@@ -505,12 +546,14 @@ export default function Reader({ onToast }: Props) {
   useEffect(() => {
     setTmpLang(null);
     setTmpEngine(null);
-  }, [id]);
+  }, [shownId]);
 
   // Background translation jobs run independently of this view, so several
   // articles can translate at once and switching away never interrupts one.
   const startTranslate = useTranslationJobs((s) => s.translate);
-  const job = useTranslationJobs((s) => (id != null ? s.jobs[id] : undefined));
+  const job = useTranslationJobs((s) =>
+    shownId != null ? s.jobs[shownId] : undefined,
+  );
 
   const hasExtracted = !!a?.extractedHtml;
   const canTranslate = !!(a?.extractedHtml || a?.contentHtml);
@@ -581,16 +624,16 @@ export default function Reader({ onToast }: Props) {
   // `translatedHtml` lands in the cache — the toggle then keeps working after
   // the in-memory job is gone (e.g. reopening the article in a later session).
   useEffect(() => {
-    if (id == null || !job) return;
+    if (shownId == null || !job) return;
     if (job.status === "done") {
-      qc.invalidateQueries({ queryKey: ["article", id] });
+      qc.invalidateQueries({ queryKey: ["article", shownId] });
     } else if (job.status === "error") {
       // The translation failed (a toast already surfaced why) — drop back to the
       // original so the view isn't stuck on an empty "translating…" state.
       setShowTranslation(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, job?.status]);
+  }, [shownId, job?.status]);
 
   // With an "extracted" open mode in effect, a summary-only feed item is
   // upgraded to the full page the moment it's opened, so the reader never
@@ -742,7 +785,7 @@ export default function Reader({ onToast }: Props) {
     };
     return (
       <div className="reader" role="main">
-        {isMac && <div className="reader-toolbar" data-tauri-drag-region />}
+        <div className="reader-toolbar" {...(isMac && { "data-tauri-drag-region": true })} />
         <div className="empty" style={{ flex: 1 }}>
           <div className="glyph">
             <Icon name="rss" size={22} />
@@ -763,7 +806,10 @@ export default function Reader({ onToast }: Props) {
   if (!a) {
     return (
       <div className="reader" role="main">
-        {isMac && <div className="reader-toolbar" data-tauri-drag-region />}
+        {/* An empty bar, not no bar: the toolbar is a fixed 38px row, so
+            omitting it here would shift the whole pane up by that much the
+            moment the article lands. */}
+        <div className="reader-toolbar" {...(isMac && { "data-tauri-drag-region": true })} />
         {article.isError ? (
           <div className="empty" style={{ flex: 1 }}>
             <div className="glyph">
@@ -781,7 +827,10 @@ export default function Reader({ onToast }: Props) {
           </div>
         ) : (
           <div className="reader-scroll">
-            <div className="article reader-content" aria-hidden="true">
+            {/* No `reader-content`: that class carries the article's slide-in
+                transition, and playing it on the placeholder as well means two
+                slides back to back for one article. */}
+            <div className="article" aria-hidden="true">
               <div className="sk-line" style={{ width: "28%" }} />
               <div
                 className="sk-line"
@@ -825,6 +874,10 @@ export default function Reader({ onToast }: Props) {
       <div
         className={`reader-toolbar ${scrolled ? "scrolled" : ""}`}
         {...(isMac && { "data-tauri-drag-region": true })}
+        // While the previous article is held over during a switch, its toolbar
+        // still acts on *it* — inert for those few milliseconds so a click
+        // can't star or extract the article that is on its way out.
+        inert={stale}
       >
         <button
           className={`tb-btn ${a.isStarred ? "on" : ""}`}
