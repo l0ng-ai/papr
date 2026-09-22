@@ -1212,8 +1212,14 @@ button { font-family: inherit; }
 }
 .ai-test {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: flex-start;
   gap: 10px;
+  width: min(260px, 40vw);
+}
+.ai-test [role="status"] {
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 .ai-test-ok { color: var(--success); font-size: 12.5px; }
 .ai-test-err { color: var(--danger); font-size: 12.5px; }

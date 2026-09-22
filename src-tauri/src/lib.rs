@@ -258,6 +258,7 @@ pub fn run() {
             commands::save_text_file,
             commands::get_setting,
             commands::set_setting,
+            commands::configure_ai_provider,
             commands::ai_test,
             commands::ai_summarize,
             commands::ai_ask,

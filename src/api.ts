@@ -374,3 +374,6 @@ export const setPageViewBounds = (b: PageViewBounds) =>
 export const setPageViewVisible = (visible: boolean) =>
   invoke<void>("set_page_view_visible", { visible });
 export const closePageView = () => invoke<void>("close_page_view");
+
+export const configureAiProvider = (provider: string, model?: string, baseUrl?: string) =>
+  invoke<[string, string]>("configure_ai_provider", { provider, model, baseUrl });

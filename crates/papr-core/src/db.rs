@@ -2168,6 +2168,32 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> AppResult<()> {
     Ok(())
 }
 
+/// Atomically switch AI profiles, preserving legacy and explicitly empty values.
+/// Supplying a model and URL also updates the selected profile in one commit.
+pub fn configure_ai_provider(
+    conn: &Connection, provider: &str, model: Option<&str>, base_url: Option<&str>,
+) -> AppResult<(String, String)> {
+    if !matches!(provider, "anthropic" | "openai" | "deepseek") {
+        return Err(AppError::other("invalid AI provider"));
+    }
+    let tx = conn.unchecked_transaction()?;
+    let previous = get_setting(&tx, "ai_provider")?.unwrap_or_default();
+    let previous = match previous.as_str() { "openai" => "openai", "deepseek" => "deepseek", _ => "anthropic" };
+    for key in ["ai_model", "ai_base_url"] {
+        let value = get_setting(&tx, key)?.unwrap_or_default();
+        set_setting(&tx, &format!("{key}_{previous}"), &value)?;
+    }
+    let model = model.map(str::to_owned).unwrap_or(get_setting(&tx, &format!("ai_model_{provider}"))?.unwrap_or_default());
+    let base_url = base_url.map(str::to_owned).unwrap_or(get_setting(&tx, &format!("ai_base_url_{provider}"))?.unwrap_or_default());
+    for (key, value) in [("ai_model", model.as_str()), ("ai_base_url", base_url.as_str())] {
+        set_setting(&tx, key, value)?;
+        set_setting(&tx, &format!("{key}_{provider}"), value)?;
+    }
+    set_setting(&tx, "ai_provider", provider)?;
+    tx.commit()?;
+    Ok((model, base_url))
+}
+
 /// Read a setting and parse it as `T`, falling back to `default` when the key
 /// is missing, unreadable, or fails to parse.
 pub fn setting_parsed<T: std::str::FromStr>(conn: &Connection, key: &str, default: T) -> T {
@@ -2490,6 +2516,30 @@ pub fn requeue_sync(conn: &Connection, article_id: i64, field: &str, value: bool
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ai_profiles_preserve_legacy_values_and_explicit_clears() {
+        let (conn, _) = test_db();
+        set_setting(&conn, "ai_provider", "deepseek").unwrap();
+        set_setting(&conn, "ai_model", "custom-model").unwrap();
+        set_setting(&conn, "ai_base_url", "https://example.com/v1").unwrap();
+        assert_eq!(configure_ai_provider(&conn, "openai", None, None).unwrap(), ("".into(), "".into()));
+        configure_ai_provider(&conn, "openai", Some("gpt-custom"), Some("")).unwrap();
+        assert_eq!(configure_ai_provider(&conn, "deepseek", None, None).unwrap(), ("custom-model".into(), "https://example.com/v1".into()));
+        configure_ai_provider(&conn, "deepseek", Some(""), Some("")).unwrap();
+        assert_eq!(configure_ai_provider(&conn, "openai", None, None).unwrap().0, "gpt-custom");
+        assert_eq!(configure_ai_provider(&conn, "deepseek", None, None).unwrap(), ("".into(), "".into()));
+    }
+
+    #[test]
+    fn ai_profiles_roll_back_on_write_failure() {
+        let (conn, _) = test_db();
+        set_setting(&conn, "ai_model", "original").unwrap();
+        conn.execute_batch("CREATE TRIGGER fail_provider BEFORE INSERT ON settings WHEN NEW.key = 'ai_provider' BEGIN SELECT RAISE(ABORT, 'write failure'); END;").unwrap();
+        assert!(configure_ai_provider(&conn, "openai", Some("new"), Some("new-url")).is_err());
+        assert_eq!(get_setting(&conn, "ai_model").unwrap().as_deref(), Some("original"));
+        assert_eq!(get_setting(&conn, "ai_model_openai").unwrap(), None);
+    }
 
     /// An in-memory database with all migrations applied and one feed +
     /// article inserted, so highlight FKs resolve. Returns `(conn, article_id)`.

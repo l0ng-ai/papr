@@ -746,6 +746,14 @@ pub async fn set_setting(
     db::set_setting(&conn, &key, &value)
 }
 
+#[tauri::command]
+pub async fn configure_ai_provider(
+    state: State<'_, AppState>, provider: String, model: Option<String>, base_url: Option<String>,
+) -> AppResult<(String, String)> {
+    let conn = state.db.lock().await;
+    db::configure_ai_provider(&conn, &provider, model.as_deref(), base_url.as_deref())
+}
+
 // ─────────────────────────── AI ───────────────────────────
 
 /// Load the AI provider configuration from the settings table.
