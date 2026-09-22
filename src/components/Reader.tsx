@@ -9,7 +9,6 @@ import { usePlayer } from "../player";
 import { useTranslationJobs } from "../translation";
 import { useArticleActions } from "../hooks/articleActions";
 import { renderMarkdown } from "../lib/markdown";
-import { downloadBlob, imageFilename } from "../lib/download";
 import { imageDataUrl } from "../lib/imageBytes";
 import { fullDate } from "../lib/feedMeta";
 import { isMac } from "../lib/platform";
@@ -681,14 +680,14 @@ export default function Reader({ onToast }: Props) {
   const copyText = (text: string, toastKey: string) => {
     navigator.clipboard.writeText(text).then(() => onToast(t(toastKey)), () => {});
   };
-  // Save a feed image to disk. The bytes are fetched in Rust (not the webview)
-  // so the request's Referer can walk the same hotlink-protection fallbacks
-  // that let these images render at all (see fetch_image). The download itself
-  // reuses the app's blob-anchor mechanism.
+  // Save a feed image to disk. Fetch and save both run in Rust (`save_image`):
+  // the request's Referer can walk the same hotlink-protection fallbacks that
+  // let these images render at all (see fetch_image), and the native save
+  // dialog appears there too, so a large image never round-trips the webview.
   const saveImage = async (url: string) => {
     try {
-      const buf = await api.fetchImage(url, a?.url);
-      downloadBlob(new Blob([buf]), imageFilename(url));
+      const saved = await api.saveImage(url, a?.url);
+      if (saved) toast.show(t("reader.imageSaved"));
     } catch {
       toast.error(t("reader.imageSaveFailed"));
     }

@@ -12,7 +12,7 @@ import { feedHost } from "../lib/feedMeta";
 import { modKey, modCombo } from "../lib/platform";
 import { reportError } from "../toast";
 import { checkForUpdates } from "../lib/updater";
-import { downloadFile } from "../lib/download";
+import { saveTextFile } from "../lib/save";
 import { NO_AUTOCORRECT } from "../lib/inputProps";
 import type { Feed, Rule, RuleAction, RuleField, RulePreview } from "../types";
 import Icon, { type IconName } from "./Icon";
@@ -830,8 +830,11 @@ function SubscriptionsSection({
   const exportOpml = async () => {
     try {
       const xml = await api.exportOpml();
-      downloadFile(xml, "subscriptions.opml", "text/xml");
-      onToast(t("settings.subscriptions.opmlExported"));
+      const saved = await saveTextFile(xml, "subscriptions.opml", "OPML", [
+        "opml",
+        "xml",
+      ]);
+      if (saved) onToast(t("settings.subscriptions.opmlExported"));
     } catch (e) {
       reportError(e);
     }

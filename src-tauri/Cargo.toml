@@ -36,6 +36,9 @@ tauri-plugin-notification = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-os = "2"
 tauri-plugin-window-state = "2"
+# Native save/open dialogs for OPML import/export and image save — the
+# webview's synthetic <a download> blob anchor is being retired.
+tauri-plugin-dialog = "2"
 # Custom-scheme deep links (feature F6): the browser extension's
 # "Subscribe in Papr" button opens a `papr://subscribe?url=…` link.
 tauri-plugin-deep-link = "2"

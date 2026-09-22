@@ -44,6 +44,13 @@ export const fetchImage = (url: string, pageUrl?: string | null) =>
     imageBytes,
   );
 
+/** "Save image" via a native save dialog, entirely in Rust (fetch → dialog →
+ *  write). Returns whether a file was actually written — false when the user
+ *  cancels. Kept in Rust so a large image never round-trips the JSON IPC
+ *  channel as a number array. */
+export const saveImage = (url: string, pageUrl?: string | null) =>
+  invoke<boolean>("save_image", { url, pageUrl: pageUrl ?? null });
+
 // ── feeds ──
 export const listFeeds = () => invoke<Feed[]>("list_feeds");
 export const addFeed = (url: string, folderId: number | null) =>
