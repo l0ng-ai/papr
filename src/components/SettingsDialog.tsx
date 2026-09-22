@@ -14,6 +14,7 @@ import { reportError } from "../toast";
 import { checkForUpdates } from "../lib/updater";
 import { saveTextFile } from "../lib/save";
 import { NO_AUTOCORRECT } from "../lib/inputProps";
+import { errorText } from "../lib/errors";
 import type { Feed, Rule, RuleAction, RuleField, RulePreview } from "../types";
 import Icon, { type IconName } from "./Icon";
 import ConfirmDialog from "./ConfirmDialog";
@@ -1685,6 +1686,53 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
   const savedKey = useRef("");
   const savedModel = useRef("");
   const savedBaseUrl = useRef("");
+  // Connection test: one minimal request, plus the verdict to show inline.
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{
+    ok: boolean;
+    text: string;
+  } | null>(null);
+
+  const testRevision = useRef(0);
+
+  const runTest = () => {
+    const revision = ++testRevision.current;
+    setTesting(true);
+    setTestResult(null);
+    api
+      .testAi({
+        provider,
+        apiKey: apiKey.trim(),
+        model: model.trim(),
+        baseUrl: baseUrl.trim(),
+      })
+      .then((r) => {
+        if (revision !== testRevision.current) return;
+        setTestResult({
+          ok: true,
+          text: t("settings.advanced.aiTestOk", {
+            model: r.model,
+            ms: r.latencyMs,
+          }),
+        });
+      })
+      // The provider's own words are the useful part (rejected key, unknown
+      // model, unreachable Base URL), so show them instead of a generic
+      // "request failed".
+      .catch((e) => {
+        if (revision === testRevision.current)
+          setTestResult({ ok: false, text: errorText(e) });
+      })
+      .finally(() => setTesting(false));
+  };
+
+  // Any edit invalidates the previous verdict — a stale "connected" next to
+  // changed fields would be worse than no answer at all.
+  useEffect(() => {
+    ++testRevision.current;
+    setTestResult(null);
+    return () => { ++testRevision.current; };
+  }, [provider, apiKey, model, baseUrl]);
 
   useEffect(() => {
     Promise.all([
@@ -1843,6 +1891,31 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
             }
           }}
         />
+      </Row>
+      <Row
+        label={t("settings.advanced.aiTest")}
+        desc={t("settings.advanced.aiTestDesc")}
+      >
+        <div className="ai-test">
+          <button
+            className="s-btn"
+            type="button"
+            disabled={testing || !apiKey.trim()}
+            onClick={runTest}
+          >
+            {testing
+              ? t("settings.advanced.aiTesting")
+              : t("settings.advanced.aiTest")}
+          </button>
+          {testResult && (
+            <span
+              className={testResult.ok ? "ai-test-ok" : "ai-test-err"}
+              role="status"
+            >
+              {testResult.text}
+            </span>
+          )}
+        </div>
       </Row>
       <Row
         label={t("settings.advanced.translateEngine")}

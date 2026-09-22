@@ -1210,6 +1210,13 @@ button { font-family: inherit; }
   color: var(--muted);
   font-size: 12.5px;
 }
+.ai-test {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.ai-test-ok { color: var(--success); font-size: 12.5px; }
+.ai-test-err { color: var(--danger); font-size: 12.5px; }
 .ai-dot {
   width: 6px; height: 6px;
   background: var(--accent);

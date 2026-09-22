@@ -204,6 +204,27 @@ export const getSetting = (key: string) =>
 export const setSetting = (key: string, value: string) =>
   invoke<void>("set_setting", { key, value });
 
+// ── AI ──
+/** What a successful `testAi` round trip saw (mirrors `ai::TestOutcome`). */
+export interface AiTestOutcome {
+  model: string;
+  baseUrl: string;
+  latencyMs: number;
+  reply: string;
+}
+
+/**
+ * Send one minimal request to the configured provider and report what came
+ * back. Takes the values currently in the settings form so the test works
+ * before saving; empty model/URL fields use provider defaults.
+ */
+export const testAi = (args: {
+  provider: string;
+  apiKey: string;
+  model: string;
+  baseUrl: string;
+}) => invoke<AiTestOutcome>("ai_test", args);
+
 // ── storage ──
 export interface StorageStats {
   dbBytes: number;

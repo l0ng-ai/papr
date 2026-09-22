@@ -829,6 +829,35 @@ fn translate_target_lang(conn: &rusqlite::Connection) -> String {
         .unwrap_or_else(|| "en".to_string())
 }
 
+/// Check the AI provider configuration with one minimal request, so the
+/// settings UI can say whether the key / Base URL / model actually work
+/// instead of leaving the user to guess.
+///
+/// The arguments are what the settings form currently holds: the button has to
+/// work before the fields are saved. Omitted arguments use stored settings;
+/// explicit empty model/URL values use the provider defaults.
+#[tauri::command]
+pub async fn ai_test(
+    state: State<'_, AppState>,
+    provider: Option<String>,
+    api_key: Option<String>,
+    model: Option<String>,
+    base_url: Option<String>,
+) -> AppResult<ai::TestOutcome> {
+    let cfg = {
+        let conn = state.read().await;
+        let stored = |key: &str| db::get_setting(&conn, key).ok().flatten();
+        AiConfig::new(
+            provider.or_else(|| stored("ai_provider")),
+            api_key.or_else(|| stored("ai_api_key")),
+            model.or_else(|| stored("ai_model")),
+            base_url.or_else(|| stored("ai_base_url")),
+        )?
+    };
+    let http = state.http();
+    ai::test_connection(&http, &cfg).await
+}
+
 /// Stream an AI summary of one article; the full summary is also persisted.
 #[tauri::command]
 pub async fn ai_summarize(
