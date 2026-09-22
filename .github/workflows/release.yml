@@ -173,3 +173,99 @@ jobs:
           # Exactly one of .tar.gz (Unix) / .zip (Windows) exists for this target.
           asset=$(echo papr-${{ matrix.cli_target }}.*)
           gh release upload "$RELEASE_TAG" "$asset" --clobber --repo "$GH_REPO"
+
+  finalize-appimage:
+    needs: release
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: AppImage -- prune host-coupled libs, repack, re-sign
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+          GH_REPO: ${{ github.repository }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # All matrix uploads have finished, so latest.json cannot be replaced
+          # by another platform while we patch its Linux signatures.
+          mkdir -p target/release/bundle/appimage
+          gh release download "$RELEASE_TAG" --pattern '*.AppImage' \
+            --dir target/release/bundle/appimage --repo "$GH_REPO"
+          shopt -s nullglob
+          images=(target/release/bundle/appimage/*.AppImage)
+          if [ "${#images[@]}" -ne 1 ]; then
+            echo "::error::expected exactly one Linux AppImage"
+            exit 1
+          fi
+          appimage="${images[0]}"
+          appdir="$(dirname "$appimage")"
+          appname="$(basename "$appimage")"
+
+          # tauri-bundler has no "exclude library" setting, so post-process the
+          # artifact: unpack it, drop the host-coupled libs, repack with the
+          # stock tool. The app then links the host's libwayland, exactly like
+          # the .deb does.
+          chmod +x "$appimage"
+          ./"$appimage" --appimage-extract >/dev/null
+          find squashfs-root -name 'libwayland-*.so*' -delete
+
+          # The hook forces x11 and clobbers a GDK_BACKEND the user exported.
+          # Let an explicit one through, now that native Wayland works here;
+          # warn instead of failing if upstream ever moves that line.
+          hook="squashfs-root/apprun-hooks/linuxdeploy-plugin-gtk.sh"
+          if grep -q '^export GDK_BACKEND=x11' "$hook"; then
+            # Expand in AppRun, not during packaging.
+            # shellcheck disable=SC2016
+            sed -i 's|^export GDK_BACKEND=x11|export GDK_BACKEND="${GDK_BACKEND:-x11}"|' "$hook"
+          else
+            echo "::warning::GDK_BACKEND no longer hardcoded in $hook; skipping that tweak"
+          fi
+
+          curl -fsSL -o appimagetool \
+            "https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
+          chmod +x appimagetool
+          # --appimage-extract-and-run: the runner has no usable FUSE.
+          ARCH=x86_64 ./appimagetool --appimage-extract-and-run \
+            squashfs-root "$appdir/repacked.AppImage"
+          mv "$appdir/repacked.AppImage" "$appimage"
+
+          # Assert the invariant against the file we are about to ship, so a
+          # future tauri-bundler change fails here instead of shipping silently.
+          rm -rf squashfs-root
+          ./"$appimage" --appimage-extract >/dev/null
+          test -d squashfs-root/usr
+          if find squashfs-root -name 'libwayland-*.so*' | grep -q .; then
+            echo "::error::$appname still bundles libwayland-*"
+            find squashfs-root -name 'libwayland-*.so*'
+            exit 1
+          fi
+          rm -rf squashfs-root
+
+          # Repacking changed the bytes, so the signature tauri-action produced
+          # for the previous file is stale: regenerate it with the same key.
+          pnpm tauri signer sign "$appimage"
+
+          # latest.json embeds that signature for every AppImage platform key
+          # (linux-x86_64, linux-x86_64-appimage), so patch and re-upload it,
+          # otherwise the in-app updater rejects the release.
+          gh release download "$RELEASE_TAG" --pattern latest.json \
+            --clobber --repo "$GH_REPO"
+          jq --arg sig "$(cat "$appimage.sig")" \
+            '.platforms |= with_entries(if (.value.url // "") | test("AppImage$") then .value.signature = $sig else . end)' \
+            latest.json > latest.patched.json
+          mv latest.patched.json latest.json
+          gh release upload "$RELEASE_TAG" \
+            "$appimage" "$appimage.sig" latest.json \
+            --clobber --repo "$GH_REPO"
