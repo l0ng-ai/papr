@@ -23,6 +23,7 @@ use ingestion::discovery::{self, DeepLink};
 use state::AppState;
 use std::fs;
 use tauri::{Emitter, Manager};
+use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
 /// Handle every URL delivered through the `papr://` deep-link scheme. A
 /// `papr://subscribe?url=…` link focuses the main window and emits a
@@ -81,16 +82,31 @@ pub fn run() {
     builder
         .setup(|app| {
             // ── Database ──────────────────────────────────────────────
-            let data_dir = app.path().app_data_dir().expect("resolve app data dir");
-            fs::create_dir_all(&data_dir).ok();
-            let db_path = data_dir.join("papr.db");
-            let conn = db::open(&db_path).expect("open database");
-            // A small pool of read-only connections for UI queries — under WAL
-            // they run concurrently with the writer, so the interface stays
-            // responsive while a background refresh is writing.
-            let readers: Vec<_> = (0..READ_POOL_SIZE)
-                .map(|_| db::open_reader(&db_path).expect("open reader connection"))
-                .collect();
+            let opened = (|| -> Result<_, Box<dyn std::error::Error>> {
+                let data_dir = app.path().app_data_dir()?;
+                fs::create_dir_all(&data_dir)?;
+                let db_path = data_dir.join("papr.db");
+                let conn = db::open(&db_path)?;
+                let readers = (0..READ_POOL_SIZE)
+                    .map(|_| db::open_reader(&db_path))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok((conn, readers, db_path))
+            })();
+            let (conn, readers, db_path) = match opened {
+                Ok(connections) => connections,
+                Err(error) => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.hide();
+                    }
+                    let handle = app.handle().clone();
+                    app.dialog()
+                        .message(format!("Papr could not open its database. Your data has not been reset. If you used a newer build, install a compatible version.\n\n{error}"))
+                        .title("Papr — Unable to start")
+                        .kind(MessageDialogKind::Error)
+                        .show(move |_| handle.exit(1));
+                    return Ok(());
+                }
+            };
             // The HTTP client honours the persisted proxy / timeout settings.
             let http = ingestion::fetch::build_client_from_settings(&conn);
             // Snapshot the state the tray menu needs (read before the
