@@ -95,15 +95,17 @@ pub fn run() {
             let (conn, readers, db_path) = match opened {
                 Ok(connections) => connections,
                 Err(error) => {
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.hide();
-                    }
                     let handle = app.handle().clone();
-                    app.dialog()
+                    let mut dialog = app.dialog()
                         .message(format!("Papr could not open its database. Your data has not been reset. If you used a newer build, install a compatible version.\n\n{error}"))
                         .title("Papr — Unable to start")
-                        .kind(MessageDialogKind::Error)
-                        .show(move |_| handle.exit(1));
+                        .kind(MessageDialogKind::Error);
+                    #[cfg(desktop)]
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                        dialog = dialog.parent(&window);
+                    }
+                    dialog.show(move |_| handle.exit(1));
                     return Ok(());
                 }
             };
