@@ -300,6 +300,11 @@ static MIGRATIONS: LazyLock<Migrations> = LazyLock::new(|| {
         // 'web'. NULL (the default) keeps today's behaviour — reader view,
         // honouring the global auto-extract preference.
         M::up("ALTER TABLE feeds ADD COLUMN open_mode TEXT;"),
+        // v20/v21 were used by development builds sharing the desktop data
+        // directory. Keep their additive columns and version slots so those
+        // databases remain readable without resetting or discarding data.
+        M::up("ALTER TABLE feeds ADD COLUMN custom_favicon INTEGER NOT NULL DEFAULT 0;"),
+        M::up("ALTER TABLE feeds ADD COLUMN position INTEGER NOT NULL DEFAULT 0;"),
     ])
 });
 
@@ -2516,6 +2521,40 @@ pub fn requeue_sync(conn: &Connection, article_id: i64, field: &str, value: bool
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_migrations_preserve_existing_databases() {
+        for version in [0, 19, 20, 21, 22] {
+            let path = std::env::temp_dir().join(format!("papr-migrations-{}-{}-{}.db",
+                std::process::id(), version,
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+            let mut conn = Connection::open(&path).unwrap();
+            MIGRATIONS.to_version(&mut conn, version.min(21)).unwrap();
+            if version > 0 {
+                conn.execute("INSERT INTO feeds(id,feed_url,title) VALUES(1,'https://example.com/rss','Preserved')", []).unwrap();
+                conn.execute("INSERT INTO articles(feed_id,guid,title,is_starred) VALUES(1,'one','Article',1)", []).unwrap();
+            }
+            if version >= 20 { conn.execute("UPDATE feeds SET custom_favicon=1", []).unwrap(); }
+            if version >= 21 { conn.execute("UPDATE feeds SET position=42", []).unwrap(); }
+            if version == 22 { conn.pragma_update(None, "user_version", 22).unwrap(); }
+            drop(conn);
+            let result = open(&path);
+            if version == 22 {
+                assert!(result.is_err());
+                let conn = Connection::open(&path).unwrap();
+                assert_eq!(conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0)).unwrap(), 22);
+            } else {
+                let conn = result.unwrap();
+                assert_eq!(conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0)).unwrap(), 21);
+                if version > 0 {
+                    let values: (String,i64,i64) = conn.query_row("SELECT title,custom_favicon,position FROM feeds WHERE id=1", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+                    assert_eq!(values, ("Preserved".into(), i64::from(version>=20), if version>=21 {42} else {0}));
+                    assert_eq!(conn.query_row("SELECT is_starred FROM articles WHERE guid='one'", [], |r| r.get::<_,i64>(0)).unwrap(), 1);
+                }
+            }
+            std::fs::remove_file(path).unwrap();
+        }
+    }
 
     #[test]
     fn ai_profiles_preserve_legacy_values_and_explicit_clears() {

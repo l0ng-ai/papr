@@ -257,15 +257,16 @@ jobs:
           # for the previous file is stale: regenerate it with the same key.
           pnpm tauri signer sign "$appimage"
 
-          # latest.json embeds that signature for every AppImage platform key
-          # (linux-x86_64, linux-x86_64-appimage), so patch and re-upload it,
-          # otherwise the in-app updater rejects the release.
-          gh release download "$RELEASE_TAG" --pattern latest.json \
+          # Concurrent tauri-action jobs can overwrite each other's platform
+          # entries. Rebuild from every final signature after the matrix ends.
+          # Keep the newly generated AppImage signature instead of downloading
+          # its stale predecessor from the release.
+          cp "$appimage.sig" final-appimage.sig
+          gh release download "$RELEASE_TAG" --pattern latest.json --pattern '*.sig' \
             --clobber --repo "$GH_REPO"
-          jq --arg sig "$(cat "$appimage.sig")" \
-            '.platforms |= with_entries(if (.value.url // "") | test("AppImage$") then .value.signature = $sig else . end)' \
-            latest.json > latest.patched.json
-          mv latest.patched.json latest.json
+          mv final-appimage.sig "$appimage.sig"
+          python3 "$GITHUB_WORKSPACE/scripts/finalize-updater.py" \
+            . "$RELEASE_TAG" "$GH_REPO"
           gh release upload "$RELEASE_TAG" \
             "$appimage" "$appimage.sig" latest.json \
             --clobber --repo "$GH_REPO"
