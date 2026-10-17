@@ -12,6 +12,7 @@ import type { Palette, ResolvedMode } from "./store";
 import { useArticleActions } from "./hooks/articleActions";
 import { readCurrentItems } from "./lib/currentList";
 import { checkForUpdates } from "./lib/updater";
+import WebDavSyncButton from "./components/WebDavSyncButton";
 import { useToasts, toast as toastApi, reportError } from "./toast";
 import type { ArticleQuery, ArticleSummary, Feed } from "./types";
 import Sidebar from "./components/Sidebar";
@@ -26,6 +27,7 @@ import PlayerBar from "./components/PlayerBar";
 import ResizeHandle from "./components/ResizeHandle";
 import Icon from "./components/Icon";
 import { PANEL_BOUNDS } from "./store";
+import { isMobile } from "./lib/platform";
 
 // The accent per (palette, mode), fed to --accent / --accent-soft / --accent-ink.
 // `accent` is the mark, `soft` the active-row/selection wash, `ink` text on that
@@ -40,6 +42,22 @@ const ACCENTS: Record<Palette, Record<ResolvedMode, { accent: string; soft: stri
   frost: {
     light: { accent: "#007AFF", soft: "rgba(0, 122, 255, 0.13)", ink: "#0062CC" },
     dark: { accent: "#0A84FF", soft: "rgba(10, 132, 255, 0.20)", ink: "#6FB4FF" },
+  },
+  mint: {
+    light: { accent: "#4B7652", soft: "#DAE8D4", ink: "#304E35" },
+    dark: { accent: "#91B79A", soft: "#2B4032", ink: "#C0DDC5" },
+  },
+  sepia: {
+    light: { accent: "#8B6432", soft: "#EADCBA", ink: "#654719" },
+    dark: { accent: "#C7A16A", soft: "#433727", ink: "#E7C99E" },
+  },
+  gray: {
+    light: { accent: "#586A70", soft: "#D8E0E2", ink: "#35484F" },
+    dark: { accent: "#A5B7BF", soft: "#354147", ink: "#CFDDE2" },
+  },
+  black: {
+    light: { accent: "#BCB7A6", soft: "#292823", ink: "#E0DAC9" },
+    dark: { accent: "#BCB7A6", soft: "#292823", ink: "#E0DAC9" },
   },
   contrast: {
     light: { accent: "#0057D9", soft: "rgba(0, 87, 217, 0.14)", ink: "#003E9E" },
@@ -57,6 +75,10 @@ const BACKING: Record<Palette, Record<ResolvedMode, string>> = {
   paper: { light: "#FBF9F3", dark: "#1D1E1F" },
   frost: { light: "#FFFFFF", dark: "#1D1F23" },
   contrast: { light: "#FFFFFF", dark: "#000000" },
+  mint: { light: "#EEF4E8", dark: "#18221C" },
+  sepia: { light: "#F4E8C9", dark: "#262119" },
+  gray: { light: "#ECEDED", dark: "#202324" },
+  black: { light: "#000000", dark: "#000000" },
 };
 
 // "#RRGGBB" → [r, g, b]. Used to hand the native backing colour to the
@@ -89,6 +111,7 @@ export default function App() {
   const effectiveMode: ResolvedMode = mode === "system" ? (systemDark ? "dark" : "light") : mode;
   const readerFont = useUi((s) => s.readerFont);
   const readerSize = useUi((s) => s.readerSize);
+  const sidebarFontSize = useUi((s) => s.sidebarFontSize);
   const readerLeading = useUi((s) => s.readerLeading);
   const readerWidth = useUi((s) => s.readerWidth);
   const sidebarWidth = useUi((s) => s.sidebarWidth);
@@ -96,6 +119,28 @@ export default function App() {
   const aiWidth = useUi((s) => s.aiWidth);
   const reduceMotion = useUi((s) => s.prefs.reduceMotion);
   const focusMode = useUi((s) => s.focusMode);
+  const selectedArticleId = useUi((s) => s.selectedArticleId);
+  const query = useUi((s) => s.query);
+  const queryLabel = useUi((s) => s.queryLabel);
+  const [compact, setCompact] = useState(() => isMobile || window.matchMedia("(max-width: 800px)").matches);
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 800px)");
+    const update = () => setCompact(isMobile || mq.matches);
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  }, []);
+  useEffect(() => { setLibraryOpen(false); }, [query]);
+  useEffect(() => {
+    if (!isMobile) return;
+    const resume = () => {
+      if (document.visibilityState !== "visible") return;
+      void api.webdavAutoSync().catch(() => {});
+    };
+    document.addEventListener("visibilitychange", resume);
+    window.addEventListener("online", resume);
+    return () => { document.removeEventListener("visibilitychange", resume); window.removeEventListener("online", resume); };
+  }, []);
 
   const activeToast = useToasts((s) => s.current);
   const dismissToast = useToasts((s) => s.dismiss);
@@ -211,9 +256,10 @@ export default function App() {
     root.setProperty("--reader-font", font.stack);
     root.setProperty("--reader-font-adjust", font.adjust);
     root.setProperty("--reader-size", `${readerSize}px`);
+    root.setProperty("--sidebar-font-size", `${sidebarFontSize}px`);
     root.setProperty("--reader-leading", String(readerLeading / 100));
     root.setProperty("--reader-width", `${readerWidth}px`);
-  }, [readerFont, readerSize, readerLeading, readerWidth]);
+  }, [readerFont, readerSize, readerLeading, readerWidth, sidebarFontSize]);
 
   // ── apply the draggable pane widths as the grid/drawer CSS variables ──
   // These drive `.window`'s grid columns and the AI drawer's width; the resize
@@ -247,11 +293,27 @@ export default function App() {
       qc.invalidateQueries({ queryKey: ["feeds"] });
       qc.invalidateQueries({ queryKey: ["counts"] });
       qc.invalidateQueries({ queryKey: ["articles"] });
+      qc.invalidateQueries({ queryKey: ["article"] });
+      qc.invalidateQueries({ queryKey: ["folders"] });
+      qc.invalidateQueries({ queryKey: ["tags"] });
     });
     return () => {
       un.then((f) => f());
     };
   }, [qc]);
+
+  const lastConflictCount = useRef(0);
+  useEffect(() => {
+    const un = listen("webdav-updated", () => {
+      qc.invalidateQueries({ queryKey: ["webdav-status"] });
+      qc.invalidateQueries({ queryKey: ["webdav-conflicts"] });
+      api.webdavStatus().then((status) => {
+        if (status.conflicts > 0 && status.conflicts !== lastConflictCount.current) toastApi.error(t("settings.webdav.conflictNotice"));
+        lastConflictCount.current = status.conflicts;
+      }).catch(() => {});
+    });
+    return () => { un.then((f) => f()); };
+  }, [qc, t]);
 
   // ── "Settings…" from the menu-bar tray ──
   useEffect(() => {
@@ -516,7 +578,18 @@ export default function App() {
   return (
     <>
       <div className="app-shell">
-        <div className={`window ${focusMode ? "focus" : ""}`}>
+        <div className={`window ${focusMode ? "focus" : ""}`} data-compact={compact} data-pane={libraryOpen ? "library" : selectedArticleId != null ? "reader" : "list"}>
+          {compact && <header className="mobile-nav">
+            <button className="tb-btn" aria-label={t(libraryOpen || selectedArticleId != null ? "mobile.back" : "mobile.library")} onClick={() => {
+              if (libraryOpen) setLibraryOpen(false);
+              else if (selectedArticleId != null) { useUi.getState().openArticle(null); useUi.getState().setFocusMode(false); useUi.getState().setAiOpen(false); }
+              else setLibraryOpen(true);
+            }}><Icon name={libraryOpen || selectedArticleId != null ? "chevron-left" : "menu"} size={21} /></button>
+            <strong>{libraryOpen ? t("mobile.library") : selectedArticleId != null ? t("mobile.reading") : queryLabel}</strong>
+            <WebDavSyncButton className="tb-btn home-sync" onOpenSettings={() => openSettings("sync")} onToast={showToast} />
+            <button className="tb-btn" aria-label={t("mobile.search")} onClick={() => setCpOpen(true)}><Icon name="search" size={19}/></button>
+            <button className="tb-btn" aria-label={t("mobile.settings")} onClick={() => openSettings()}><Icon name="settings" size={19}/></button>
+          </header>}
           <Sidebar
             onAddFeed={() => setAddFeed(true)}
             onExplore={() => setExplore(true)}
@@ -531,7 +604,7 @@ export default function App() {
           {/* Pane resize handles. Hidden in focus mode (the sidebar + list are
               hidden then, collapsing the grid to a single reader column). They
               sit at the column boundaries via the `left` offset below. */}
-          {!focusMode && (
+          {!focusMode && !compact && (
             <>
               <div
                 className="resize-handle-slot"

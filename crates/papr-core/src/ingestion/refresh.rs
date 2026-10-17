@@ -264,6 +264,7 @@ pub async fn refresh_core(
     // running on every refresh cycle.
     {
         let conn = db.lock().await;
+        if let Err(e)=db::cleanup_limited_feeds(&conn) {log::warn!("per-feed retention failed: {e}");}
         let retention = db::get_setting(&conn, "retention_days").ok().flatten();
         if let Some(days) = retention.and_then(|v| v.parse::<i64>().ok()) {
             let now = chrono::Utc::now().timestamp();

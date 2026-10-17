@@ -37,6 +37,7 @@ impl SourceType {
 #[serde(rename_all = "camelCase")]
 pub struct Folder {
     pub id: i64,
+    pub parent_id: Option<i64>,
     pub name: String,
     pub position: i64,
 }
@@ -67,6 +68,7 @@ pub struct Feed {
     /// (embedded web view of the original page). `None` follows the default
     /// behaviour (reader view, honouring the global auto-extract preference).
     pub open_mode: Option<String>,
+    pub max_articles: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,6 +84,8 @@ pub struct Enclosure {
 #[serde(rename_all = "camelCase")]
 pub struct Tag {
     pub id: i64,
+    #[serde(default)]
+    pub parent_id: Option<i64>,
     pub name: String,
     /// A palette key (resolved to a colour by the frontend).
     pub color: String,
@@ -152,6 +156,8 @@ pub struct ArticleDetail {
     pub translated_html: Option<String>,
     /// The target language code the cached translation was produced for.
     pub translated_lang: Option<String>,
+    /// Fraction of the reader scroll range, from 0 to 1.
+    pub reading_progress: f64,
     pub enclosures: Vec<Enclosure>,
     /// Tags currently attached to this article.
     pub tags: Vec<Tag>,

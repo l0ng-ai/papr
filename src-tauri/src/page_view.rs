@@ -40,12 +40,18 @@ pub async fn open_page_view(
     y: f64,
     width: f64,
     height: f64,
+    zoom: Option<f64>,
 ) -> Result<(), String> {
     let parsed = parse_url(&url)?;
+    let zoom = zoom.unwrap_or(1.0);
+    if !zoom.is_finite() || !(0.5..=3.0).contains(&zoom) {
+        return Err("invalid zoom".into());
+    }
     let position = LogicalPosition::new(x, y);
     let size = LogicalSize::new(width, height);
 
     if let Some(view) = app.get_webview(LABEL) {
+        view.set_zoom(zoom).map_err(|e| e.to_string())?;
         view.navigate(parsed).map_err(|e| e.to_string())?;
         view.set_position(position).map_err(|e| e.to_string())?;
         view.set_size(size).map_err(|e| e.to_string())?;
@@ -58,6 +64,8 @@ pub async fn open_page_view(
     let builder = WebviewBuilder::new(LABEL, WebviewUrl::External(parsed));
     window
         .add_child(builder, position, size)
+        .map_err(|e| e.to_string())?
+        .set_zoom(zoom)
         .map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -103,6 +111,18 @@ pub async fn set_page_view_visible(app: AppHandle, visible: bool) -> Result<(), 
 pub async fn close_page_view(app: AppHandle) -> Result<(), String> {
     if let Some(view) = app.get_webview(LABEL) {
         view.close().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Apply the reading-size setting to original webpages as well as reader HTML.
+#[tauri::command]
+pub async fn set_page_view_zoom(app: AppHandle, zoom: f64) -> Result<(), String> {
+    if !zoom.is_finite() || !(0.5..=3.0).contains(&zoom) {
+        return Err("invalid zoom".into());
+    }
+    if let Some(view) = app.get_webview(LABEL) {
+        view.set_zoom(zoom).map_err(|e| e.to_string())?;
     }
     Ok(())
 }

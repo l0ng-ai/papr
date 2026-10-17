@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import * as api from "../api";
 import { useUi } from "../store";
 import { feedHost, relTime } from "../lib/feedMeta";
-import { modCombo } from "../lib/platform";
+import { isMobile, modCombo } from "../lib/platform";
 import { NO_AUTOCORRECT } from "../lib/inputProps";
 import type { ArticleSummary, Feed } from "../types";
 import Icon, { type IconName } from "./Icon";
@@ -281,7 +281,7 @@ export default function CommandPalette({
             }
             aria-autocomplete="list"
           />
-          <span className="cp-esc">ESC</span>
+          {isMobile ? <button className="cp-close" aria-label={t("common.close")} onClick={onClose}><Icon name="x" size={18} /></button> : <span className="cp-esc">ESC</span>}
         </div>
         <div className="cp-list" id="cp-listbox" role="listbox" ref={listRef}>
           {items.length === 0 ? (

@@ -42,6 +42,7 @@ export interface DiscoveryResult {
 
 export interface Folder {
   id: number;
+  parentId: number | null;
   name: string;
   position: number;
 }
@@ -68,6 +69,7 @@ export interface Feed {
    *  or the embedded web view of the original page. `null` follows the default
    *  behaviour (reader view, honouring the global auto-extract preference). */
   openMode: "reader" | "extracted" | "web" | null;
+  maxArticles: number | null;
 }
 
 export interface Enclosure {
@@ -78,6 +80,7 @@ export interface Enclosure {
 
 export interface Tag {
   id: number;
+  parentId: number | null;
   name: string;
   color: string;
   position: number;
@@ -148,6 +151,7 @@ export interface ArticleDetail {
   translatedHtml: string | null;
   /** The target language code the cached translation was produced for. */
   translatedLang: string | null;
+  readingProgress: number;
   enclosures: Enclosure[];
   tags: Tag[];
 }

@@ -9,6 +9,10 @@ use tauri_plugin_notification::NotificationExt;
 
 /// Refresh the Dock badge to the unread count (or clear it when disabled).
 pub async fn update_badge(app: &AppHandle) {
+    #[cfg(mobile)]
+    { let _=app; return; }
+    #[cfg(desktop)]
+    {
     let count = {
         let state = app.state::<AppState>();
         let conn = state.read().await;
@@ -20,6 +24,7 @@ pub async fn update_badge(app: &AppHandle) {
     };
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.set_badge_count(if count > 0 { Some(count) } else { None });
+    }
     }
 }
 

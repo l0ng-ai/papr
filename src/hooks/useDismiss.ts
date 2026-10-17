@@ -1,6 +1,6 @@
 // Outside-click / Escape dismissal for floating popovers (context menus,
 // pickers, share menus). Every popover reimplemented the same effect: a
-// `mousedown` listener that closes on a click outside `ref`, an Escape
+// `pointerdown` listener that closes on a click/touch outside `ref`, an Escape
 // `keydown` listener, and a `setTimeout(0)` so the very click/keypress that
 // opened the popover does not immediately close it. Centralised here.
 
@@ -21,7 +21,7 @@ export function useDismiss(
   { onFocusOut = false }: Options = {},
 ) {
   useEffect(() => {
-    const onDown = (e: MouseEvent) => {
+    const onDown = (e: PointerEvent) => {
       if (!ref.current?.contains(e.target as Node)) onClose();
     };
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
@@ -30,13 +30,13 @@ export function useDismiss(
       if (next && !ref.current?.contains(next)) onClose();
     };
     const tm = window.setTimeout(() => {
-      document.addEventListener("mousedown", onDown);
+      document.addEventListener("pointerdown", onDown);
       window.addEventListener("keydown", onKey);
       if (onFocusOut) document.addEventListener("focusout", onBlur);
     }, 0);
     return () => {
       window.clearTimeout(tm);
-      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("pointerdown", onDown);
       window.removeEventListener("keydown", onKey);
       document.removeEventListener("focusout", onBlur);
     };

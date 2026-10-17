@@ -9,15 +9,15 @@ import type { ArticleQuery } from "./types";
 
 /** Appearance is two independent axes: a colour `Palette` (the family — warm
  *  Paper, cool Frost, high-contrast) and a light/dark `Mode`. Their product is
- *  the 6 themes; the CSS keys off `data-palette` + `data-mode` on the root.
+ *  the available themes; the CSS keys off `data-palette` + `data-mode` on the root.
  *
  *  `Mode` also carries `"system"`, which isn't a theme of its own — it follows
  *  the OS light/dark preference and resolves to one of the two concrete
  *  `ResolvedMode`s (see `resolveMode`) that the CSS + native backing key off. */
-export type Palette = "paper" | "frost" | "contrast";
+export type Palette = "paper" | "frost" | "contrast" | "mint" | "sepia" | "gray" | "black";
 export type Mode = "light" | "dark" | "system";
 export type ResolvedMode = "light" | "dark";
-export const PALETTES: Palette[] = ["paper", "frost", "contrast"];
+export const PALETTES: Palette[] = ["paper", "frost", "contrast", "mint", "sepia", "gray", "black"];
 export const MODES: Mode[] = ["light", "dark", "system"];
 
 /** Whether the OS currently prefers a dark colour scheme. Drives `"system"`
@@ -56,7 +56,7 @@ export const READER_FONTS: Record<ReaderFont, { stack: string; adjust: string }>
  *  truth shared by the Settings sliders, persistence validation, and the
  *  `setReader` write guard, so all three stay in lockstep. */
 export const READER_BOUNDS = {
-  size: { min: 14, max: 22 },
+  size: { min: 14, max: 32 },
   leading: { min: 130, max: 200 },
   width: { min: 520, max: 840 },
 } as const;
@@ -66,6 +66,8 @@ export const READER_BOUNDS = {
  *  lockstep (mirrors `READER_BOUNDS`). The article-list column and the AI
  *  drawer can grow wide, but never so far they crowd out the reader; the
  *  sidebar stays a navigation rail. */
+export const SIDEBAR_FONT_BOUNDS = { min: 11, max: 22 } as const;
+
 export const PANEL_BOUNDS = {
   sidebar: { min: 200, max: 420 },
   list: { min: 300, max: 560 },
@@ -155,6 +157,7 @@ interface UiState {
   viewMode: ViewMode;
   readerFont: ReaderFont;
   readerSize: number;
+  sidebarFontSize: number;
   readerLeading: number;
   readerWidth: number;
 
@@ -186,6 +189,7 @@ interface UiState {
   toggleSort: () => void;
   setListAnchor: (offset: number) => void;
 
+  setSidebarFontSize: (size: number) => void;
   setPalette: (p: Palette) => void;
   setMode: (m: Mode) => void;
   setDensity: (d: Density) => void;
@@ -299,6 +303,7 @@ export const useUi = create<UiState>((set, get) => ({
   ),
   viewMode: ls.oneOf<ViewMode>("viewMode", ["list", "card"], "list"),
   readerFont: loadReaderFont(),
+  sidebarFontSize: ls.num("sidebarFontSize", 13, SIDEBAR_FONT_BOUNDS.min, SIDEBAR_FONT_BOUNDS.max),
   readerSize: ls.num("readerSize", 17, READER_BOUNDS.size.min, READER_BOUNDS.size.max),
   readerLeading: ls.num(
     "readerLeading",
@@ -332,6 +337,12 @@ export const useUi = create<UiState>((set, get) => ({
   toggleSort: () => set((s) => ({ sortOldest: !s.sortOldest, listAnchor: 0 })),
   setListAnchor: (listAnchor) => set({ listAnchor }),
 
+  setSidebarFontSize: (size) => {
+    if (!Number.isFinite(size)) return;
+    const sidebarFontSize = clamp(size, SIDEBAR_FONT_BOUNDS.min, SIDEBAR_FONT_BOUNDS.max);
+    ls.set("sidebarFontSize", sidebarFontSize);
+    set({ sidebarFontSize });
+  },
   setPalette: (palette) => { ls.set("palette", palette); mirrorAppearance(palette, get().mode); set({ palette }); },
   setMode: (mode) => { ls.set("mode", mode); mirrorAppearance(get().palette, mode); set({ mode }); },
   setDensity: (density) => { ls.set("density", density); set({ density }); },

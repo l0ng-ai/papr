@@ -9,7 +9,8 @@
 // `lib/highlightDom.ts`. This component is the glue that calls them and the
 // `create_highlight` / export Tauri commands.
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import * as api from "../api";
 import { reportError, withUndo } from "../toast";
@@ -21,7 +22,7 @@ import {
 } from "../lib/highlightDom";
 import { captureContext } from "../lib/anchor";
 import { HIGHLIGHT_COLORS } from "../lib/highlightColors";
-import { clampAxis } from "../lib/viewport";
+import { useFloatingPosition } from "../hooks/useFloatingPosition";
 import type { Highlight } from "../types";
 import Icon from "./Icon";
 
@@ -237,19 +238,7 @@ function SelectionToolbar({
 }) {
   const { t } = useTranslation();
   const ref = useRef<HTMLDivElement>(null);
-  const [place, setPlace] = useState({ left: pos.x, top: pos.y });
-
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    // X is a plain two-sided viewport clamp; Y keeps its custom flip-below
-    // behaviour (the toolbar prefers to sit above the selection).
-    const left = clampAxis(pos.x - r.width / 2, r.width, window.innerWidth, 8);
-    let top = pos.y - r.height - 8;
-    if (top < 8) top = pos.y + 22; // flip below the selection if clipped
-    setPlace({ left, top });
-  }, [pos]);
+  const place = useFloatingPosition(ref, pos.x, pos.y, "above-center");
 
   // A scroll or an outside click ends the selection toolbar.
   useEffect(() => {
@@ -258,7 +247,7 @@ function SelectionToolbar({
     return () => window.removeEventListener("scroll", onScroll, true);
   }, [onDismiss]);
 
-  return (
+  return createPortal(
     <div
       ref={ref}
       className="hl-toolbar"
@@ -278,7 +267,7 @@ function SelectionToolbar({
           onClick={() => onPick(c.key)}
         />
       ))}
-    </div>
+    </div>, document.body
   );
 }
 
@@ -305,35 +294,22 @@ function HighlightPopover({
   // need not re-subscribe on every keystroke.
   const noteRef = useRef(note);
   noteRef.current = note;
-  const [place, setPlace] = useState({ left: x, top: y });
-
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    // X is a plain two-sided viewport clamp; Y keeps its custom flip-above
-    // behaviour (when the popover would overflow the bottom it jumps above
-    // the anchor instead of merely being pulled back).
-    const left = clampAxis(x, r.width, window.innerWidth, 8);
-    let top = y;
-    if (top + r.height > window.innerHeight - 8) top = y - r.height - 28;
-    setPlace({ left, top: Math.max(8, top) });
-  }, [x, y]);
+  const place = useFloatingPosition(ref, x, y, "below-flip");
 
   useEffect(() => {
-    const onDown = (e: MouseEvent) => {
+    const onDown = (e: PointerEvent) => {
       if (!ref.current?.contains(e.target as Node)) save();
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
     const tm = window.setTimeout(() => {
-      document.addEventListener("mousedown", onDown);
+      document.addEventListener("pointerdown", onDown);
       window.addEventListener("keydown", onKey);
     }, 0);
     return () => {
       window.clearTimeout(tm);
-      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("pointerdown", onDown);
       window.removeEventListener("keydown", onKey);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -368,7 +344,7 @@ function HighlightPopover({
     onClose();
   };
 
-  return (
+  return createPortal(
     <div
       ref={ref}
       className="hl-popover"
@@ -404,6 +380,6 @@ function HighlightPopover({
           {t("common.done")}
         </button>
       </div>
-    </div>
+    </div>, document.body
   );
 }

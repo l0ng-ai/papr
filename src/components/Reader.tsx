@@ -1,3 +1,5 @@
+import { articleImageUrls } from "../lib/articleImages";
+import { errorText } from "../lib/errors";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -11,7 +13,7 @@ import { useArticleActions } from "../hooks/articleActions";
 import { renderMarkdown } from "../lib/markdown";
 import { imageDataUrl } from "../lib/imageBytes";
 import { fullDate } from "../lib/feedMeta";
-import { isMac } from "../lib/platform";
+import { isMobile, isMac } from "../lib/platform";
 import { reportError, toast } from "../toast";
 import { tagColor } from "../lib/tagColors";
 import type { ArticleDetail } from "../types";
@@ -21,6 +23,7 @@ import ResizeHandle from "./ResizeHandle";
 import HighlightLayer from "./HighlightLayer";
 import ContextMenu, { type MenuEntry } from "./ContextMenu";
 import Lightbox from "./Lightbox";
+import YoutubePlayer from "./YoutubePlayer";
 
 interface Props {
   onToast: (msg: string) => void;
@@ -180,6 +183,7 @@ export default function Reader({ onToast }: Props) {
   const actions = useArticleActions(toast.error);
   const id = useUi((s) => s.selectedArticleId);
   const focusMode = useUi((s) => s.focusMode);
+  const readerSize = useUi((s) => s.readerSize);
   const setFocusMode = useUi((s) => s.setFocusMode);
   const aiOpen = useUi((s) => s.aiOpen);
   const setAiOpen = useUi((s) => s.setAiOpen);
@@ -225,6 +229,27 @@ export default function Reader({ onToast }: Props) {
     html: string;
   } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const restoredProgressRef = useRef<number | null>(null);
+  const pendingProgressRef = useRef<{ id: number; progress: number } | null>(null);
+  const progressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flushProgress = useCallback(() => {
+    const pending = pendingProgressRef.current;
+    if (!pending) return;
+    pendingProgressRef.current = null;
+    void api.setReadingProgress(pending.id, pending.progress).then(() => {
+      qc.setQueryData<ArticleDetail>(["article", pending.id], (old) => old ? { ...old, readingProgress: pending.progress } : old);
+    }).catch(reportError);
+  }, [qc]);
+  useEffect(() => () => {
+    if (progressTimerRef.current) clearTimeout(progressTimerRef.current);
+    flushProgress();
+  }, [id, flushProgress]);
+  useEffect(() => {
+    const flush = () => { if (document.visibilityState !== "visible") flushProgress(); };
+    document.addEventListener("visibilitychange", flush);
+    window.addEventListener("pagehide", flushProgress);
+    return () => { document.removeEventListener("visibilitychange", flush); window.removeEventListener("pagehide", flushProgress); };
+  }, [flushProgress]);
   const bodyRef = useRef<HTMLDivElement>(null);
   // Host element the native original-page child webview is positioned over.
   const pageHostRef = useRef<HTMLDivElement>(null);
@@ -275,8 +300,25 @@ export default function Reader({ onToast }: Props) {
     setHeroBroken(false);
     setHeroDataUrl(null);
     scrollMarkedRef.current = null;
+    restoredProgressRef.current = null;
     if (scrollRef.current) scrollRef.current.scrollTop = 0;
   }, [id]);
+
+  // Restore once per opened article; subsequent state/cache refreshes must
+  // not move the reader while the user is scrolling.
+  useEffect(() => {
+    if (viewMode !== "reader") {
+      restoredProgressRef.current = null;
+      return;
+    }
+    if (!a || restoredProgressRef.current === a.id || !scrollRef.current) return;
+    const el = scrollRef.current;
+    const frame = requestAnimationFrame(() => {
+      restoredProgressRef.current = a.id;
+      el.scrollTop = (a.readingProgress ?? 0) * Math.max(0, el.scrollHeight - el.clientHeight);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [a?.id, viewMode]);
 
   // Apply the effective open mode once the article (and the feed list) is
   // available — declared after the reset above so it wins the same commit.
@@ -287,7 +329,7 @@ export default function Reader({ onToast }: Props) {
     if (!a || openMode === undefined || openModeAppliedRef.current === a.id)
       return;
     openModeAppliedRef.current = a.id;
-    if (openMode === "web" && a.url) setViewMode("web");
+    if (openMode === "web" && a.url && !isMobile) setViewMode("web");
     else setShowExtracted(openMode === "extracted");
   }, [a, openMode]);
 
@@ -325,7 +367,7 @@ export default function Reader({ onToast }: Props) {
     };
     let open = false;
     let cancelled = false;
-    api.openPageView(articleUrl, bounds()).then(
+    api.openPageView(articleUrl, bounds(), useUi.getState().readerSize / 17).then(
       () => {
         open = true;
         // If teardown ran while this open was still in flight, the cleanup's
@@ -356,6 +398,10 @@ export default function Reader({ onToast }: Props) {
       api.closePageView().catch(() => {});
     };
   }, [viewMode, articleUrl]);
+
+  useEffect(() => {
+    if (viewMode === "web") api.setPageViewZoom(readerSize / 17).catch(reportError);
+  }, [readerSize, viewMode]);
 
   // Visibility: toggle the webview as overlays come and go, without reloading.
   // No-op (backend-side) when no webview is open.
@@ -658,6 +704,17 @@ export default function Reader({ onToast }: Props) {
     const el = scrollRef.current;
     if (!el) return;
     setScrolled(el.scrollTop > 8);
+    if (a && restoredProgressRef.current === a.id && viewMode === "reader") {
+      const range = el.scrollHeight - el.clientHeight;
+      if (range > 0) {
+        const progress = Math.max(0, Math.min(1, el.scrollTop / range));
+        if (pendingProgressRef.current || Math.abs(progress - (a.readingProgress ?? 0)) > 0.002) {
+          pendingProgressRef.current = { id: a.id, progress };
+          if (progressTimerRef.current) clearTimeout(progressTimerRef.current);
+          progressTimerRef.current = setTimeout(flushProgress, 500);
+        }
+      }
+    }
     markReadIfAtFoot();
   };
 
@@ -865,6 +922,7 @@ export default function Reader({ onToast }: Props) {
           }
           // Extraction needs the source URL; without one (and nothing
           // extracted yet) the button can only error, so disable it.
+          data-mobile-secondary
           disabled={extract.isPending || (!hasExtracted && !a.url)}
           title={hasExtracted ? t("reader.tbToggleFullText") : t("reader.tbExtractFullText")}
           aria-label={hasExtracted ? t("reader.tbToggleFullText") : t("reader.tbExtractFullText")}
@@ -875,12 +933,16 @@ export default function Reader({ onToast }: Props) {
         </button>
         <button
           className="tb-btn"
+          data-mobile-secondary
           title={t("reader.tbShare")}
           aria-label={t("reader.tbShare")}
           onClick={share}
           disabled={!a.url}
         >
           <Icon name="share" size={16} />
+        </button>
+        <button className={`tb-btn ${aiOpen ? "on" : ""}`} title={t("reader.tbAiSummary")} aria-label={t("reader.tbAiSummary")} aria-pressed={aiOpen} onClick={() => setAiOpen(!aiOpen)}>
+          <Icon name={aiOpen ? "sparkle-fill" : "sparkle"} size={16} />
         </button>
         <button
           className={`tb-btn ${showTranslation ? "on" : ""}`}
@@ -905,13 +967,17 @@ export default function Reader({ onToast }: Props) {
           bodyVersion={displayBody}
         />
         <div className="tb-btn spacer" />
+        {isMobile && <button className="tb-btn" aria-label={t("mobile.moreActions")} aria-haspopup="menu" aria-expanded={ctxMenu != null} onClick={(e) => {
+          const r = e.currentTarget.getBoundingClientRect(); setCtxMenu(ctxMenu ? null : { x: r.right - 260, y: r.bottom + 6 });
+        }}><Icon name="more" size={20}/></button>}
         {a.url && (
           <button
             className={`tb-btn ${viewMode === "web" ? "on" : ""}`}
+            data-mobile-secondary
             title={t("reader.tbWebView")}
             aria-label={t("reader.tbWebView")}
             aria-pressed={viewMode === "web"}
-            onClick={() => setViewMode((v) => (v === "web" ? "reader" : "web"))}
+            onClick={() => { if (isMobile && a.url) void openUrl(a.url).catch(reportError); else setViewMode((v) => (v === "web" ? "reader" : "web")); }}
           >
             <Icon name="eye" size={16} />
           </button>
@@ -919,6 +985,7 @@ export default function Reader({ onToast }: Props) {
         {a.url && (
           <button
             className="tb-btn"
+            data-mobile-secondary
             title={t("reader.tbOpenInBrowser")}
             aria-label={t("reader.tbOpenInBrowser")}
             onClick={() => openUrl(a.url!).catch(() => {})}
@@ -1018,15 +1085,7 @@ export default function Reader({ onToast }: Props) {
           )}
 
           {ytId ? (
-            <iframe
-              style={{ width: "100%", aspectRatio: "16 / 9" }}
-              // Privacy-enhanced host: YouTube sets no tracking cookies
-              // until the viewer actually starts the video.
-              src={`https://www.youtube-nocookie.com/embed/${ytId}`}
-              title={a.title}
-              referrerPolicy="strict-origin-when-cross-origin"
-              allowFullScreen
-            />
+            <YoutubePlayer videoId={ytId} title={a.title} />
           ) : (
             a.imageUrl &&
             !heroBroken &&
@@ -1240,6 +1299,14 @@ export default function Reader({ onToast }: Props) {
             ...(ctxMenu.selection || ctxMenu.imageUrl
               ? [{ separator: true as const }]
               : []),
+            ...(isMobile ? [
+              ...(a.url ? [
+                { icon: "share" as const, label: t("reader.tbShare"), onClick: share },
+                { icon: "open" as const, label: t("reader.tbOpenInBrowser"), onClick: () => { void openUrl(a.url!).catch(reportError); } },
+              ] : []),
+              ...(!extract.isPending && (hasExtracted || a.url) ? [{ icon: "text" as const, label: t(hasExtracted ? "reader.tbToggleFullText" : "reader.tbExtractFullText"), onClick: () => { if (hasExtracted) setShowExtracted((v) => !v); else extract.mutate(a.id); } }] : []),
+              { separator: true as const },
+            ] : []),
             {
               icon: aiOpen ? "sparkle-fill" : "sparkle",
               label: t("reader.tbAiSummary"),
@@ -1263,18 +1330,84 @@ export default function Reader({ onToast }: Props) {
             ...(a.url
               ? [{ icon: "copy", label: t("reader.tbCopyLink"), onClick: copyLink }]
               : []),
-            { separator: true },
-            {
-              icon: focusMode ? "eye-off" : "focus",
+            ...(!isMobile ? [{ separator: true as const }, {
+              icon: focusMode ? "eye-off" as const : "focus" as const,
               label: t("reader.tbFocusMode"),
               onClick: () => setFocusMode(!focusMode),
-            },
+            }] : []),
           ] as MenuEntry[]}
           onClose={() => setCtxMenu(null)}
         />
       )}
     </div>
   );
+}
+
+// Keep recent per-article conversations for this app session; no article content
+// or chat is written into browser localStorage or a shared sync snapshot.
+const articleConversations = new Map<number, api.ArticleChatMessage[]>();
+function ArticleConversation({ article, open }: { article: ArticleDetail; open: boolean }) {
+  const { t } = useTranslation();
+  const [messages, setMessages] = useState<api.ArticleChatMessage[]>(() => articleConversations.get(article.id) || []);
+  const [question, setQuestion] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [answer, setAnswer] = useState("");
+  const [error, setError] = useState("");
+  const run = useRef(0);
+  const bottom = useRef<HTMLDivElement>(null);
+  useEffect(() => { bottom.current?.scrollIntoView({ block: "nearest" }); }, [messages, answer]);
+  useEffect(() => () => { ++run.current; }, []);
+  useEffect(() => { if (!open) { ++run.current; setBusy(false); setAnswer(""); } }, [open]);
+  const remember = (next: api.ArticleChatMessage[]) => {
+    const recent = next.slice(-20);
+    setMessages(recent);
+    articleConversations.delete(article.id);
+    articleConversations.set(article.id, recent);
+    if (articleConversations.size > 50) articleConversations.delete(articleConversations.keys().next().value!);
+  };
+  const send = async () => {
+    const q = question.trim();
+    if (!q || busy) return;
+    const generation = ++run.current;
+    setBusy(true); setAnswer(""); setError("");
+    let text = "";
+    let reported = "";
+    let history = messages.slice(-18).map((m) => ({ ...m, content: m.content.slice(0, 16000) }));
+    while (history.reduce((sum, m) => sum + m.content.length, 0) > 32000) history = history.slice(2);
+    try {
+      await api.aiArticleChat(article.id, q, history, (ev) => {
+        if (generation !== run.current) return;
+        if (ev.type === "delta") { text += ev.data; setAnswer(text); }
+        if (ev.type === "error") reported = ev.data;
+      });
+      if (generation !== run.current) return;
+      if (reported) throw new Error(reported);
+      if (!text.trim()) throw new Error(t("reader.chatEmpty"));
+      remember([...messages, { role: "user", content: q }, { role: "assistant", content: text }]);
+      setQuestion(""); setAnswer("");
+    } catch (e) { if (generation === run.current) { setError(errorText(e)); setAnswer(""); } }
+    finally { if (generation === run.current) setBusy(false); }
+  };
+  return <div className="article-chat">
+    <div className="article-chat-messages" aria-live="polite" aria-busy={busy}>
+      {messages.length === 0 && <p className="article-chat-hint">{t("reader.chatHint")}</p>}
+      {messages.map((m, i) => <div key={i} className={`article-chat-message ${m.role}`}>
+        <span className="article-chat-role">{t(m.role === "user" ? "reader.chatYou" : "reader.chatAssistant")}</span>
+        {m.role === "user" ? <p>{m.content}</p> : <div className="ai-prose" onClick={makeLinkClickHandler(article.url)} dangerouslySetInnerHTML={{ __html: renderMarkdown(m.content) }} />}
+      </div>)}
+      {busy && <div className="article-chat-message assistant"><span className="article-chat-role">{t("reader.chatAssistant")}</span><p className="article-chat-pending">{question}</p>{answer ? <div className="ai-prose" dangerouslySetInnerHTML={{ __html: renderMarkdown(answer) }} /> : <p>{t("reader.chatThinking")}</p>}</div>}
+      {error && <p className="ai-test-err" role="alert">{error}</p>}
+      <div ref={bottom} />
+    </div>
+    <form className="article-chat-form" onSubmit={(e) => { e.preventDefault(); void send(); }}>
+      <textarea value={question} maxLength={4000} disabled={busy} aria-label={t("reader.chatPlaceholder")} placeholder={t("reader.chatPlaceholder")} onChange={(e) => setQuestion(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void send(); } }} />
+      <div className="article-chat-actions">
+        <button className="s-btn" type="button" disabled={busy || messages.length === 0} onClick={() => { remember([]); setError(""); }}>{t("reader.chatClear")}</button>
+        <button className="s-btn" type="submit" disabled={busy || !question.trim()}>{t("reader.chatSend")}</button>
+      </div>
+      <p className="article-chat-hint">{t("reader.chatSession")}</p>
+    </form>
+  </div>;
 }
 
 function AIDrawer({
@@ -1288,6 +1421,9 @@ function AIDrawer({
 }) {
   const { t } = useTranslation();
   const qc = useQueryClient();
+  const [mode, setMode] = useState<"summary" | "chat">("summary");
+  const readerSize = useUi((s) => s.readerSize);
+  const summaryImages = useMemo(() => articleImageUrls(article), [article.contentHtml, article.extractedHtml, article.imageUrl, article.url]);
   const aiWidth = useUi((s) => s.aiWidth);
   // Initialised from the article's stored summary (if any). The parent keys
   // this component by article id, so a switch remounts it and re-runs this
@@ -1308,7 +1444,7 @@ function AIDrawer({
   // again whenever the user hits Retry. `failed` is in the guard so a failed
   // run isn't silently re-attempted just because the drawer was reopened.
   useEffect(() => {
-    if (!open || busy || text || failed) return;
+    if (!open || mode !== "summary" || busy || text || failed) return;
     const run = ++runRef.current;
     let cancelled = false;
     // Whether the stream settled (resolved or rejected) on its own. If the
@@ -1359,7 +1495,7 @@ function AIDrawer({
       if (!settled) setText(article.aiSummary);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, article.id, retry]);
+  }, [open, article.id, retry, mode]);
 
   const loading = busy && !text;
   const onRetry = () => {
@@ -1369,7 +1505,7 @@ function AIDrawer({
   };
   // Parse + sanitize the summary only when the text changes, not on every
   // AIDrawer re-render (e.g. each open/close toggle).
-  const html = useMemo(() => (text ? renderMarkdown(text) : ""), [text]);
+  const html = useMemo(() => (text ? renderMarkdown(text, summaryImages) : ""), [text, summaryImages]);
 
   return (
     <div
@@ -1377,7 +1513,7 @@ function AIDrawer({
       // A labelled complementary landmark so screen-reader users can jump
       // straight to the summary.
       role="complementary"
-      aria-label={t("reader.aiSummaryTitle")}
+      aria-label={t("reader.aiTitle")}
       // When closed the drawer is only moved off-screen — `inert` keeps its
       // close button and content out of the tab order and the a11y tree.
       inert={!open}
@@ -1398,7 +1534,7 @@ function AIDrawer({
         <span className="accent-ico">
           <Icon name="sparkle-fill" size={15} />
         </span>
-        <h3>{t("reader.aiSummaryTitle")}</h3>
+        <h3>{t("reader.aiTitle")}</h3>
         <button
           className="tb-btn close"
           onClick={onClose}
@@ -1408,7 +1544,13 @@ function AIDrawer({
           <Icon name="x" size={14} />
         </button>
       </div>
-      <div className="ai-body" aria-live="polite" aria-busy={busy}>
+      <div className="ai-tabs" role="tablist" aria-label={t("reader.aiTitle")}>
+        <button role="tab" aria-selected={mode === "summary"} onClick={() => setMode("summary")}>{t("reader.aiSummaryTitle")}</button>
+        <button role="tab" aria-selected={mode === "chat"} onClick={() => setMode("chat")}>{t("reader.chatTitle")}</button>
+        {mode === "summary" && <button className="tb-btn" disabled={busy} title={t("reader.aiRegenerate")} aria-label={t("reader.aiRegenerate")} onClick={onRetry}><Icon name="refresh" size={14} /></button>}
+      </div>
+      <div hidden={mode !== "chat"} className="article-chat-panel"><ArticleConversation article={article} open={open && mode === "chat"} /></div>
+      <div hidden={mode !== "summary"} className="ai-body ai-summary-body" style={{ fontSize: Math.max(15, Math.min(readerSize, 20)) }} aria-live="polite" aria-busy={busy}>
         {loading && (
           <div className="ai-loading">
             <span className="ai-dot" />
@@ -1430,7 +1572,15 @@ function AIDrawer({
         {text && !failed && (
           <>
             <div
-              className="ai-prose"
+              className="ai-prose ai-summary-content"
+              onError={(e) => {
+                const img = e.target;
+                if (!(img instanceof HTMLImageElement) || img.dataset.paprRetried) return;
+                const src = img.getAttribute("src") || "";
+                if (!summaryImages.has(src)) return;
+                img.dataset.paprRetried = "1";
+                void api.fetchImage(src, article.url).then((bytes) => { if (img.isConnected) img.src = imageDataUrl(src, bytes); }).catch(() => { img.style.display = "none"; });
+              }}
               onClick={makeLinkClickHandler(article.url)}
               dangerouslySetInnerHTML={{ __html: html }}
             />

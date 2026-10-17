@@ -24,14 +24,16 @@ the CLI can never drift apart.
 
 ## The desktop app
 
-- **Feeds & folders** — subscribe, organize, and import/export OPML.
+- **Feeds & nested folders** — organize subscriptions in expandable directories, with OPML import/export.
 - **Smart views** — All, Unread, Starred, and Read Later, with live counts.
 - **Tags & rules** — color-coded tags and rules that tag new articles automatically.
 - **Full-text** — fetch and clean the complete article when a feed ships only a summary.
 - **AI** — summaries, ask-the-article Q&A, and digests. Bring your own API key.
 - **Audio** — a built-in player that follows you from article to article.
-- **FreshRSS sync** — keep read state in step with a FreshRSS server.
+- **FreshRSS / Miniflux sync** — keep subscriptions and read state in step with your server.
+- **[WebDAV sync](docs/webdav.md)** — merge libraries, notes, reading progress and AI preferences across devices, with conflict review.
 - **Local-first** — everything stays on your machine. No account, no cloud.
+- **Reading preferences** — adjustable sidebar and article sizes, focus mode, and mint, book-yellow, gray and black themes.
 - **Localized** — English, Japanese, and Simplified Chinese.
 
 ### Install
@@ -56,7 +58,7 @@ work your feeds with no GUI:
 - **Read** — `feeds`, `list`, `read`, full-text `search`
 - **Triage** — `mark` read/star/later, `extract` full text, `refresh`
 - **Manage** — subscriptions, folders, tags, rules, highlights, OPML
-- **Sync** — FreshRSS / Miniflux
+- **Sync** — FreshRSS / Miniflux / WebDAV
 
 Run bare `papr` and it prints your unread dashboard *plus the next useful
 commands*, so the agent orients with zero manual. Output is
@@ -94,3 +96,9 @@ wires up an ambient SessionStart hook (Claude Code, Codex, OpenCode).
 | **Any** | Prebuilt `papr-<target>.tar.gz` from the [latest release](https://github.com/l0ng-ai/papr/releases/latest), or `cargo build --release -p papr-cli` |
 
 > **Full command reference, agent setup, and install options → [docs/cli.md](docs/cli.md)**
+
+AI account setup, model/reasoning selection, article conversations and illustrated summaries: [Codex guide](docs/codex.md).
+
+### iPhone and iPad
+
+An iOS port and a reproducible unsigned IPA build are available. See [iOS setup and limitations](docs/ios.md).

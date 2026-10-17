@@ -26,12 +26,14 @@ import type {
 
 // ── folders ──
 export const listFolders = () => invoke<Folder[]>("list_folders");
-export const createFolder = (name: string) =>
-  invoke<number>("create_folder", { name });
+export const createFolder = (name: string, parentId: number | null = null) =>
+  invoke<number>("create_folder", { name, parentId });
+export const moveFolder = (id: number, parentId: number | null) =>
+  invoke<void>("move_folder", { id, parentId });
 export const renameFolder = (id: number, name: string) =>
   invoke<void>("rename_folder", { id, name });
-export const deleteFolder = (id: number) =>
-  invoke<void>("delete_folder", { id });
+export const deleteFolder = (id: number, deleteFeeds = false) =>
+  invoke<void>("delete_folder", { id, deleteFeeds });
 
 // ── images ──
 /** Fetch an image's raw bytes via the backend, which walks Referer fallbacks
@@ -154,6 +156,12 @@ export const importOpml = (content: string) =>
 export const exportOpml = () => invoke<string>("export_opml");
 
 // ── AI (streaming over a Channel) ──
+export interface SummaryPromptConfig { prompt: string; defaultPrompt: string }
+export const getSummaryPrompt = () => invoke<SummaryPromptConfig>("get_summary_prompt");
+export interface AiPreferences { provider: string; model: string; baseUrl: string; effort: string }
+export const getAiPreferences = () => invoke<AiPreferences>("get_ai_preferences");
+export const saveSummaryPrompt = (prompt: string) => invoke<void>("save_summary_prompt", { prompt });
+
 export function aiSummarize(
   articleId: number,
   onToken: (e: AiEvent) => void,
@@ -162,6 +170,20 @@ export function aiSummarize(
   channel.onmessage = onToken;
   return invoke<void>("ai_summarize", { articleId, onToken: channel });
 }
+
+export interface ArticleChatMessage { role: "user" | "assistant"; content: string }
+export function aiArticleChat(articleId: number, question: string, history: ArticleChatMessage[], onToken: (e: AiEvent) => void): Promise<void> {
+  const channel = new Channel<AiEvent>();
+  channel.onmessage = onToken;
+  return invoke<void>("ai_article_chat", { articleId, question, history, onToken: channel });
+}
+export interface CodexStatus { email: string | null; plan: string | null; loggedIn: boolean; pending: boolean; error: string | null }
+export interface CodexModel { id: string; name: string; isDefault: boolean; reasoningEfforts: string[]; defaultEffort: string | null }
+export const codexStatus = () => invoke<CodexStatus>("codex_status");
+export const codexLogin = () => invoke<string>("codex_login");
+export const codexCancelLogin = () => invoke<void>("codex_cancel_login");
+export const codexLogout = () => invoke<void>("codex_logout");
+export const codexModels = () => invoke<CodexModel[]>("codex_models");
 
 export function aiAsk(
   question: string,
@@ -270,8 +292,11 @@ export const takePendingDeepLink = () =>
 
 // ── tags ──
 export const listTags = () => invoke<Tag[]>("list_tags");
-export const createTag = (name: string) =>
-  invoke<number>("create_tag", { name });
+export const createTags = (names: string, parentId: number | null = null) =>
+  invoke<number[]>("create_tags", { names, parentId });
+export const createTag = (name: string, parentId: number | null = null) =>
+  invoke<number>("create_tag", { name, parentId });
+export const moveTag = (id: number, parentId: number | null) => invoke<void>("move_tag", { id, parentId });
 export const renameTag = (id: number, name: string) =>
   invoke<void>("rename_tag", { id, name });
 export const setTagColor = (id: number, color: string) =>
@@ -367,13 +392,55 @@ export interface PageViewBounds {
   width: number;
   height: number;
 }
-export const openPageView = (url: string, b: PageViewBounds) =>
-  invoke<void>("open_page_view", { url, ...b });
+export const openPageView = (url: string, b: PageViewBounds, zoom = 1) =>
+  invoke<void>("open_page_view", { url, ...b, zoom });
+export const setPageViewZoom = (zoom: number) => invoke<void>("set_page_view_zoom", { zoom });
 export const setPageViewBounds = (b: PageViewBounds) =>
   invoke<void>("set_page_view_bounds", { ...b });
 export const setPageViewVisible = (visible: boolean) =>
   invoke<void>("set_page_view_visible", { visible });
 export const closePageView = () => invoke<void>("close_page_view");
 
-export const configureAiProvider = (provider: string, model?: string, baseUrl?: string) =>
-  invoke<[string, string]>("configure_ai_provider", { provider, model, baseUrl });
+export const configureAiProvider = (provider: string, model?: string, baseUrl?: string, effort?: string) =>
+  invoke<[string, string]>("configure_ai_provider", { provider, model, baseUrl, effort });
+
+// ── WebDAV library sync ──
+export interface WebDavStatus {
+  conflicts: number;
+  connected: boolean;
+  url: string | null;
+  username: string | null;
+  lastSync: string | null;
+  lastError: string | null;
+}
+export interface WebDavRecord { kind: string; key: string; clock: number; nonce: string; deleted: boolean; data: Record<string, unknown> }
+export interface WebDavConflict { kind: string; key: string; local: WebDavRecord; remote: WebDavRecord; reason: string; title: string }
+export const webdavConflicts = () => invoke<WebDavConflict[]>("webdav_conflicts");
+export const webdavResolve = (kind: string, key: string, choice: "local" | "remote" | "newer" | "root") => invoke<void>("webdav_resolve", { kind, key, choice });
+export const webdavStatus = () => invoke<WebDavStatus>("webdav_status");
+export const webdavConnect = (url: string, username: string, password: string, directory = "Papr") =>
+  invoke<void>("webdav_connect", { url, username, password, directory });
+export const webdavDisconnect = () => invoke<void>("webdav_disconnect");
+export const webdavSync = () => invoke<number>("webdav_sync");
+export const setReadingProgress = (id: number, progress: number) =>
+  invoke<void>("set_reading_progress", { id, progress });
+
+export const openYoutubePlayer = (videoId: string) => invoke<void>("open_youtube_player", { videoId });
+
+export interface FeedCleanupPlan { total: number; remove: number; protected: number; token: string }
+export const previewFeedCleanup = (id: number) => invoke<FeedCleanupPlan>("preview_feed_cleanup", { id });
+export const cleanupFeedArticles = (id: number, token: string, automatic: boolean) => invoke<number>("cleanup_feed_articles", { id, token, automatic });
+export const disableFeedLimit = (id: number) => invoke<void>("disable_feed_limit", { id });
+
+export interface WebDavNetworkOptions { concurrency: number; timeoutSecs: number; proxy: string }
+export interface WebDavProgress { running: boolean; phase: string; completed: number; total: number; downloaded: number; uploaded: number; bytesPerSecond: number; retries: number; elapsedMs: number }
+export const webdavNetworkOptions = () => invoke<WebDavNetworkOptions>("webdav_network_options");
+export const webdavSaveNetwork = (options: WebDavNetworkOptions) => invoke<void>("webdav_save_network", { options });
+export const webdavProgress = () => invoke<WebDavProgress>("webdav_progress");
+export const webdavCancel = () => invoke<void>("webdav_cancel");
+export const webdavRelocate = (directory: string) => invoke<string>("webdav_relocate", { directory });
+
+export interface WebDavSchedule { intervalMinutes: number }
+export const webdavSchedule = () => invoke<WebDavSchedule>("webdav_schedule");
+export const webdavSaveSchedule = (options: WebDavSchedule) => invoke<void>("webdav_save_schedule", { options });
+export const webdavAutoSync = () => invoke<boolean>("webdav_auto_sync");

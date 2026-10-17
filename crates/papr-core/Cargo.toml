@@ -29,3 +29,11 @@ lol_html.workspace = true
 chrono.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
+
+flate2 = "1"
+sha2 = "0.10"
+futures-util = "0.3"
+bytes = "1"
+
+[target.'cfg(any(target_os = "macos", target_os = "ios"))'.dependencies]
+core-foundation = "0.10"

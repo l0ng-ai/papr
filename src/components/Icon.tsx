@@ -5,6 +5,7 @@
 const STROKE = 1.75;
 
 export type IconName =
+  | "menu" | "chevron-left"
   | "inbox" | "circle" | "unread" | "star" | "star-fill" | "bookmark"
   | "bookmark-fill" | "clock" | "tag" | "folder" | "rss" | "search"
   | "plus" | "check" | "check-all" | "sort" | "sparkle" | "sparkle-fill"
@@ -12,7 +13,7 @@ export type IconName =
   | "chevron-right" | "globe" | "focus" | "arrow-down" | "arrow-up"
   | "eye" | "eye-off" | "trash" | "mute" | "pin" | "x" | "command"
   | "copy" | "list" | "grid" | "text" | "alert" | "papr"
-  | "play" | "pause" | "skip-back" | "skip-fwd" | "headphones";
+  | "cloud-sync" | "play" | "pause" | "skip-back" | "skip-fwd" | "headphones";
 
 interface Props {
   name: IconName;
@@ -38,7 +39,7 @@ export default function Icon({
     strokeWidth: STROKE,
     strokeLinecap: "round" as const,
     strokeLinejoin: "round" as const,
-    className,
+    className: ["app-icon", className].filter(Boolean).join(" "),
     "aria-hidden": true,
   };
   const filled = {
@@ -46,11 +47,17 @@ export default function Icon({
     height: size,
     viewBox: "0 0 24 24",
     fill: color,
-    className,
+    className: ["app-icon", className].filter(Boolean).join(" "),
     "aria-hidden": true,
   };
 
   switch (name) {
+    case "cloud-sync":
+      return <svg {...p}><path d="M6 16a4 4 0 0 1-1-7.87 7 7 0 0 1 13.7-1.5A5 5 0 0 1 19 16" /><path d="M8 16h8m-3-3 3 3-3 3m-2-6-3 3 3 3" /></svg>;
+    case "menu":
+      return <svg {...p}><path d="M4 6h16M4 12h16M4 18h16" /></svg>;
+    case "chevron-left":
+      return <svg {...p}><path d="m15 5-7 7 7 7" /></svg>;
     case "inbox":
       return <svg {...p}><path d="M22 12h-5l-2 3h-6l-2-3H2" /><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" /></svg>;
     case "circle":

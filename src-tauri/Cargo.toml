@@ -30,12 +30,10 @@ tauri-build = { version = "2", features = [] }
 # in-app original-page view (issue #49) — sites that refuse iframes
 # (X-Frame-Options) still render in a native child webview. API may change
 # across Tauri minors; pinned via Cargo.lock.
-tauri = { version = "2", features = ["tray-icon", "image-png", "unstable"] }
+tauri = { version = "2", features = ["image-png", "unstable"] }
 tauri-plugin-opener = "2"
 tauri-plugin-notification = "2"
-tauri-plugin-autostart = "2"
 tauri-plugin-os = "2"
-tauri-plugin-window-state = "2"
 # Native save/open dialogs for OPML import/export and image save — the
 # webview's synthetic <a download> blob anchor is being retired.
 tauri-plugin-dialog = "2"
@@ -44,8 +42,6 @@ tauri-plugin-dialog = "2"
 tauri-plugin-deep-link = "2"
 # In-app auto-update: checks the GitHub release feed, downloads the signed
 # bundle, and relaunches into the new version (process plugin does the restart).
-tauri-plugin-updater = "2"
-tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
@@ -94,6 +90,13 @@ anyhow = "1"
 thiserror = "2"
 log = "0.4"
 
+[target.'cfg(not(any(target_os = "ios", target_os = "android")))'.dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-autostart = "2"
+tauri-plugin-window-state = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-process = "2"
+
 # macOS-only: used in setup() to turn off the WKWebview's opaque white backing
 # (wry only does this under its `transparent` feature, which we don't enable),
 # so a live window resize stops flashing white. Versions track what tauri/wry
@@ -106,3 +109,10 @@ objc2-foundation = "0.3"
 # objc2 to keep a single copy in the tree.
 objc2-web-kit = { version = "0.3", features = ["WKWebView"] }
 objc2-app-kit = { version = "0.3", features = ["NSColor", "NSWindow", "NSView", "NSResponder"] }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2-core-foundation = { version = "0.3", features = ["CFCGTypes"] }
+objc2 = "0.6"
+objc2-foundation = "0.3"
+objc2-web-kit = { version = "0.3", features = ["WKWebView"] }
+objc2-ui-kit = { version = "0.3", features = ["UIScrollView", "UIGeometry"] }

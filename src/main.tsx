@@ -4,7 +4,8 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import "./i18n";
 import App from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
-import { isMac } from "./lib/platform";
+import { isMac, isMobile } from "./lib/platform";
+import { installMobileViewport } from "./lib/mobileViewport";
 // Bundle the UI / reader fonts so Windows and Linux render with the
 // same letterforms macOS sees, instead of falling through to Arial / DejaVu.
 // Variable-weight woff2 — one file per family covers every weight the styles
@@ -25,7 +26,8 @@ import "./styles.css";
 // (overlay strip, sidebar padding for the traffic lights) is gated correctly
 // from the very first frame — otherwise Win/Linux would briefly show 38px of
 // dead space at the top before a layout-shifting effect runs.
-document.documentElement.dataset.platform = isMac ? "mac" : "other";
+document.documentElement.dataset.platform = isMobile ? "mobile" : isMac ? "mac" : "other";
+if (isMobile) installMobileViewport(window);
 
 // Suppress the webview's default context menu — its "Reload / Back / Inspect"
 // entries belong to a browser, not a finished app. Editable surfaces still get

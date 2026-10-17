@@ -2,16 +2,20 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as api from "../api";
+import { copyText } from "../lib/clipboard";
 import { useUi } from "../store";
 import { useArticleActions } from "../hooks/articleActions";
 import { withUndo, reportError } from "../toast";
 import { isMac, modCombo } from "../lib/platform";
+import { folderAncestors, folderDescendants, folderPath, folderTree, type FolderNode } from "../lib/folders";
+import { tagPath, tagDescendants, tagTree, type TagNode } from "../lib/tags";
 import { tagColor, TAG_PALETTE } from "../lib/tagColors";
 import type { ArticleQuery, Feed, Folder, Tag } from "../types";
 import Icon, { type IconName } from "./Icon";
 import ContextMenu, { type MenuEntry } from "./ContextMenu";
 import FeedAvatar from "./FeedAvatar";
 import PromptDialog from "./PromptDialog";
+import WebDavSyncButton from "./WebDavSyncButton";
 
 interface Props {
   onAddFeed: () => void;
@@ -119,6 +123,7 @@ export default function Sidebar({
   const [prompt, setPrompt] = useState<Prompt | null>(null);
   const [dragId, setDragId] = useState<number | null>(null);
   const [dropFolder, setDropFolder] = useState<number | "none" | null>(null);
+  const [collapsedTags, setCollapsedTags] = useState<Record<number, boolean>>({});
   const [tagDragId, setTagDragId] = useState<number | null>(null);
   const [tagOverId, setTagOverId] = useState<number | null>(null);
 
@@ -147,6 +152,7 @@ export default function Sidebar({
     toastText: string,
     kind: "feed" | "folder" | "tag",
     id: number,
+    deleteSubscriptions = false,
   ) => {
     const cacheKey =
       kind === "feed" ? "feeds" : kind === "folder" ? "folders" : "tags";
@@ -155,6 +161,8 @@ export default function Sidebar({
     const prevList = qc.getQueryData<{ id: number }[]>([cacheKey]);
     const prevFeeds =
       kind === "folder" ? qc.getQueryData<Feed[]>(["feeds"]) : undefined;
+    const removedFolders = kind === "folder" && deleteSubscriptions ? folderDescendants(id, qc.getQueryData<Folder[]>(["folders"]) ?? []) : new Set([id]);
+    const removedFeeds = new Set(kind === "feed" ? [id] : deleteSubscriptions ? (prevFeeds ?? []).filter((feed) => feed.folderId != null && removedFolders.has(feed.folderId)).map((feed) => feed.id) : []);
     const restore = () => {
       if (prevList) qc.setQueryData([cacheKey], prevList);
       if (prevFeeds) qc.setQueryData(["feeds"], prevFeeds);
@@ -164,27 +172,28 @@ export default function Sidebar({
       text: toastText,
       apply: () => {
         qc.setQueryData<{ id: number }[]>([cacheKey], (old) =>
-          old?.filter((x) => x.id !== id),
+          old?.filter((x) => !removedFolders.has(x.id)).map((x) => kind === "folder" && (x as Folder).parentId === id ? { ...x, parentId: null } : x),
         );
         // Deleting a folder orphans its feeds to "uncategorized" (the DB FK
         // is ON DELETE SET NULL) — mirror that so they don't briefly vanish
         // from the tree during the undo window.
         if (kind === "folder") {
           qc.setQueryData<Feed[]>(["feeds"], (old) =>
-            old?.map((f) =>
+            old?.filter((f) => !removedFeeds.has(f.id)).map((f) =>
               f.folderId === id ? { ...f, folderId: null } : f,
             ),
           );
         }
         const st = useUi.getState();
-        if (st.query.kind === kind && st.query.value === id) {
+        if ((st.query.kind === kind && removedFolders.has(st.query.value)) || (st.query.kind === "feed" && removedFeeds.has(st.query.value))) {
           st.select({ kind: "all" }, t("smart.all"));
-        } else if (kind === "feed" && st.selectedArticleId != null) {
+        }
+        if (removedFeeds.size > 0 && st.selectedArticleId != null) {
           const open = qc.getQueryData<{ feedId: number }>([
             "article",
             st.selectedArticleId,
           ]);
-          if (open?.feedId === id) st.openArticle(null);
+          if (open && removedFeeds.has(open.feedId)) st.openArticle(null);
         }
       },
       commit: () => {
@@ -222,14 +231,15 @@ export default function Sidebar({
       // A collapsed folder doesn't render its feed rows, so there's nothing to
       // scroll to yet — expand it and let this effect re-run (collapsed dep)
       // once the row is mounted.
-      if (feed?.folderId != null && collapsed[feed.folderId]) {
-        setCollapsed((s) => ({ ...s, [feed.folderId!]: false }));
+      const ancestors = feed?.folderId == null ? [] : folderAncestors(feed.folderId, allFolders);
+      if (ancestors.some((folder) => collapsed[folder.id])) {
+        setCollapsed((s) => Object.assign({}, s, ...ancestors.map((folder) => ({ [folder.id]: false }))));
         return;
       }
     }
     lastScrolledRef.current = key;
     activeFeedRef.current?.scrollIntoView({ block: "nearest" });
-  }, [query, allFeeds, collapsed]);
+  }, [query, allFeeds, allFolders, collapsed]);
 
   // "Unread only" hides feeds with nothing unread, decluttering large
   // sidebars. The currently-selected feed is always kept so it doesn't vanish
@@ -265,7 +275,7 @@ export default function Sidebar({
       .filter((fo) => fo.id !== f.folderId)
       .map((fo) => ({
         icon: "folder" as const,
-        label: t("sidebar.moveToFolder", { folder: fo.name }),
+        label: t("sidebar.moveToFolder", { folder: folderPath(fo.id, allFolders) }),
         onClick: () =>
           guard(
             api.moveFeed(f.id, fo.id),
@@ -280,6 +290,8 @@ export default function Sidebar({
           guard(api.moveFeed(f.id, null), t("sidebar.toastMovedOut")),
       });
     return [
+      ...(f.sourceType !== "newsletter" ? [{ icon: "copy" as const, label: t("sidebar.copyFeedUrl"), description: f.feedUrl,
+        onClick: () => { copyText(f.feedUrl).then(() => onToast(t("sidebar.feedUrlCopied"))).catch(reportError); } }, { separator: true } as MenuEntry] : []),
       {
         icon: "check-all",
         label: t("sidebar.markAllRead"),
@@ -326,6 +338,22 @@ export default function Sidebar({
 
   const folderMenu = (folder: Folder): MenuEntry[] => [
     {
+      icon: "folder",
+      label: t("sidebar.newSubfolder"),
+      onClick: () => createFolder(folder.id),
+    },
+    ...allFolders.filter((candidate) => !folderDescendants(folder.id, allFolders).has(candidate.id) && candidate.id !== folder.parentId).map((candidate): MenuEntry => ({
+      icon: "folder",
+      label: t("sidebar.moveToFolder", { folder: folderPath(candidate.id, allFolders) }),
+      onClick: () => guard(api.moveFolder(folder.id, candidate.id), t("sidebar.toastMovedTo", { folder: folderPath(candidate.id, allFolders) })),
+    })),
+    ...(folder.parentId != null ? [{
+      icon: "folder" as const,
+      label: t("sidebar.moveFolderToRoot"),
+      onClick: () => guard(api.moveFolder(folder.id, null), t("sidebar.toastRenamed")),
+    }] : []),
+    { separator: true },
+    {
       icon: "check-all",
       label: t("sidebar.markAllRead"),
       onClick: () =>
@@ -355,7 +383,7 @@ export default function Sidebar({
     { separator: true },
     {
       icon: "trash",
-      label: t("sidebar.deleteFolder"),
+      label: t("sidebar.deleteFolderOnly"),
       danger: true,
       onClick: () =>
         guardDelete(
@@ -365,11 +393,25 @@ export default function Sidebar({
           folder.id,
         ),
     },
+    {
+      icon: "trash",
+      label: t("sidebar.deleteFolderWithFeeds"),
+      danger: true,
+      onClick: () => guardDelete(() => api.deleteFolder(folder.id, true), t("sidebar.toastFolderWithFeedsDeleted"), "folder", folder.id, true),
+    },
   ];
 
   const tagMenu = (tag: Tag): MenuEntry[] => {
     const idx = allTags.findIndex((tg) => tg.id === tag.id);
     return [
+    { icon: "tag", label: t("sidebar.newSubtag"), onClick: () => createTag(tag.id) },
+    ...allTags.filter((candidate) => !tagDescendants(tag.id, allTags).has(candidate.id) && candidate.id !== tag.parentId).map((candidate): MenuEntry => ({
+      icon: "tag", label: t("sidebar.moveToTag", { tag: tagPath(candidate.id, allTags) }),
+      onClick: () => guard(api.moveTag(tag.id, candidate.id), t("sidebar.toastRenamed")),
+    })),
+    ...(tag.parentId != null ? [{ icon: "tag" as const, label: t("sidebar.moveTagToRoot"), onClick: () => guard(api.moveTag(tag.id, null), t("sidebar.toastRenamed")) }] : []),
+    { separator: true },
+
     // Drag-reorder isn't reachable by keyboard — these give it parity.
     ...(idx > 0
       ? ([
@@ -432,26 +474,29 @@ export default function Sidebar({
     ];
   };
 
-  const createTag = () =>
+  const createTag = (parentId: number | null = null) =>
     setPrompt({
-      title: t("sidebar.newTagTitle"),
+      title: t(parentId == null ? "sidebar.newTagTitle" : "sidebar.newSubtag"),
       initial: "",
       placeholder: t("sidebar.tagNamePlaceholder"),
-      onSubmit: (v) => guard(api.createTag(v), t("sidebar.toastTagCreated")),
+      onSubmit: (v) => guard(api.createTags(v, parentId), t("sidebar.toastTagCreated")),
     });
 
   // Creating a folder only touches the folders list, which `refreshAfterBulk`
   // (and thus `guard`) doesn't cover — invalidate it explicitly.
-  const createFolder = () =>
+  const createFolder = (parentId: number | null = null) =>
     setPrompt({
-      title: t("app.newFolderTitle"),
+      title: t(parentId == null ? "app.newFolderTitle" : "sidebar.newSubfolder"),
       initial: "",
       placeholder: t("app.folderNamePlaceholder"),
       onSubmit: (v) =>
         api
-          .createFolder(v)
+          .createFolder(v, parentId)
           .then(() => {
             qc.invalidateQueries({ queryKey: ["folders"] });
+            if (parentId != null) {
+              setCollapsed((s) => Object.assign({}, s, ...folderAncestors(parentId, allFolders).map((f) => ({ [f.id]: false }))));
+            }
             onToast(t("app.folderCreated"));
           })
           .catch((e) => reportError(e)),
@@ -534,6 +579,139 @@ export default function Sidebar({
     </div>
   );
 
+  const renderFolder = ({ folder, children, depth }: FolderNode): React.ReactNode => {
+    const inFolder = visibleFeeds.filter((f) => f.folderId === folder.id);
+    // In "unread only" mode an empty folder is hidden — unless a drag is
+    // active, when it must stay as a drop target.
+    const descendants = folderDescendants(folder.id, allFolders);
+    if (unreadOnly && dragId == null && !visibleFeeds.some((f) => f.folderId != null && descendants.has(f.folderId)) && !(query.kind === "folder" && descendants.has(query.value)))
+      return null;
+    const isCollapsed = collapsed[folder.id];
+    const folderActive = isActive({ kind: "folder", value: folder.id });
+    // Aggregate unread for the folder. Shown while collapsed or when the
+    // folder is the active view — expanded *and* not selected, the
+    // per-feed badges already carry the same signal and a header total
+    // would just duplicate them.
+    const folderUnread = allFeeds.filter((f) => f.folderId != null && descendants.has(f.folderId)).reduce((n, f) => n + f.unreadCount, 0);
+    return (
+      <div
+        key={folder.id}
+        onDragOver={(e) => {
+          if (dragId != null) {
+            e.preventDefault();
+            e.stopPropagation();
+            setDropFolder(folder.id);
+          }
+        }}
+        onDrop={(e) => { e.stopPropagation(); handleDrop(folder.id); }}
+        style={
+          dropFolder === folder.id
+            ? { outline: "2px solid var(--accent)", borderRadius: 8 }
+            : undefined
+        }
+      >
+        <div
+          className={`sb-folder ${isCollapsed ? "collapsed" : ""} ${
+            folderActive ? "active" : ""
+          }`}
+          style={{ paddingLeft: 10 + depth * 16 }}
+          role="button"
+          tabIndex={0}
+          aria-current={folderActive || undefined}
+          onClick={() => select({ kind: "folder", value: folder.id }, folder.name)}
+          title={folderPath(folder.id, allFolders)}
+          onKeyDown={(e) => {
+            if (e.target !== e.currentTarget) return;
+            if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+              e.preventDefault();
+              setCollapsed((s) => ({ ...s, [folder.id]: e.key === "ArrowLeft" }));
+            } else onActivate(() => select({ kind: "folder", value: folder.id }, folder.name))(e);
+          }}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            setMenu({ x: e.clientX, y: e.clientY, kind: "folder", folder });
+          }}
+        >
+          {/* The chevron is the expand/collapse affordance; clicking the
+              folder name selects the folder's combined article view. */}
+          <button
+            type="button"
+            className="sb-folder-toggle"
+            aria-controls={`folder-children-${folder.id}`}
+            aria-label={t(
+              isCollapsed ? "sidebar.expandFolder" : "sidebar.collapseFolder",
+            )}
+            aria-expanded={!isCollapsed}
+            onClick={(e) => {
+              e.stopPropagation();
+              setCollapsed((s) => ({ ...s, [folder.id]: !isCollapsed }));
+            }}
+          >
+            <Icon name="chevron-down" size={11} />
+          </button>
+          <span className="sb-folder-name">{folder.name}</span>
+          {showCounts && (isCollapsed || folderActive) && folderUnread > 0 && (
+            <span className="sb-count">{folderUnread}</span>
+          )}
+        </div>
+        {!isCollapsed && <div id={`folder-children-${folder.id}`}>
+          <div style={{ paddingLeft: (depth + 1) * 16 }}>{inFolder.map(feedRow)}</div>
+          {children.map(renderFolder)}
+        </div>}
+      </div>
+    );
+  };
+
+  const renderTag = ({ tag, children, depth }: TagNode): React.ReactNode => <div key={tag.id}>
+
+          <div
+            className={`sb-item ${
+              isActive({ kind: "tag", value: tag.id }) ? "active" : ""
+            } ${tagDragId === tag.id ? "dragging" : ""} ${
+              tagOverId === tag.id ? "drop-above" : ""
+            }`}
+            style={{ paddingLeft: 12 + depth * 16 }}
+            title={tagPath(tag.id, allTags)}
+            role="button"
+            tabIndex={0}
+            aria-current={isActive({ kind: "tag", value: tag.id }) || undefined}
+            draggable
+            onDragStart={() => setTagDragId(tag.id)}
+            onDragEnd={() => {
+              setTagDragId(null);
+              setTagOverId(null);
+            }}
+            onDragOver={(e) => {
+              if (tagDragId != null && tagDragId !== tag.id) {
+                e.preventDefault();
+                setTagOverId(tag.id);
+              }
+            }}
+            onDrop={() => dropTag(tag.id)}
+            onClick={() => select({ kind: "tag", value: tag.id }, tag.name)}
+            onKeyDown={(e) => { if (e.target !== e.currentTarget) return; if (e.key === "ArrowLeft" || e.key === "ArrowRight") { e.preventDefault(); setCollapsedTags((prev) => ({ ...prev, [tag.id]: e.key === "ArrowLeft" })); } else onActivate(() => select({ kind: "tag", value: tag.id }, tag.name))(e); }}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              setMenu({ x: e.clientX, y: e.clientY, kind: "tag", tag });
+            }}
+          >
+            {children.length > 0 && <button className="sb-tag-toggle" aria-label={t(collapsedTags[tag.id] ? "sidebar.expandTag" : "sidebar.collapseTag")} aria-expanded={!collapsedTags[tag.id]} onClick={(e) => { e.stopPropagation(); setCollapsedTags((prev) => ({ ...prev, [tag.id]: !prev[tag.id] })); }}><Icon name={collapsedTags[tag.id] ? "chevron-right" : "chevron-down"} size={11} /></button>}
+            {children.length === 0 && <span className="sb-tag-toggle" style={{ width: 15, visibility: "hidden" }} />}
+            <span className="sb-ico">
+              <span
+                className="tag-dot"
+                style={{ background: tagColor(tag.color) }}
+              />
+            </span>
+            <span className="sb-label">{tag.name}</span>
+            {showCounts && tag.articleCount > 0 && (
+              <span className="sb-count" title={t("sidebar.tagCountHint")}>{tag.articleCount}</span>
+            )}
+          </div>
+
+    {!collapsedTags[tag.id] && children.map(renderTag)}
+  </div>;
+
   return (
     <div className="sidebar" role="navigation">
       {isMac && <div className="titlebar" data-tauri-drag-region />}
@@ -602,7 +780,7 @@ export default function Sidebar({
               <Icon name={unreadOnly ? "eye-off" : "eye"} size={12} />
             </button>
             <button
-              onClick={createFolder}
+              onClick={() => createFolder()}
               title={t("app.newFolderTitle")}
               aria-label={t("app.newFolderTitle")}
             >
@@ -673,81 +851,12 @@ export default function Sidebar({
           </div>
         )}
 
-        {allFolders.map((folder) => {
-          const inFolder = visibleFeeds.filter((f) => f.folderId === folder.id);
-          // In "unread only" mode an empty folder is hidden — unless a drag is
-          // active, when it must stay as a drop target.
-          if (unreadOnly && dragId == null && inFolder.length === 0)
-            return null;
-          const isCollapsed = collapsed[folder.id];
-          const folderActive = isActive({ kind: "folder", value: folder.id });
-          // Aggregate unread for the folder. Shown while collapsed or when the
-          // folder is the active view — expanded *and* not selected, the
-          // per-feed badges already carry the same signal and a header total
-          // would just duplicate them.
-          const folderUnread = inFolder.reduce((n, f) => n + f.unreadCount, 0);
-          return (
-            <div
-              key={folder.id}
-              onDragOver={(e) => {
-                if (dragId != null) {
-                  e.preventDefault();
-                  setDropFolder(folder.id);
-                }
-              }}
-              onDrop={() => handleDrop(folder.id)}
-              style={
-                dropFolder === folder.id
-                  ? { outline: "2px solid var(--accent)", borderRadius: 8 }
-                  : undefined
-              }
-            >
-              <div
-                className={`sb-folder ${isCollapsed ? "collapsed" : ""} ${
-                  folderActive ? "active" : ""
-                }`}
-                role="button"
-                tabIndex={0}
-                aria-current={folderActive || undefined}
-                onClick={() => select({ kind: "folder", value: folder.id }, folder.name)}
-                onKeyDown={onActivate(() =>
-                  select({ kind: "folder", value: folder.id }, folder.name),
-                )}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  setMenu({ x: e.clientX, y: e.clientY, kind: "folder", folder });
-                }}
-              >
-                {/* The chevron is the expand/collapse affordance; clicking the
-                    folder name selects the folder's combined article view. */}
-                <button
-                  type="button"
-                  className="sb-folder-toggle"
-                  aria-label={t(
-                    isCollapsed ? "sidebar.expandFolder" : "sidebar.collapseFolder",
-                  )}
-                  aria-expanded={!isCollapsed}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setCollapsed((s) => ({ ...s, [folder.id]: !isCollapsed }));
-                  }}
-                >
-                  <Icon name="chevron-down" size={11} />
-                </button>
-                <span className="sb-folder-name">{folder.name}</span>
-                {showCounts && (isCollapsed || folderActive) && folderUnread > 0 && (
-                  <span className="sb-count">{folderUnread}</span>
-                )}
-              </div>
-              {!isCollapsed && inFolder.map(feedRow)}
-            </div>
-          );
-        })}
+        {folderTree(allFolders).map(renderFolder)}
 
         <div className="sb-section-title">
           <span>{t("sidebar.tags")}</span>
           <button
-            onClick={createTag}
+            onClick={() => createTag()}
             title={t("sidebar.newTagTitle")}
             aria-label={t("sidebar.newTagTitle")}
           >
@@ -766,51 +875,7 @@ export default function Sidebar({
             {t("sidebar.tagsEmptyHint")}
           </div>
         )}
-        {allTags.map((tag) => (
-          <div
-            key={tag.id}
-            className={`sb-item ${
-              isActive({ kind: "tag", value: tag.id }) ? "active" : ""
-            } ${tagDragId === tag.id ? "dragging" : ""} ${
-              tagOverId === tag.id ? "drop-above" : ""
-            }`}
-            role="button"
-            tabIndex={0}
-            aria-current={isActive({ kind: "tag", value: tag.id }) || undefined}
-            draggable
-            onDragStart={() => setTagDragId(tag.id)}
-            onDragEnd={() => {
-              setTagDragId(null);
-              setTagOverId(null);
-            }}
-            onDragOver={(e) => {
-              if (tagDragId != null && tagDragId !== tag.id) {
-                e.preventDefault();
-                setTagOverId(tag.id);
-              }
-            }}
-            onDrop={() => dropTag(tag.id)}
-            onClick={() => select({ kind: "tag", value: tag.id }, tag.name)}
-            onKeyDown={onActivate(() =>
-              select({ kind: "tag", value: tag.id }, tag.name),
-            )}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              setMenu({ x: e.clientX, y: e.clientY, kind: "tag", tag });
-            }}
-          >
-            <span className="sb-ico">
-              <span
-                className="tag-dot"
-                style={{ background: tagColor(tag.color) }}
-              />
-            </span>
-            <span className="sb-label">{tag.name}</span>
-            {showCounts && tag.articleCount > 0 && (
-              <span className="sb-count">{tag.articleCount}</span>
-            )}
-          </div>
-        ))}
+        {tagTree(allTags).map(renderTag)}
 
         <div style={{ height: 30 }} />
       </div>
@@ -839,6 +904,7 @@ export default function Sidebar({
         >
           <Icon name="globe" size={14} />
         </button>
+        <WebDavSyncButton className="sb-sync" onOpenSettings={() => onOpenSettings("sync")} onToast={onToast} />
         <div className="spacer" />
         <button
           title={t("sidebar.settings")}

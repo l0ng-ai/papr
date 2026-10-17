@@ -10,6 +10,7 @@ pub struct ImportedFeed {
     pub feed_url: String,
     pub title: String,
     pub folder: Option<String>,
+    pub folder_path: Vec<String>,
 }
 
 /// Parse an OPML document into a flat list of feeds with their folder names.
@@ -30,7 +31,7 @@ pub fn parse(content: &str) -> AppResult<Vec<ImportedFeed>> {
     let mut feeds = Vec::new();
     let mut collect_into: Vec<ImportedFeed> = Vec::new();
     for outline in &doc.body.outlines {
-        collect(outline, None, &mut collect_into);
+        collect(outline, &[], &mut collect_into);
     }
     for feed in collect_into {
         if seen.insert(feed.feed_url.clone()) {
@@ -100,27 +101,20 @@ fn outline_label(outline: &Outline) -> Option<&str> {
     label.filter(|t| !t.trim().is_empty())
 }
 
-fn collect(outline: &Outline, folder: Option<&str>, out: &mut Vec<ImportedFeed>) {
+fn collect(outline: &Outline, path: &[String], out: &mut Vec<ImportedFeed>) {
     if let Some(url) = &outline.xml_url {
-        let title = outline_label(outline).unwrap_or(url).to_string();
         out.push(ImportedFeed {
             feed_url: url.clone(),
-            title,
-            folder: folder.map(|s| s.to_string()),
+            title: outline_label(outline).unwrap_or(url).to_string(),
+            folder: path.last().cloned(),
+            folder_path: path.to_vec(),
         });
     }
-    // A childless-of-feeds outline acts as a folder for its descendants. Use
-    // the same `text`-then-`title` label resolution feeds get — otherwise a
-    // folder outline labelled only with `title` would import its feeds into a
-    // folder with an empty name.
-    let child_folder = if outline.xml_url.is_none() && !outline.outlines.is_empty() {
-        outline_label(outline).or(folder)
-    } else {
-        folder
-    };
-    for child in &outline.outlines {
-        collect(child, child_folder, out);
+    let mut child_path = path.to_vec();
+    if outline.xml_url.is_none() {
+        if let Some(label) = outline_label(outline) { child_path.push(label.trim().to_string()); }
     }
+    for child in &outline.outlines { collect(child, &child_path, out); }
 }
 
 /// Build an OPML document from `(title, feed_url, folder)` tuples.
@@ -131,6 +125,10 @@ fn collect(outline: &Outline, folder: Option<&str>, out: &mut Vec<ImportedFeed>)
 /// matches the `parse` side, where blank folder outlines are mapped to
 /// ungrouped feeds.
 pub fn build(feeds: &[(String, String, Option<String>)]) -> AppResult<String> {
+    build_with_folders(feeds, &[])
+}
+
+pub fn build_with_folders(feeds: &[(String, String, Option<String>)], folders: &[crate::models::Folder]) -> AppResult<String> {
     let mut doc = OPML {
         head: Some(Head {
             title: Some("Papr Subscriptions".to_string()),
@@ -169,16 +167,41 @@ pub fn build(feeds: &[(String, String, Option<String>)]) -> AppResult<String> {
 
     for (folder, outlines) in by_folder {
         match folder {
-            Some(name) => doc.body.outlines.push(Outline {
-                text: name,
-                outlines,
-                ..Outline::default()
-            }),
+            Some(name) => {
+                let mut path = vec![name.clone()];
+                let mut parent = folders.iter().find(|f| f.name == name).and_then(|f| f.parent_id);
+                let mut seen = std::collections::HashSet::new();
+                while let Some(id) = parent {
+                    if !seen.insert(id) { break; }
+                    let Some(folder) = folders.iter().find(|f| f.id == id) else { break; };
+                    path.push(folder.name.clone()); parent = folder.parent_id;
+                }
+                path.reverse();
+                insert_path(&mut doc.body.outlines, &path, outlines);
+            },
             None => doc.body.outlines.extend(outlines),
         }
     }
 
     doc.to_string().map_err(|e| AppError::Opml(e.to_string()))
+}
+
+pub fn build_from_paths(feeds:&[(String,String,Vec<String>)])->AppResult<String> {
+    let mut doc=OPML{head:Some(Head{title:Some("Papr Subscriptions".into()),..Head::default()}),..OPML::default()};
+    for (title,url,path) in feeds {
+        if url.trim().is_empty(){continue;}
+        let outline=Outline{text:title.clone(),xml_url:Some(url.trim().to_owned()),r#type:Some("rss".into()),..Outline::default()};
+        insert_path(&mut doc.body.outlines,path,vec![outline]);
+    }
+    doc.to_string().map_err(|e|AppError::Opml(e.to_string()))
+}
+
+fn insert_path(nodes: &mut Vec<Outline>, path: &[String], feeds: Vec<Outline>) {
+    let Some(name) = path.first() else { nodes.extend(feeds); return; };
+    let index = nodes.iter().position(|node| node.xml_url.is_none() && node.text == *name).unwrap_or_else(|| {
+        nodes.push(Outline { text: name.clone(), ..Outline::default() }); nodes.len()-1
+    });
+    insert_path(&mut nodes[index].outlines, &path[1..], feeds);
 }
 
 #[cfg(test)]

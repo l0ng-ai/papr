@@ -7,6 +7,7 @@
 
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
+import { isMobile } from "./platform";
 import i18n from "../i18n";
 import { toast, useToasts, reportError } from "../toast";
 
@@ -19,7 +20,7 @@ let inFlight = false;
  * Settings passes `silent: false` so the user always gets feedback.
  */
 export async function checkForUpdates({ silent }: { silent: boolean }): Promise<void> {
-  if (inFlight) return;
+  if (isMobile || inFlight) return;
   inFlight = true;
   try {
     const update = await check();

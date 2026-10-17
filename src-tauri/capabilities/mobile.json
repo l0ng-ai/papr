@@ -1,0 +1,19 @@
+{
+  "identifier": "mobile",
+  "description": "iPhone and iPad application permissions",
+  "platforms": [
+    "iOS",
+    "android"
+  ],
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "opener:default",
+    "opener:allow-open-url",
+    "notification:default",
+    "os:default",
+    "deep-link:default"
+  ]
+}

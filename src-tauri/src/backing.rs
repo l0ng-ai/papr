@@ -86,5 +86,21 @@ pub fn apply(window: &tauri::WebviewWindow, r: u8, g: u8, b: u8) {
 
 /// No native backing to manage off macOS — the webview is opaque there and the
 /// window-config colour already covers its own resize gutter.
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "ios")))]
 pub fn apply(_window: &tauri::WebviewWindow, _r: u8, _g: u8, _b: u8) {}
+
+/// CSS owns notch/Home-indicator padding. WKWebView's automatic scroll insets
+/// must not reserve that space a second time below our fixed application shell.
+#[cfg(target_os = "ios")]
+pub fn apply(window: &tauri::WebviewWindow, _r: u8, _g: u8, _b: u8) {
+    let _ = window.with_webview(|webview| unsafe {
+        use objc2::{msg_send, rc::Retained, runtime::AnyObject};
+        use objc2_ui_kit::{UIEdgeInsets, UIScrollView, UIScrollViewContentInsetAdjustmentBehavior};
+        let wk = &*webview.inner().cast::<AnyObject>();
+        let scroll: Retained<UIScrollView> = msg_send![wk, scrollView];
+        let zero = UIEdgeInsets { top:0.0, left:0.0, bottom:0.0, right:0.0 };
+        scroll.setContentInsetAdjustmentBehavior(UIScrollViewContentInsetAdjustmentBehavior::Never);
+        scroll.setContentInset(zero);
+        scroll.setScrollIndicatorInsets(zero);
+    });
+}

@@ -14,7 +14,7 @@ serde_json = { version = "1", features = ["preserve_order"] }
 rusqlite = { version = "0.32", features = ["bundled", "functions"] }
 rusqlite_migration = "1"
 feed-rs = "2"
-reqwest = { version = "0.12", features = ["gzip", "brotli", "json"] }
+reqwest = { version = "0.12", features = ["gzip", "brotli", "json", "socks", "stream", "system-proxy"] }
 tokio = { version = "1", features = ["full"] }
 scraper = "0.21"
 ego-tree = "0.9"

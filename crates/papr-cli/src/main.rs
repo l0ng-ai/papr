@@ -193,7 +193,7 @@ enum Cmd {
         #[arg(long, default_value = "all", value_parser = ["all", "claude", "codex", "opencode"])]
         app: String,
     },
-    /// FreshRSS / GReader sync (status / connect / disconnect / run).
+    /// FreshRSS, Miniflux or WebDAV sync (status / connect / disconnect / run).
     Sync {
         #[command(subcommand)]
         cmd: Option<SyncCmd>,
@@ -204,7 +204,7 @@ enum Cmd {
 enum SyncCmd {
     /// Show the current sync connection (default).
     Status,
-    /// Connect to a FreshRSS / Miniflux server (verifies credentials).
+    /// Connect to a FreshRSS / Miniflux / WebDAV server (verifies credentials).
     Connect {
         #[arg(long)]
         url: String,
@@ -212,7 +212,7 @@ enum SyncCmd {
         user: String,
         #[arg(long)]
         password: String,
-        #[arg(long, value_parser = ["freshrss", "miniflux"])]
+        #[arg(long, value_parser = ["freshrss", "miniflux", "webdav"])]
         provider: Option<String>,
     },
     /// Forget the stored sync credentials.
@@ -242,7 +242,9 @@ struct FilterArgs {
 #[derive(Subcommand)]
 enum FolderCmd {
     /// Create a folder (idempotent on name).
-    Create { name: String },
+    Create { name: String, #[arg(long)] parent: Option<i64> },
+    /// Move a folder beneath a parent (omit --parent to move to root).
+    Move { id: i64, #[arg(long)] parent: Option<i64> },
     /// Rename a folder.
     Rename { id: i64, name: String },
     /// Delete a folder (its feeds become folderless).
@@ -250,6 +252,9 @@ enum FolderCmd {
         id: i64,
         #[arg(long)]
         yes: bool,
+        /// Delete the entire subtree, its subscriptions and articles.
+        #[arg(long)]
+        with_feeds: bool,
     },
 }
 
@@ -886,7 +891,7 @@ fn cmd_tags(path: &Path) -> Result<String, AxiError> {
     let mut d = Doc::new();
     let rows: Vec<Value> = tags
         .iter()
-        .map(|t| json!({ "id": t.id, "name": t.name, "articles": t.article_count }))
+        .map(|t| json!({ "id": t.id, "name": t.name, "parent": t.parent_id, "articles": t.article_count }))
         .collect();
     d.set("tags", Value::Array(rows));
     if !tags.is_empty() {
@@ -1039,6 +1044,10 @@ async fn cmd_sync(path: &Path, cmd: SyncCmd) -> Result<String, AxiError> {
     let client = http_client()?;
     match cmd {
         SyncCmd::Status => {
+            let dav = papr_core::webdav::status(&dbm).await.map_err(db_err)?;
+            if dav.connected {
+                return Ok(Doc::new().set("sync", json!({ "provider": "webdav", "status": dav })).into_toon());
+            }
             let info = sync::connected_url(&dbm)
                 .await
                 .map_err(|e| clean_err("sync status", e))?;
@@ -1059,9 +1068,14 @@ async fn cmd_sync(path: &Path, cmd: SyncCmd) -> Result<String, AxiError> {
             Ok(d.into_toon())
         }
         SyncCmd::Connect { url, user, password, provider } => {
-            sync::connect(&dbm, &client, &url, &user, &password, provider.as_deref())
-                .await
-                .map_err(|e| clean_err("sync connect failed", e))?;
+            if provider.as_deref() == Some("webdav") {
+                let client=papr_core::webdav::http_client(&*dbm.lock().await).map_err(db_err)?;
+                papr_core::webdav::connect(&dbm, &client, &url, &user, &password).await
+                    .map_err(|e| clean_err("WebDAV connect failed", e))?;
+            } else {
+                sync::connect(&dbm, &client, &url, &user, &password, provider.as_deref()).await
+                    .map_err(|e| clean_err("sync connect failed", e))?;
+            }
             let mut d = Doc::new();
             d.set("ok", format!("connected to {url}"));
             d.help(vec!["Run `papr sync run` to reconcile now".into()]);
@@ -1069,10 +1083,17 @@ async fn cmd_sync(path: &Path, cmd: SyncCmd) -> Result<String, AxiError> {
         }
         SyncCmd::Disconnect { yes } => {
             require_yes(yes, "sync disconnect", "papr sync disconnect")?;
+            papr_core::webdav::disconnect(&dbm).await.map_err(db_err)?;
             sync::disconnect(&dbm).await.map_err(db_err)?;
             ok_line("sync: disconnected".into())
         }
         SyncCmd::Run => {
+            if papr_core::webdav::status(&dbm).await.map_err(db_err)?.connected {
+                let client=papr_core::webdav::http_client(&*dbm.lock().await).map_err(db_err)?;
+                let n = papr_core::webdav::sync_now(&dbm, &client).await
+                    .map_err(|e| clean_err("WebDAV sync failed", e))?;
+                return Ok(Doc::new().set("sync", json!({ "provider": "webdav", "merged": n })).into_toon());
+            }
             let connected = sync::connected_url(&dbm).await.map_err(db_err)?.is_some();
             if !connected {
                 let mut d = Doc::new();
@@ -1151,7 +1172,7 @@ fn cmd_folders(path: &Path) -> Result<String, AxiError> {
         .iter()
         .map(|f| {
             let n = feeds.iter().filter(|x| x.folder_id == Some(f.id)).count();
-            json!({ "id": f.id, "name": f.name, "feeds": n })
+            json!({ "id": f.id, "name": f.name, "parent": f.parent_id, "feeds": n })
         })
         .collect();
     let mut d = Doc::new();
@@ -1165,17 +1186,21 @@ fn cmd_folders(path: &Path) -> Result<String, AxiError> {
 fn cmd_folder(path: &Path, cmd: FolderCmd) -> Result<String, AxiError> {
     let conn = open_rw(path)?;
     match cmd {
-        FolderCmd::Create { name } => {
-            let id = db::create_folder(&conn, &name).map_err(db_err)?;
+        FolderCmd::Create { name, parent } => {
+            let id = db::create_folder_in(&conn, &name, parent).map_err(db_err)?;
             ok_line(format!("folder: #{id} {name}"))
+        }
+        FolderCmd::Move { id, parent } => {
+            db::move_folder(&conn,id,parent).map_err(db_err)?;
+            ok_line(format!("folder: #{id} moved"))
         }
         FolderCmd::Rename { id, name } => {
             db::rename_folder(&conn, id, &name).map_err(db_err)?;
             ok_line(format!("folder: #{id} renamed to {name}"))
         }
-        FolderCmd::Delete { id, yes } => {
+        FolderCmd::Delete { id, yes, with_feeds } => {
             require_yes(yes, "folder delete", &format!("papr folder delete {id}"))?;
-            db::delete_folder(&conn, id).map_err(db_err)?;
+            if with_feeds { db::delete_folder_with_feeds(&conn, id) } else { db::delete_folder(&conn, id) }.map_err(db_err)?;
             ok_line(format!("folder: #{id} deleted"))
         }
     }
@@ -1211,8 +1236,9 @@ fn cmd_tag(path: &Path, cmd: TagCmd) -> Result<String, AxiError> {
     let conn = open_rw(path)?;
     match cmd {
         TagCmd::Create { name } => {
-            let id = db::create_tag(&conn, &name).map_err(db_err)?;
-            ok_line(format!("tag: #{id} {name}"))
+            let ids = db::create_tags_in(&conn, &name, None).map_err(db_err)?;
+            let labels=ids.iter().map(|id|format!("#{id}")).collect::<Vec<_>>().join(", ");
+            ok_line(format!("tags: {labels} {name}"))
         }
         TagCmd::Rename { id, name } => {
             db::rename_tag(&conn, id, &name).map_err(db_err)?;
@@ -1431,10 +1457,7 @@ fn cmd_opml(path: &Path, cmd: OpmlCmd) -> Result<String, AxiError> {
                     skipped += 1;
                     continue;
                 }
-                let folder_id = match &f.folder {
-                    Some(name) => Some(db::create_folder(&conn, name).map_err(db_err)?),
-                    None => None,
-                };
+                let folder_id = db::folder_id_by_path(&conn, &f.folder_path).map_err(db_err)?;
                 db::insert_feed(
                     &conn,
                     &f.feed_url,
@@ -1457,7 +1480,7 @@ fn cmd_opml(path: &Path, cmd: OpmlCmd) -> Result<String, AxiError> {
         OpmlCmd::Export { out } => {
             let conn = open_ro(path)?;
             let feeds = db::feeds_for_export(&conn).map_err(db_err)?;
-            let xml = papr_core::opml::build(&feeds)
+            let xml = db::export_opml(&conn)
                 .map_err(|e| AxiError::runtime(format!("OPML build failed: {e}")))?;
             match out {
                 Some(file) => {

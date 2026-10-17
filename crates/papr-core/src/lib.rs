@@ -10,6 +10,11 @@
 //! [`ingestion`].
 
 pub mod ai;
+#[cfg(not(any(target_os = "ios", target_os = "android")))]
+pub mod codex;
+#[cfg(any(target_os = "ios", target_os = "android"))]
+#[path = "codex_mobile.rs"]
+pub mod codex;
 pub mod db;
 pub mod error;
 pub mod extraction;
@@ -18,3 +23,5 @@ pub mod models;
 pub mod opml;
 pub mod sanitize;
 pub mod sync;
+
+pub mod webdav;

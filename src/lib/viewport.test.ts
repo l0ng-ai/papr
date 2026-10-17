@@ -3,7 +3,7 @@
 // exercisable in node without a DOM.
 
 import { describe, it, expect } from "vitest";
-import { clampAxis, clampToViewport } from "./viewport";
+import { clampAxis, clampToViewport, insetViewport } from "./viewport";
 
 describe("clampAxis", () => {
   it("leaves a coordinate that already fits untouched", () => {
@@ -28,6 +28,38 @@ describe("clampAxis", () => {
     // Overlay 1200 wide, viewport 1000 — pull-back target is 1000-1200-8=-208,
     // but the floor pins it to the margin so the top/left stays visible.
     expect(clampAxis(500, 1200, 1000, 8)).toBe(8);
+  });
+});
+
+describe("mobile overlay safe bounds", () => {
+  const portrait = insetViewport({ left: 0, top: 0, width: 393, height: 852 },
+    { top: 59, right: 0, bottom: 34, left: 0 });
+
+  it("keeps both edges clear of the 14 Pro status bar and Home indicator", () => {
+    expect(portrait).toEqual({ left: 0, top: 59, width: 393, height: 759 });
+    expect(clampToViewport({ x: -10, y: 0, width: 340, height: 400, bounds: portrait })).toEqual({ left: 8, top: 67 });
+    expect(clampToViewport({ x: 390, y: 850, width: 340, height: 400, bounds: portrait })).toEqual({ left: 45, top: 410 });
+  });
+
+  it("respects asymmetric landscape cutouts", () => {
+    const bounds = insetViewport({ left: 0, top: 0, width: 852, height: 393 },
+      { top: 0, right: 20, bottom: 21, left: 59 });
+    expect(clampToViewport({ x: 0, y: 400, width: 300, height: 250, bounds })).toEqual({ left: 67, top: 114 });
+    expect(clampToViewport({ x: 850, y: 0, width: 300, height: 250, bounds })).toEqual({ left: 524, top: 8 });
+  });
+
+  it("uses the keyboard's visible area including viewport panning", () => {
+    const bounds = insetViewport({ left: 0, top: 70, width: 393, height: 420 },
+      { top: 59, right: 0, bottom: 0, left: 0 });
+    const result = clampToViewport({ x: 100, y: 800, width: 280, height: 300, bounds });
+    expect(result).toEqual({ left: 100, top: 182 });
+    expect(result.top + 300).toBeLessThanOrEqual(70 + 420 - 8);
+  });
+
+  it("pins oversized content to the safe start and never produces negative available space", () => {
+    expect(clampToViewport({ x: 900, y: 900, width: 900, height: 900, bounds: portrait })).toEqual({ left: 8, top: 67 });
+    expect(insetViewport({ left: 0, top: 0, width: 10, height: 10 },
+      { top: 59, right: 20, bottom: 34, left: 20 })).toEqual({ left: 20, top: 59, width: 0, height: 0 });
   });
 });
 

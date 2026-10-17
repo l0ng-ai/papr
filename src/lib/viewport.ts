@@ -17,6 +17,57 @@
 // near margin. The floor wins, so an oversized overlay is pinned to the
 // top-left margin (visible from the start) rather than the bottom-right.
 
+export interface ViewportBounds {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+/** Visible layout coordinates, after excluding device cutouts and the keyboard. */
+export function insetViewport(
+  viewport: ViewportBounds,
+  insets: { top: number; right: number; bottom: number; left: number },
+): ViewportBounds {
+  return {
+    left: viewport.left + insets.left,
+    top: viewport.top + insets.top,
+    width: Math.max(0, viewport.width - insets.left - insets.right),
+    height: Math.max(0, viewport.height - insets.top - insets.bottom),
+  };
+}
+
+let insetProbe: HTMLDivElement | undefined;
+
+export function getOverlayViewport(): ViewportBounds {
+  if (typeof window === "undefined") return { left: 0, top: 0, width: 0, height: 0 };
+  const full = { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight };
+  if (document.documentElement.dataset.platform !== "mobile") return full;
+  // A computed padding resolves env() to pixels, unlike reading a custom
+  // property directly. Reuse this invisible, inert probe across all overlays.
+  if (!insetProbe?.isConnected) {
+    insetProbe = document.createElement("div");
+    insetProbe.setAttribute("aria-hidden", "true");
+    insetProbe.style.cssText = "position:fixed;top:0;left:0;visibility:hidden;pointer-events:none;width:0;height:0;padding:var(--safe-top,0px) var(--safe-right,0px) var(--safe-bottom,0px) var(--safe-left,0px)";
+    document.body.appendChild(insetProbe);
+  }
+  const padding = getComputedStyle(insetProbe);
+  const root = document.documentElement;
+  const keyboard = root.dataset.keyboardOpen === "true";
+  const visual = window.visualViewport;
+  const height = parseFloat(root.style.getPropertyValue("--app-height")) || full.height;
+  return insetViewport({
+    ...full,
+    top: keyboard ? visual?.offsetTop ?? 0 : 0,
+    height,
+  }, {
+    top: parseFloat(padding.paddingTop) || 0,
+    right: parseFloat(padding.paddingRight) || 0,
+    bottom: parseFloat(padding.paddingBottom) || 0,
+    left: parseFloat(padding.paddingLeft) || 0,
+  });
+}
+
 export interface ClampInput {
   /** Anchor x coordinate (viewport-relative, e.g. mouse or getBoundingClientRect). */
   x: number;
@@ -36,6 +87,8 @@ export interface ClampInput {
   viewportWidth?: number;
   /** Viewport height. Defaults to `window.innerHeight`; injectable for tests. */
   viewportHeight?: number;
+  /** Safe visible bounds; defaults to the current device's usable viewport. */
+  bounds?: ViewportBounds;
 }
 
 export interface ClampResult {
@@ -68,11 +121,14 @@ export function clampToViewport({
   width,
   height,
   margin = 8,
-  viewportWidth = typeof window !== "undefined" ? window.innerWidth : 0,
-  viewportHeight = typeof window !== "undefined" ? window.innerHeight : 0,
+  viewportWidth,
+  viewportHeight,
+  bounds = viewportWidth != null || viewportHeight != null
+    ? { left: 0, top: 0, width: viewportWidth ?? (typeof window !== "undefined" ? window.innerWidth : 0), height: viewportHeight ?? (typeof window !== "undefined" ? window.innerHeight : 0) }
+    : getOverlayViewport(),
 }: ClampInput): ClampResult {
   return {
-    left: clampAxis(x, width, viewportWidth, margin),
-    top: clampAxis(y, height, viewportHeight, margin),
+    left: bounds.left + clampAxis(x - bounds.left, width, bounds.width, margin),
+    top: bounds.top + clampAxis(y - bounds.top, height, bounds.height, margin),
   };
 }

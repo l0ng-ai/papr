@@ -1,6 +1,7 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import Icon, { type IconName } from "./Icon";
-import { clampToViewport } from "../lib/viewport";
+import { useFloatingPosition } from "../hooks/useFloatingPosition";
 import { useDismiss } from "../hooks/useDismiss";
 import { useMenuKeyboard } from "../hooks/useMenuKeyboard";
 import { useUi } from "../store";
@@ -9,6 +10,7 @@ export type MenuEntry =
   | {
       icon?: IconName;
       label: string;
+      description?: string;
       shortcut?: string;
       danger?: boolean;
       onClick: () => void;
@@ -31,17 +33,7 @@ interface Props {
 /** Floating context menu, clamped inside the viewport — design `.ctx-menu`. */
 export default function ContextMenu({ x, y, items, onClose }: Props) {
   const ref = useRef<HTMLDivElement>(null);
-  const [pos, setPos] = useState({ left: x, top: y });
-
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    // The menu is anchored at the mouse cursor, so it can open anywhere. The
-    // shared clamp pulls it back from the right/bottom edges and floors it at
-    // the 8px margin, so a menu taller/wider than the window stays reachable.
-    setPos(clampToViewport({ x, y, width: r.width, height: r.height, margin: 8 }));
-  }, [x, y]);
+  const pos = useFloatingPosition(ref, x, y);
 
   useDismiss(ref, onClose);
 
@@ -59,7 +51,7 @@ export default function ContextMenu({ x, y, items, onClose }: Props) {
   // shared with the other role="menu" popovers.
   const onKeyDown = useMenuKeyboard(ref);
 
-  return (
+  return createPortal(
     <div
       className="ctx-menu"
       ref={ref}
@@ -104,11 +96,11 @@ export default function ContextMenu({ x, y, items, onClose }: Props) {
             <span className="ctx-ico">
               {it.icon && <Icon name={it.icon} size={13} />}
             </span>
-            {it.label}
+            <span className="ctx-label">{it.label}{it.description && <span className="ctx-description">{it.description}</span>}</span>
             {it.shortcut && <span className="ctx-shortcut">{it.shortcut}</span>}
           </div>
         ),
       )}
-    </div>
+    </div>, document.body
   );
 }

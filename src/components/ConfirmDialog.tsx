@@ -1,4 +1,5 @@
 import { useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 
@@ -49,7 +50,9 @@ export default function ConfirmDialog({
     onClose();
   };
 
-  return (
+  // Settings has a backdrop-filter, which otherwise becomes the containing
+  // block for this nested fixed overlay and applies safe-area offsets twice.
+  return createPortal(
     <div className="modal-backdrop" onClick={onClose}>
       <div
         className="modal"
@@ -76,6 +79,6 @@ export default function ConfirmDialog({
           </button>
         </div>
       </div>
-    </div>
+    </div>, document.body
   );
 }

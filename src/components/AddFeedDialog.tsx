@@ -2,6 +2,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import * as api from "../api";
+import { folderPath } from "../lib/folders";
 import { useArticleActions } from "../hooks/articleActions";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { errorText } from "../lib/errors";
@@ -289,7 +290,7 @@ export default function AddFeedDialog({ onClose, onToast, initialUrl }: Props) {
                 <option value="">{t("addFeed.noFolder")}</option>
                 {folders.data!.map((f) => (
                   <option key={f.id} value={f.id}>
-                    {f.name}
+                    {folderPath(f.id, folders.data ?? [])}
                   </option>
                 ))}
               </select>

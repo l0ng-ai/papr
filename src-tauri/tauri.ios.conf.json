@@ -1,0 +1,22 @@
+{
+  "build": {
+    "beforeBuildCommand": "node node_modules/typescript/bin/tsc && node node_modules/vite/bin/vite.js build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Papr",
+        "backgroundColor": "#FBF9F3"
+      }
+    ]
+  },
+  "bundle": {
+    "createUpdaterArtifacts": false,
+    "iOS": {
+      "minimumSystemVersion": "15.0",
+      "infoPlist": "Info.ios.plist"
+    }
+  },
+  "plugins": {}
+}

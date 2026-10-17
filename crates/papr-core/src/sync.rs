@@ -257,12 +257,17 @@ async fn persist_session(
     auth: &str,
     provider: Provider,
 ) -> AppResult<()> {
-    let conn = db.lock().await;
-    db::set_setting(&conn, "freshrss_url", url.trim())?;
-    db::set_setting(&conn, "freshrss_user", user)?;
-    db::set_setting(&conn, "freshrss_auth", auth)?;
-    db::set_setting(&conn, "freshrss_pass", "")?;
-    db::set_setting(&conn, "freshrss_provider", provider.as_str())?;
+    let mut conn = db.lock().await;
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    if db::get_setting(&tx, "webdav_url")?.is_some_and(|s| !s.is_empty()) {
+        return Err(AppError::code("syncProviderConflict"));
+    }
+    db::set_setting(&tx, "freshrss_url", url.trim())?;
+    db::set_setting(&tx, "freshrss_user", user)?;
+    db::set_setting(&tx, "freshrss_auth", auth)?;
+    db::set_setting(&tx, "freshrss_pass", "")?;
+    db::set_setting(&tx, "freshrss_provider", provider.as_str())?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -275,6 +280,12 @@ pub async fn connect(
     pass: &str,
     provider: Option<&str>,
 ) -> AppResult<()> {
+    {
+        let conn = db.lock().await;
+        if db::get_setting(&conn, "webdav_url")?.is_some_and(|s| !s.is_empty()) {
+            return Err(AppError::code("syncProviderConflict"));
+        }
+    }
     let provider = Provider::from_setting(provider);
     let base = greader_base(url, provider);
     let session = login(http, &base, user, pass).await?; // verifies credentials

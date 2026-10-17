@@ -6,7 +6,9 @@
 // bar handles dragging, and the extra 38px-tall .titlebar would be a dead
 // strip above the content. We branch on this constant so the mac-only chrome
 // stays out of the way everywhere else.
-export const isMac =
+export const isMobile = typeof navigator !== "undefined" &&
+  (/iPhone|iPad|iPod|Android/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1));
+export const isMac = !isMobile &&
   typeof navigator !== "undefined" &&
   /Mac|iPhone|iPad|iPod/.test(navigator.platform || navigator.userAgent || "");
 

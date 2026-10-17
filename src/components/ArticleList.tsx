@@ -9,7 +9,7 @@ import { useArticleActions } from "../hooks/articleActions";
 import { listTranslationKey, useListTranslation } from "../listTranslation";
 import { resolveRowTranslation } from "../lib/rowTranslation";
 import { relTime } from "../lib/feedMeta";
-import { isMac, modCombo } from "../lib/platform";
+import { isMac, isMobile, modCombo } from "../lib/platform";
 import { reportError, toast } from "../toast";
 import { clampToViewport } from "../lib/viewport";
 import type { ArticleSummary, Feed } from "../types";
@@ -294,7 +294,7 @@ export default function ArticleList({ onToast }: Props) {
   useEffect(() => {
     window.clearTimeout(hoverTimer.current);
     setHover(null);
-  }, [query, unreadOnly, sortOldest]);
+  }, [query, unreadOnly, sortOldest, selectedId]);
 
   // Jump back to the top of the list whenever the sidebar selection changes.
   // The scroll container stays mounted across the query swap, so without this
@@ -323,7 +323,13 @@ export default function ArticleList({ onToast }: Props) {
     }
   };
 
-  const onHover = (a: ArticleSummary, e: React.MouseEvent) => {
+  const onHover = (a: ArticleSummary, e: React.PointerEvent) => {
+    // iOS synthesizes mouse events while tapping or scrolling. A desktop
+    // preview has no touch dismissal gesture and can cover the status bar.
+    if (isMobile || e.pointerType !== "mouse") {
+      leaveHover();
+      return;
+    }
     if (
       e.target instanceof Element &&
       e.target.closest("[data-no-hover-preview]")
@@ -340,6 +346,8 @@ export default function ArticleList({ onToast }: Props) {
     // the preview actually opens, so it tracks the row's live position.
     const row = e.currentTarget;
     hoverTimer.current = window.setTimeout(() => {
+      // Virtual scrolling may detach or recycle this row during the delay.
+      if (!row.isConnected || row.id !== `option-article-${a.id}`) return;
       const rect = row.getBoundingClientRect();
       setHover({ article: a, top: rect.top + 4, left: rect.right + 12 });
     }, 650);
@@ -454,11 +462,11 @@ export default function ArticleList({ onToast }: Props) {
       <div className="list-header" {...(isMac && { "data-tauri-drag-region": true })}>
         <h1 className="list-title" id="article-list-title">
           {/* Smart views re-translate live; feed/folder/tag keep their own title. */}
-          {query.kind === "feed" ||
+          <span className="list-title-label">{query.kind === "feed" ||
           query.kind === "folder" ||
           query.kind === "tag"
             ? queryLabel
-            : t(`smart.${query.kind}`)}
+            : t(`smart.${query.kind}`)}</span>
           <span className="list-title-meta">
             <span className="count">
               {browse.isLoading ? t("common.loading") : showCount}
@@ -524,7 +532,7 @@ export default function ArticleList({ onToast }: Props) {
         </div>
       </div>
 
-      <div className="list-scroll" ref={scrollRef}>
+      <div className="list-scroll" ref={scrollRef} onScroll={leaveHover} onPointerDown={leaveHover}>
         {browse.isLoading && (
           <div>
             {Array.from({ length: 7 }).map((_, i) => (
@@ -620,13 +628,14 @@ export default function ArticleList({ onToast }: Props) {
                     role="option"
                     id={`option-article-${a.id}`}
                     aria-selected={selectedId === a.id}
-                    onClick={() => openArticle(a.id)}
+                    onClick={() => { leaveHover(); openArticle(a.id); }}
                     onContextMenu={(e) => {
                       e.preventDefault();
+                      leaveHover();
                       setMenu({ x: e.clientX, y: e.clientY, article: a });
                     }}
-                    onMouseEnter={(e) => onHover(a, e)}
-                    onMouseLeave={leaveHover}
+                    onPointerEnter={(e) => onHover(a, e)}
+                    onPointerLeave={leaveHover}
                   >
                     {viewMode === "card" && showCardThumbs && (
                       <CardThumb article={a} />
@@ -691,7 +700,7 @@ export default function ArticleList({ onToast }: Props) {
         <div style={{ height: 60 }} />
       </div>
 
-      {hover && <HoverPreview {...hover} feedTitle={hover.article.feedTitle} />}
+      {!isMobile && hover && <HoverPreview {...hover} feedTitle={hover.article.feedTitle} />}
 
       {menu && (
         <ContextMenu

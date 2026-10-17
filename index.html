@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/papr.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Papr</title>
 
     <!-- Every typeface ships inside the app bundle (see src/main.tsx), so the
@@ -32,6 +32,12 @@
               !!window.matchMedia &&
               window.matchMedia("(prefers-color-scheme: dark)").matches);
           d.dataset.theme = dark ? "dark" : "light";
+          var palette = localStorage.getItem("palette") || "paper";
+          if (!["paper", "frost", "contrast", "mint", "sepia", "gray", "black"].includes(palette)) palette = "paper";
+          d.dataset.palette = palette;
+          d.dataset.mode = dark ? "dark" : "light";
+          var backgrounds = { paper: ["#FBF9F3", "#1D1E1F"], frost: ["#FFFFFF", "#1D1F23"], contrast: ["#FFFFFF", "#000000"], mint: ["#EEF4E8", "#18221C"], sepia: ["#F4E8C9", "#262119"], gray: ["#ECEDED", "#202324"], black: ["#000000", "#000000"] };
+          d.style.setProperty("--boot-background", backgrounds[palette][dark ? 1 : 0]);
           d.dataset.density = localStorage.getItem("density") || "cozy";
           var lng = localStorage.getItem("language");
           if (lng) d.lang = lng;
@@ -51,11 +57,11 @@
         align-items: center;
         justify-content: center;
         gap: 18px;
-        background: #f6f3ec;
+        background: var(--boot-background, #f6f3ec);
         transition: opacity 0.32s ease;
         font-family: "Inter Tight", -apple-system, BlinkMacSystemFont, sans-serif;
       }
-      html[data-theme="dark"] #app-loading { background: #16140f; }
+      html[data-theme="dark"] #app-loading { background: var(--boot-background, #16140f); }
       #app-loading.hide { opacity: 0; pointer-events: none; }
       #app-loading .brand {
         font-size: 15px;

@@ -111,3 +111,19 @@ agent driving `papr` is already a language model, so it reads article text with
 `papr read` and `papr search` and applies its own intelligence — no second AI
 provider, API key, or round-trip required. (The desktop app keeps its own AI
 features; only the CLI surface omits them.)
+
+### WebDAV library sync
+
+Use `papr sync connect --provider webdav --url https://example.com/dav/papr/ --user USER --password APP_PASSWORD`, then `papr sync run`.
+`papr sync status` shows the connection and last successful sync; `papr sync disconnect --yes` removes local credentials and keeps the remote library.
+See [WebDAV setup and sync behavior](webdav.md) for the directory requirements, supported data and conflict handling.
+
+### Nested folders
+
+`papr folder create NAME --parent ID` creates a child folder. `papr folder move ID --parent PARENT_ID` moves a folder; omit `--parent` to move it to the top level. Parent-folder article views, bulk mark-read and refresh include all descendants. Folder names remain unique across the library.
+
+`papr folder delete ID --yes` removes only that folder and keeps subscriptions; its child folders move to the top level. Use `papr folder delete ID --with-feeds --yes` to delete the entire subtree and its subscriptions/articles. The desktop sidebar offers both actions, with an Undo window before deletion commits.
+
+Under **Settings → Appearance**, sidebar text can be set independently from article text (11–22 px), and mint, book-yellow, soft-gray and black palettes are available. Article text supports 14–32 px, with the same size and column width in normal and F focus mode. Original webpages follow the text-size preference through page zoom.
+
+Tag creation accepts slash-separated paths and semicolon-separated batches, for example `papr tag create "agent/code;agent/docs;reading/code"`. Existing prefixes under the same parent are reused. `papr tags` includes each tag’s parent id; article counts are deduplicated across the tag subtree.
