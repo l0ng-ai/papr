@@ -3,11 +3,58 @@
 
 use ammonia::{Builder, UrlRelative};
 use ego_tree::iter::Edge;
+use ego_tree::NodeRef;
 use lol_html::{element, rewrite_str, RewriteStrSettings};
 use scraper::node::Node;
-use scraper::{Html, Selector};
+use scraper::{ElementRef, Html, Selector};
+use std::borrow::Cow;
 use std::sync::LazyLock;
 use url::Url;
+
+/// MathML elements a formula travels in, for feeds that typeset their math
+/// before publishing (KaTeX's `mathml`/`htmlAndMathml` output, and the
+/// assistive MathML MathJax hides next to its own rendering). ammonia has no
+/// MathML in its default whitelist, so without this the whole tree was
+/// unwrapped and the reader showed a flattened run of glyph tokens followed by
+/// the LaTeX source — `D f ( P Q ) = … D_f(P\|Q)=\…` — where the formula
+/// belonged.
+///
+/// These are kept as a *carrier* for the TeX source, not as the final
+/// rendering: the reader reads the LaTeX out of
+/// `<annotation encoding="application/x-tex">` and re-typesets every formula
+/// with the KaTeX bundle it ships (see `src/lib/math.ts`), replacing the
+/// carrier — including the visual half of KaTeX's `htmlAndMathml` output,
+/// whose inline styles and classes no HTML sanitizer can preserve. Keeping the
+/// markup intact is therefore all that matters here.
+const MATHML_TAGS: &[&str] = &[
+    "math", "semantics", "annotation", "mrow", "mi", "mo", "mn", "ms", "mtext", "mspace",
+    "msup", "msub", "msubsup", "mfrac", "msqrt", "mroot", "mstyle", "merror", "mpadded",
+    "mphantom", "menclose", "mfenced", "mtable", "mtr", "mtd", "mlabeledtr", "mover",
+    "munder", "munderover", "mmultiscripts", "mprescripts", "none",
+];
+
+/// Attributes worth keeping on the MathML above. `display` (whether the formula
+/// is inline or block) and `encoding` (which child holds the TeX) are the two
+/// the reader actually reads; the rest only matter if a formula falls back to
+/// the browser's own MathML rendering.
+///
+/// None of these is a URL, a `style`, or an event handler, so the whitelist
+/// stays free of script / network / CSS surfaces. `annotation-xml` is
+/// deliberately not in `MATHML_TAGS`: it can carry a whole foreign subtree
+/// (Content MathML, even HTML) and no formula the reader renders needs it.
+const MATHML_ATTRS: &[&str] = &[
+    "display", "encoding", "accent", "accentunder", "columnalign", "columnlines",
+    "columnspacing", "columnspan", "denomalign", "depth", "displaystyle", "fence", "form",
+    "frame", "height", "largeop", "linebreak", "linethickness", "lspace", "mathbackground",
+    "mathcolor", "mathsize", "mathvariant", "maxsize", "minsize", "movablelimits", "notation",
+    "numalign", "open", "close", "rowalign", "rowlines", "rowspacing", "rowspan", "rspace",
+    "scriptlevel", "separator", "separators", "stretchy", "symmetric", "voffset", "width",
+];
+
+/// Classes the reader looks for to recognise — and swap out — the wrappers a
+/// typeset formula arrives in. Only these four survive sanitization on a
+/// `<span>`; every other class is stripped as before.
+const MATH_CLASSES: &[&str] = &["katex", "katex-display", "katex-mathml", "katex-html"];
 
 /// Sanitize untrusted HTML for safe rendering inside the reader webview.
 /// Relative URLs are rewritten against `base` so feed images/links resolve.
@@ -50,13 +97,72 @@ pub fn sanitize(html: &str, base: Option<&str>) -> String {
         // weaker policy the feed shipped. Hosts that instead *require* a
         // Referer (e.g. `cdnfile.sspai.com`) are covered by the reader's
         // retry-through-backend path — see `commands::fetch_image`.
-        .set_tag_attribute_value("img", "referrerpolicy", "no-referrer");
+        .set_tag_attribute_value("img", "referrerpolicy", "no-referrer")
+        // Inline (base64) images: a feed that embeds its pictures in the body
+        // itself ships `<img src="data:image/png;base64,…">`, and ammonia drops
+        // the whole `src` — `data` is not one of its default URL schemes — which
+        // left the reader showing a broken image with nothing for the
+        // click-to-zoom viewer to open. Re-admit the scheme and hand the narrow
+        // policy to `keep_data_uris`: only the attributes that *decode* inline
+        // bytes keep a media payload, so a `data:text/html` link (which would
+        // navigate the webview to a document the feed authored) is still
+        // stripped. See `keep_data_uris`.
+        .add_url_schemes(["data"])
+        .attribute_filter(keep_data_uris)
+        // Formulas: let the markup carrying the TeX source through unchanged
+        // (see MATHML_TAGS), plus the KaTeX / MathJax wrappers the reader needs
+        // to recognise so it can replace the whole rendered block.
+        .add_tags(MATHML_TAGS)
+        .add_tags(["mjx-container", "mjx-assistive-mml"])
+        .add_allowed_classes("span", MATH_CLASSES)
+        .add_tag_attributes("mjx-container", ["jax", "display"])
+        .add_tag_attributes("mjx-assistive-mml", ["display", "unselectable"]);
+
+    for tag in MATHML_TAGS {
+        builder.add_tag_attributes(tag, MATHML_ATTRS);
+    }
 
     let parsed_base = base.and_then(|b| Url::parse(b).ok());
     if let Some(b) = parsed_base {
         builder.url_relative(UrlRelative::RewriteWithBase(b));
     }
     builder.clean(&html).to_string()
+}
+
+/// Per-attribute policy for `data:` URLs, which ammonia admits globally once
+/// `sanitize` re-allows the scheme (its default URL schemes exclude `data`).
+///
+/// A `data:` URL is kept only where the webview decodes the bytes as *media*,
+/// and only for a media type it can render:
+///
+/// * `img src` / `video poster` → `image/*`
+/// * `video src` / `source src` → `image/*`, `video/*`, `audio/*`
+///
+/// Everything else is dropped — most importantly `<a href="data:…">`, which
+/// would navigate the reader's own webview to a page the feed controls. This
+/// filter is handed *every* attribute, so it must return non-`data:` values
+/// untouched.
+fn keep_data_uris<'a>(element: &str, attribute: &str, value: &'a str) -> Option<Cow<'a, str>> {
+    if !value.starts_with("data:") {
+        return Some(Cow::Borrowed(value));
+    }
+    let allowed: &[&str] = match (element, attribute) {
+        ("img", "src") | ("video", "poster") => &["image/"],
+        ("video", "src") | ("source", "src") => &["image/", "video/", "audio/"],
+        _ => return None,
+    };
+    data_uri_media_type(value)
+        .is_some_and(|mime| allowed.iter().any(|p| mime.starts_with(p)))
+        .then_some(Cow::Borrowed(value))
+}
+
+/// The media type a `data:` URL declares — `data:image/png;base64,…` →
+/// `image/png` — lowercased, or `None` when it declares none (`data:,text`).
+/// Parameters (`;base64`, `;charset=…`) are ignored.
+fn data_uri_media_type(url: &str) -> Option<String> {
+    let meta = url.strip_prefix("data:")?.split(',').next()?;
+    let mime = meta.split(';').next()?.trim();
+    (!mime.is_empty()).then(|| mime.to_ascii_lowercase())
 }
 
 /// Promote a lazy-loaded image's real URL into `src` so it survives `sanitize`.
@@ -163,12 +269,20 @@ const BLOCK_TAGS: &[&str] = &[
 /// adjacent paragraphs/headings keep their words apart — while inline tags
 /// (`un<b>der</b>line`) still join seamlessly. The traversal is iterative, so
 /// pathologically deep markup can't overflow the stack.
+///
+/// A formula is the exception to "concatenate the text": left alone its MathML
+/// would be read glyph by glyph (`D`, `f`, `(`, `P`, …), so the whole subtree
+/// is replaced by the formula's TeX source instead — see `math_source` — which
+/// is what makes a math-heavy article searchable and summarisable at all.
 pub fn html_to_text(html: &str) -> String {
     let frag = Html::parse_fragment(html);
     let mut out = String::new();
     // Depth of the current script/style/etc. subtree — text is dropped while
     // this is non-zero.
     let mut skip = 0u32;
+    // Depth of the current <math> subtree, whose own text is replaced by the
+    // formula's TeX source on entry (and therefore skipped below).
+    let mut math = 0u32;
     for edge in frag.tree.root().traverse() {
         match edge {
             Edge::Open(node) => match node.value() {
@@ -176,11 +290,18 @@ pub fn html_to_text(html: &str) -> String {
                     let name = el.name();
                     if SKIP_TAGS.contains(&name) {
                         skip += 1;
-                    } else if skip == 0 && BLOCK_TAGS.contains(&name) {
+                    } else if skip == 0 && math == 0 && name == "math" {
+                        // Space-padded so the formula can't run into the words
+                        // around it once whitespace is collapsed.
+                        out.push(' ');
+                        out.push_str(&math_source(node));
+                        out.push(' ');
+                        math += 1;
+                    } else if skip == 0 && math == 0 && BLOCK_TAGS.contains(&name) {
                         out.push(' ');
                     }
                 }
-                Node::Text(t) if skip == 0 => out.push_str(t),
+                Node::Text(t) if skip == 0 && math == 0 => out.push_str(t),
                 _ => {}
             },
             Edge::Close(node) => {
@@ -188,7 +309,9 @@ pub fn html_to_text(html: &str) -> String {
                     let name = el.name();
                     if SKIP_TAGS.contains(&name) {
                         skip = skip.saturating_sub(1);
-                    } else if skip == 0 && BLOCK_TAGS.contains(&name) {
+                    } else if math > 0 && name == "math" {
+                        math -= 1;
+                    } else if skip == 0 && math == 0 && BLOCK_TAGS.contains(&name) {
                         out.push(' ');
                     }
                 }
@@ -196,6 +319,69 @@ pub fn html_to_text(html: &str) -> String {
         }
     }
     out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+static MATH_ANNOTATIONS: LazyLock<Selector> = LazyLock::new(|| {
+    Selector::parse("annotation, annotation-xml").expect("annotation is a valid selector")
+});
+
+/// Whether a MathML `<annotation encoding="…">` holds the formula's TeX source.
+/// KaTeX and MathJax both publish it as `application/x-tex` (some tools use
+/// `application/x-latex`). A naive `contains("tex")` would also accept
+/// `text/plain` — "tex" sits inside "text" — whose content is a plain-text
+/// *rendering* of the formula, not TeX, so require a non-text media type.
+fn is_tex_encoding(encoding: &str) -> bool {
+    let encoding = encoding.trim().to_ascii_lowercase();
+    !encoding.starts_with("text/") && encoding.contains("tex")
+}
+
+/// The plain text a formula contributes to `html_to_text`: the LaTeX source
+/// from the MathML `<annotation encoding="application/x-tex">` that KaTeX and
+/// MathJax both keep inside a formula, falling back to the flattened
+/// presentation tokens for hand-written MathML (Word/Docs exports) that has no
+/// annotation. `math` is the `<math>` node itself.
+fn math_source(math: NodeRef<'_, Node>) -> String {
+    let Some(el) = ElementRef::wrap(math) else {
+        return String::new();
+    };
+    let tex = el
+        .select(&MATH_ANNOTATIONS)
+        .filter(|a| a.value().attr("encoding").is_some_and(is_tex_encoding))
+        .map(|a| a.text().collect::<String>())
+        .find(|t| !t.trim().is_empty());
+    match tex {
+        Some(t) => t.trim().to_string(),
+        None => flattened_math_text(math),
+    }
+}
+
+/// The flattened presentation tokens of a formula — the glyph run a hand-written
+/// / Word-exported MathML offers when it carries no TeX annotation. Text inside
+/// `<annotation>`/`<annotation-xml>` is skipped: that content is a *source* form
+/// (TeX, or a plain-text rendering), never the glyphs the reader would see, so
+/// including it would splice a duplicate of the formula into the index.
+fn flattened_math_text(math: NodeRef<'_, Node>) -> String {
+    let mut out = String::new();
+    let mut skip = 0u32;
+    for edge in math.traverse() {
+        match edge {
+            Edge::Open(node) => match node.value() {
+                Node::Element(el) if el.name() == "annotation" || el.name() == "annotation-xml" => {
+                    skip += 1;
+                }
+                Node::Text(t) if skip == 0 => out.push_str(t),
+                _ => {}
+            },
+            Edge::Close(node) => {
+                if let Node::Element(el) = node.value() {
+                    if el.name() == "annotation" || el.name() == "annotation-xml" {
+                        skip = skip.saturating_sub(1);
+                    }
+                }
+            }
+        }
+    }
+    out.trim().to_string()
 }
 
 static IMG_SELECTOR: LazyLock<Selector> =
@@ -356,6 +542,75 @@ mod tests {
         assert!(!out.contains("javascript:"), "javascript: src survived: {out}");
     }
 
+    // --- inline data: images: a body that embeds its pictures as base64. ---
+
+    #[test]
+    fn sanitize_keeps_inline_data_image() {
+        // `<img src="data:image/png;base64,…">` is a picture the feed inlined in
+        // the body. ammonia's default URL schemes exclude `data`, so the `src`
+        // was dropped and the reader showed a broken image.
+        let src = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==";
+        let out = sanitize(&format!(r#"<p>x</p><img src="{src}" alt="dot"><p>y</p>"#), None);
+        assert!(out.contains(src), "inline image src dropped: {out}");
+        assert!(out.contains(r#"alt="dot""#), "inline image alt dropped: {out}");
+    }
+
+    #[test]
+    fn sanitize_keeps_inline_svg_and_clip_data_uris() {
+        // An SVG payload is safe inside <img> (an image context never runs the
+        // document's scripts), and a data: clip/poster is what a feed that
+        // inlines a short video ships.
+        let svg = "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciLz4=";
+        let clip = "data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDE=";
+        let out = sanitize(
+            &format!(r#"<img src="{svg}"><video poster="{svg}" src="{clip}"></video>"#),
+            None,
+        );
+        assert!(out.contains(svg), "inline svg dropped: {out}");
+        assert!(out.contains(clip), "inline clip dropped: {out}");
+    }
+
+    #[test]
+    fn sanitize_keeps_an_unquoted_inline_data_image() {
+        // Feed markup often leaves attributes unquoted (dreams.plus does). A
+        // base64 payload *without* `=` padding is legal unquoted, and has to come
+        // out of the sanitizer quoted and intact.
+        let out = sanitize(
+            r#"<img alt=pic src=data:image/png;base64,iVBORw0KGgoAAAANSUhEUg>"#,
+            None,
+        );
+        assert!(
+            out.contains(r#"src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUg""#),
+            "unquoted inline src dropped: {out}"
+        );
+    }
+
+    #[test]
+    fn sanitize_drops_non_media_data_uris() {
+        // The `data` scheme is admitted globally, so the narrow policy has to be
+        // enforced per attribute: a link to a feed-authored HTML document would
+        // navigate the webview, and a non-media payload smuggled into a media
+        // attribute is not something the reader can render.
+        let out = sanitize(
+            r#"<a href="data:text/html,<b>x</b>">link</a><img src="data:text/html;base64,PGI+eDwvYj4="><video src="data:application/octet-stream;base64,AAAA"></video>"#,
+            None,
+        );
+        assert!(!out.contains("data:text/html"), "html data: URL survived: {out}");
+        assert!(!out.contains("data:application"), "binary data: URL survived: {out}");
+    }
+
+    #[test]
+    fn sanitize_still_drops_other_schemes_after_allowing_data() {
+        // Re-allowing `data` must not widen anything else: script-bearing and
+        // unlisted schemes stay stripped on every element.
+        let out = sanitize(
+            r#"<img src="javascript:evil()"><video src="javascript:evil()"></video><a href="my-scheme:home">x</a>"#,
+            None,
+        );
+        assert!(!out.contains("javascript:"), "javascript: survived: {out}");
+        assert!(!out.contains("my-scheme:"), "unlisted scheme survived: {out}");
+    }
+
     // --- first_image: card-thumbnail fallback from body HTML. ---
 
     #[test]
@@ -481,5 +736,111 @@ mod tests {
         let out = sanitize(r#"<img data-src="https://cdnfile.sspai.com/a.jpg">"#, None);
         assert!(out.contains(r#"referrerpolicy="no-referrer""#), "{out}");
         assert!(out.contains("cdnfile.sspai.com/a.jpg"), "{out}");
+    }
+
+    // --- math: formulas reach the reader as a TeX-source carrier, and index as
+    //     their TeX source. Chooses `\frac{dP}{dQ}` because its flattened MathML
+    //     tokens (`dPdQ`) differ from the TeX, so a test can tell which was used.
+
+    #[test]
+    fn formula_text_uses_the_annotation_tex() {
+        // KaTeX's `mathml` output: the TeX lives in `<annotation>`, the
+        // presentation tokens are what the reader must *not* index.
+        let html = concat!(
+            r#"<p>entropy</p>"#,
+            r#"<span class="katex"><math display="block">"#,
+            r#"<semantics><mrow><mi>d</mi><mi>P</mi><mi>d</mi><mi>Q</mi></mrow>"#,
+            r#"<annotation encoding="application/x-tex">\frac{dP}{dQ}</annotation>"#,
+            r#"</semantics></math></span>"#,
+        );
+        let text = html_to_text(html);
+        assert_eq!(text, r"entropy \frac{dP}{dQ}");
+    }
+
+    #[test]
+    fn formula_text_falls_back_to_tokens_without_annotation() {
+        // Hand-written / Word-exported MathML has no annotation; the flattened
+        // presentation tokens are the only text it offers.
+        let html = "<math><mrow><mi>x</mi><mo>=</mo><mn>1</mn></mrow></math>";
+        assert_eq!(html_to_text(html), "x=1");
+    }
+
+    #[test]
+    fn formula_text_ignores_a_non_tex_annotation() {
+        // An annotation that isn't the TeX source (e.g. a `text/plain` copy)
+        // must not be mistaken for the formula body.
+        let html = concat!(
+            "<math><semantics><mrow><mi>a</mi></mrow>",
+            r#"<annotation encoding="text/plain">not the formula</annotation>"#,
+            "</semantics></math>",
+        );
+        assert_eq!(html_to_text(html), "a");
+    }
+
+    #[test]
+    fn sanitize_keeps_the_mathml_carrier() {
+        let out = sanitize(
+            concat!(
+                r#"<span class="katex"><math display="block">"#,
+                r#"<semantics><mrow><mo stretchy="false">(</mo><mi>x</mi></mrow>"#,
+                r#"<annotation encoding="application/x-tex">(x</annotation>"#,
+                r#"</semantics></math></span>"#,
+            ),
+            None,
+        );
+        assert!(out.contains("<math"), "math dropped: {out}");
+        assert!(out.contains(r#"display="block""#), "display dropped: {out}");
+        assert!(out.contains("<annotation"), "annotation dropped: {out}");
+        assert!(
+            out.contains(r#"encoding="application/x-tex""#),
+            "encoding dropped: {out}"
+        );
+        assert!(
+            out.contains(r#"stretchy="false""#),
+            "presentation attr dropped: {out}"
+        );
+        assert!(out.contains(r#"class="katex""#), "katex class dropped: {out}");
+    }
+
+    #[test]
+    fn sanitize_keeps_katex_classes_but_strips_style_and_other_classes() {
+        // The reader recognises the wrappers by class; `style` (which no
+        // sanitizer can preserve meaningfully) and unrelated KaTeX classes are
+        // stripped as before.
+        let out = sanitize(
+            concat!(
+                r#"<span class="katex-display" style="text-align:center">"#,
+                r#"<span class="katex"><span class="katex-mathml mord">"#,
+                r#"<math><semantics><annotation encoding="application/x-tex">x</annotation>"#,
+                "</semantics></math></span></span></span>",
+            ),
+            None,
+        );
+        assert!(out.contains("katex-display"), "wrapper class dropped: {out}");
+        assert!(out.contains("katex-mathml"), "wrapper class dropped: {out}");
+        assert!(!out.contains("mord"), "stray class survived: {out}");
+        assert!(!out.contains("style="), "style survived: {out}");
+    }
+
+    #[test]
+    fn sanitize_does_not_smuggle_markup_through_mathml() {
+        // Attribute-smuggling attempt: markup hidden in an `mtext` child's
+        // attribute value. Ammonia parses the input as HTML, so the payload is
+        // attribute text, never real elements.
+        let out = sanitize(
+            concat!(
+                "<math><mtext>",
+                r#"<a title="</mtext><img src=x onerror=alert(1)>">x</a>"#,
+                "</mtext></math>",
+            ),
+            None,
+        );
+        let frag = Html::parse_fragment(&out);
+        let sel = Selector::parse("img, script").expect("valid selector");
+        assert_eq!(
+            frag.select(&sel).count(),
+            0,
+            "markup smuggled through MathML: {out}"
+        );
     }
 }

@@ -2974,3 +2974,26 @@ button { font-family: inherit; }
 }
 .hl-export-menu .ctx-item:disabled,
 .send-to-menu .ctx-item:disabled { opacity: 0.5; cursor: default; }
+
+/* ====== Math formulas (feature F9) ====== */
+/* KaTeX's own stylesheet + fonts are bundled (imported in main.tsx); these
+   rules only adapt its output to the reader's columns. A display formula
+   scrolls sideways instead of overflowing the column, and any MathML a formula
+   fell back to is kept out of the flow (browsers hide <annotation> themselves,
+   but not uniformly). */
+.article-body math annotation,
+.article-body math annotation-xml,
+.ai-prose math annotation,
+.ai-prose math annotation-xml { display: none; }
+
+.article-body .katex-display,
+.ai-prose .katex-display {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  /* A hair above the 1em KaTeX gives it, matching the body's block rhythm. */
+  margin: 1.05em 0;
+}
+/* Keep a scrolled formula's box from clipping the descenders of the line above. */
+.article-body .katex-display > .katex,
+.ai-prose .katex-display > .katex { padding: 2px 0; }

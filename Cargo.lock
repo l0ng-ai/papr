@@ -3449,6 +3449,7 @@ version = "0.16.1"
 dependencies = [
  "ammonia",
  "anyhow",
+ "base64 0.22.1",
  "chrono",
  "dom_smoothie",
  "ego-tree",

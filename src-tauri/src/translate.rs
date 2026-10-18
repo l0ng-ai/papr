@@ -123,6 +123,85 @@ pub fn strip_code_fence(s: &str) -> String {
     trimmed.to_string()
 }
 
+// ─────────────────────── inline images in a prompt ───────────────────────
+
+/// Prefix of the placeholder that stands in for an inline image's payload while
+/// its batch is at the model. Chosen to read as an opaque value (the prompt tells
+/// the model to preserve attributes rather than translate them) and to be safe
+/// inside an attribute.
+const INLINE_IMAGE_TOKEN: &str = "papr-inline-image-";
+
+/// Attributes that can carry a media payload the webview decodes directly.
+const MEDIA_SRC_ATTRS: &[&str] = &["src", "poster"];
+
+/// Replace every inline (`data:`) media payload in one LLM batch with a short
+/// placeholder, returning the rewritten HTML plus the placeholder → original
+/// value pairs for [`restore_inline_media`].
+///
+/// A body may embed its pictures as base64 (see `papr_core::sanitize`), and a
+/// prompt is the wrong place for them: the payload is megabytes the model is
+/// asked to echo back byte for byte, which spends the batch's token budget on
+/// binary and reliably corrupts the image. The placeholder keeps the element —
+/// and every attribute around it — in place, while the bytes travel around the
+/// model instead of through it. The machine-translation engines never see HTML
+/// (they translate extracted text nodes), so only this path needs it.
+fn hide_inline_media(html: &str) -> (String, Vec<(String, String)>) {
+    // Fast path: almost every batch has no inline media at all, and re-parsing /
+    // re-serializing it would only risk normalizing the model's input.
+    if !html.contains("data:") {
+        return (html.to_string(), Vec::new());
+    }
+    let mut doc = Html::parse_fragment(html);
+    let owners: Vec<NodeId> = doc
+        .tree
+        .nodes()
+        .filter(|n| {
+            n.value().as_element().is_some_and(|e| {
+                e.attrs
+                    .iter()
+                    .any(|(name, value)| {
+                        MEDIA_SRC_ATTRS.contains(&&*name.local) && value.starts_with("data:")
+                    })
+            })
+        })
+        .map(|n| n.id())
+        .collect();
+    let mut hidden = Vec::new();
+    for id in owners {
+        let Some(mut node) = doc.tree.get_mut(id) else {
+            continue;
+        };
+        let Node::Element(el) = node.value() else {
+            continue;
+        };
+        for (name, value) in el.attrs.iter_mut() {
+            if !MEDIA_SRC_ATTRS.contains(&&*name.local) || !value.starts_with("data:") {
+                continue;
+            }
+            let token = format!("{INLINE_IMAGE_TOKEN}{}", hidden.len() + 1);
+            hidden.push((token.clone(), value.to_string()));
+            *value = token.into();
+        }
+    }
+    if hidden.is_empty() {
+        return (html.to_string(), hidden);
+    }
+    (serialize_fragment(&doc), hidden)
+}
+
+/// Put the payloads [`hide_inline_media`] removed back into the model's reply.
+/// A placeholder the model dropped or mangled simply stays unreplaced — the
+/// same degradation any other mangled attribute would suffer.
+fn restore_inline_media(translated: &str, hidden: &[(String, String)]) -> String {
+    let mut out = translated.to_string();
+    for (token, value) in hidden {
+        if out.contains(token.as_str()) {
+            out = out.replace(token.as_str(), value);
+        }
+    }
+    out
+}
+
 // ─────────────────────────── translation engines ───────────────────────────
 //
 // papr translates a full article body, batch by batch, with the HTML structure
@@ -211,9 +290,12 @@ impl Backend {
     ) -> AppResult<String> {
         match self {
             Backend::Llm(cfg) => {
+                // Inline (base64) images are kept out of the prompt entirely —
+                // see `hide_inline_media` — and put back into the reply.
+                let (batch, hidden) = hide_inline_media(batch);
                 let text =
-                    ai::complete_chat(client, cfg, system, batch, ai::TRANSLATE_MAX_TOKENS).await?;
-                Ok(strip_code_fence(&text))
+                    ai::complete_chat(client, cfg, system, &batch, ai::TRANSLATE_MAX_TOKENS).await?;
+                Ok(restore_inline_media(&strip_code_fence(&text), &hidden))
             }
             _ => translate_fragment(client, self, batch, target).await,
         }
@@ -688,6 +770,71 @@ mod tests {
     fn leaves_unfenced_content_untouched() {
         assert_eq!(strip_code_fence("<p>x</p>"), "<p>x</p>");
         assert_eq!(strip_code_fence("  <p>x</p>  "), "<p>x</p>");
+    }
+
+    // ── hide_inline_media / restore_inline_media ────────────────────────
+
+    #[test]
+    fn hides_inline_image_payload_from_the_prompt() {
+        let png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==";
+        let (sent, hidden) = hide_inline_media(&format!(
+            r#"<p>intro</p><img src="{png}" alt="dot">"#
+        ));
+        assert!(!sent.contains("base64"), "payload reached the prompt: {sent}");
+        assert!(sent.contains(r#"alt="dot""#), "sibling markup lost: {sent}");
+        assert!(sent.contains("<p>intro</p>"), "text lost: {sent}");
+        assert_eq!(
+            hidden,
+            vec![(format!("{INLINE_IMAGE_TOKEN}1"), png.to_string())]
+        );
+    }
+
+    #[test]
+    fn hides_every_media_payload_in_the_batch() {
+        // A poster and a clip source are separate payloads: each needs its own
+        // placeholder, and both must be restored.
+        let clip = "data:video/mp4;base64,AAAAIGZ0eXA=";
+        let (sent, hidden) = hide_inline_media(&format!(
+            r#"<video src="{clip}" poster="{clip}"></video>"#
+        ));
+        assert!(!sent.contains("base64"), "payload reached the prompt: {sent}");
+        assert_eq!(hidden.len(), 2);
+        assert_eq!(restore_inline_media(&sent, &hidden).matches(clip).count(), 2);
+    }
+
+    #[test]
+    fn restores_the_payload_into_the_model_reply() {
+        let png = "data:image/png;base64,iVBORw0KGgo=";
+        let (sent, hidden) = hide_inline_media(&format!(r#"<img src="{png}" alt="x">"#));
+        // The model is handed the placeholder and echoes the markup back — the
+        // fenced reply is unwrapped exactly as in the real path.
+        let reply = strip_code_fence(&format!("```html\n{sent}\n```"));
+        let out = restore_inline_media(&reply, &hidden);
+        assert!(out.contains(png), "payload not restored: {out}");
+        assert!(
+            !out.contains(INLINE_IMAGE_TOKEN),
+            "placeholder left behind: {out}"
+        );
+    }
+
+    #[test]
+    fn leaves_html_without_inline_media_verbatim() {
+        // No `data:` anywhere: the batch must reach the model byte for byte (a
+        // parse/re-serialize round-trip could normalize it).
+        let html = r#"<p>a &amp; b</p><img src="https://e.com/a.png">"#;
+        let (out, hidden) = hide_inline_media(html);
+        assert_eq!(out, html);
+        assert!(hidden.is_empty());
+    }
+
+    #[test]
+    fn leaves_prose_mentioning_data_untouched() {
+        // Text that merely names a `data:` URL is not an attribute value, so it
+        // survives the round-trip.
+        let html = r#"<p>Use data:text/plain,hi as a test.</p>"#;
+        let (out, hidden) = hide_inline_media(html);
+        assert!(hidden.is_empty());
+        assert!(out.contains("data:text/plain,hi"), "prose mangled: {out}");
     }
 
     // ── language_name ───────────────────────────────────────────────────

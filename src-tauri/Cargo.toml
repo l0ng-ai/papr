@@ -89,6 +89,11 @@ lol_html = "2"
 lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "rustls-tls", "builder"] }
 
 # misc
+# Decode inline (data:) images. A feed can embed a picture in the body as
+# `<img src="data:image/png;base64,…">`; the reader's retry and "save image"
+# paths then read those bytes locally instead of fetching a URL — see
+# commands::data_uri_bytes.
+base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 anyhow = "1"
 thiserror = "2"

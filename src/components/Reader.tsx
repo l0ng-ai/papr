@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import * as api from "../api";
@@ -9,6 +9,7 @@ import { usePlayer } from "../player";
 import { useTranslationJobs } from "../translation";
 import { useArticleActions } from "../hooks/articleActions";
 import { renderMarkdown } from "../lib/markdown";
+import { renderMath } from "../lib/math";
 import { imageDataUrl } from "../lib/imageBytes";
 import { fullDate } from "../lib/feedMeta";
 import { isMac } from "../lib/platform";
@@ -575,6 +576,15 @@ export default function Reader({ onToast }: Props) {
       alive = false;
     };
   }, [body, a?.url]);
+
+  // Typeset the feed's math into the freshly injected body — before the browser
+  // paints, and before HighlightLayer's passive effect anchors highlights into
+  // the text, so both see the final DOM. `displayBody` is the exact string
+  // React injects, so this re-runs on every body swap (article switch, extract
+  // toggle, translation) and not on unrelated re-renders. See lib/math.ts.
+  useLayoutEffect(() => {
+    if (bodyRef.current) renderMath(bodyRef.current);
+  }, [displayBody]);
 
   // When a translation finishes, refetch the article so its persisted
   // `translatedHtml` lands in the cache — the toggle then keeps working after
@@ -1370,6 +1380,12 @@ function AIDrawer({
   // Parse + sanitize the summary only when the text changes, not on every
   // AIDrawer re-render (e.g. each open/close toggle).
   const html = useMemo(() => (text ? renderMarkdown(text) : ""), [text]);
+  const proseRef = useRef<HTMLDivElement>(null);
+  // The summary streams in, so the prose is re-injected repeatedly; typeset any
+  // formulas in it after each commit, before paint. See lib/math.ts.
+  useLayoutEffect(() => {
+    if (proseRef.current) renderMath(proseRef.current);
+  }, [html]);
 
   return (
     <div
@@ -1431,6 +1447,7 @@ function AIDrawer({
           <>
             <div
               className="ai-prose"
+              ref={proseRef}
               onClick={makeLinkClickHandler(article.url)}
               dangerouslySetInnerHTML={{ __html: html }}
             />

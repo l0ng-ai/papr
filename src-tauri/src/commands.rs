@@ -1,6 +1,7 @@
 //! Tauri command surface — the typed IPC boundary the React frontend calls.
 //! All SQL is delegated to `db`; commands only orchestrate.
 
+use base64::prelude::{Engine as _, BASE64_STANDARD};
 use crate::ai::{self, AiConfig, AiEvent};
 use crate::db::{self};
 use crate::error::{AppError, AppResult};
@@ -551,6 +552,10 @@ async fn fetch_image_bytes(
     url: &str,
     page_url: Option<&str>,
 ) -> AppResult<Vec<u8>> {
+    // An inline image carries its own bytes: no host, and no Referer to try.
+    if let Some(bytes) = data_uri_bytes(url)? {
+        return Ok(bytes);
+    }
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return Err(AppError::code("badImageUrl"));
     }
@@ -626,9 +631,73 @@ pub async fn save_image(
     Ok(true)
 }
 
+/// The bytes an inline `data:` URL carries, or `None` for an ordinary URL.
+///
+/// A feed can embed a picture in the body itself — `<img src="data:image/png;base64,…">`
+/// (the sanitizer admits those; see `papr_core::sanitize::keep_data_uris`). Such
+/// an image has no host to ask and no Referer to try, so the fetch/save paths
+/// decode it here instead of failing with `badImageUrl`.
+fn data_uri_bytes(url: &str) -> AppResult<Option<Vec<u8>>> {
+    let Some(rest) = url.strip_prefix("data:") else {
+        return Ok(None);
+    };
+    let (meta, payload) = rest
+        .split_once(',')
+        .ok_or_else(|| AppError::code("badImageUrl"))?;
+    // Only base64 is produced by the sanitizer and the reader's own proxying;
+    // a percent-encoded payload is not worth a second decoder.
+    if !meta.split(';').any(|p| p.eq_ignore_ascii_case("base64")) {
+        return Err(AppError::code("badImageUrl"));
+    }
+    // Reject an oversized payload before decoding it into memory (base64 is
+    // 3 bytes per 4 characters, so this is the decoded size up to the padding).
+    if payload.len() as u64 / 4 * 3 > MAX_IMAGE_BYTES {
+        return Err(AppError::code("imageTooLarge"));
+    }
+    let bytes = BASE64_STANDARD
+        .decode(payload.trim())
+        .map_err(|_| AppError::code("badImageUrl"))?;
+    if bytes.len() as u64 > MAX_IMAGE_BYTES {
+        return Err(AppError::code("imageTooLarge"));
+    }
+    Ok(Some(bytes))
+}
+
+/// The file extension for the media type an inline `data:` URL declares, so the
+/// save dialog offers a name the OS can associate (`data:image/png;base64,…` →
+/// `"png"`). `None` when `url` is not a `data:` URL.
+fn data_uri_extension(url: &str) -> Option<String> {
+    let mime = url
+        .strip_prefix("data:")?
+        .split([',', ';'])
+        .next()?
+        .trim()
+        .to_ascii_lowercase();
+    let subtype = mime.split_once('/').map(|(_, s)| s.trim())?;
+    Some(
+        match subtype {
+            "jpeg" | "jpg" => "jpg",
+            "svg+xml" => "svg",
+            "x-icon" | "vnd.microsoft.icon" => "ico",
+            // Anything else stands in as its own extension — png, gif, webp,
+            // mp4, … — as long as it is a plain word. The name is only a
+            // suggestion, but a subtype that isn't one (a stray separator or
+            // space) must not steer the save dialog's path; those fall back.
+            other if !other.is_empty() && other.chars().all(|c| c.is_ascii_alphanumeric()) => other,
+            _ => "png",
+        }
+        .to_string(),
+    )
+}
+
 /// A sensible default save filename for an image URL: its last path segment
 /// (query and fragment stripped), falling back to "image".
 fn image_filename(url: &str) -> String {
+    // An inline image has no path to name a file after, so name it after its
+    // declared media type instead.
+    if let Some(ext) = data_uri_extension(url) {
+        return format!("image.{ext}");
+    }
     Url::parse(url)
         .ok()
         .and_then(|u| {
@@ -1824,5 +1893,45 @@ mod tests {
         // Article link identical to the image origin would be a wasted retry.
         let got = referer_candidates("https://ex.com/a.png", Some("https://ex.com/"));
         assert_eq!(got, vec![None, Some("https://ex.com/".to_string())]);
+    }
+
+    // --- inline images: a data: URL is decoded here, never fetched. ---
+
+    #[test]
+    fn data_uri_bytes_decodes_a_base64_payload() {
+        let got = data_uri_bytes("data:image/png;base64,aGVsbG8=").unwrap();
+        assert_eq!(got.as_deref(), Some(&b"hello"[..]));
+    }
+
+    #[test]
+    fn data_uri_bytes_ignores_ordinary_urls() {
+        assert_eq!(data_uri_bytes("https://ex.com/a.png").unwrap(), None);
+        assert_eq!(data_uri_bytes("").unwrap(), None);
+    }
+
+    #[test]
+    fn data_uri_bytes_rejects_unusable_payloads() {
+        // Not base64, malformed base64, and no payload separator at all.
+        assert!(data_uri_bytes("data:image/svg+xml,<svg/>").is_err());
+        assert!(data_uri_bytes("data:image/png;base64,!!not-base64!!").is_err());
+        assert!(data_uri_bytes("data:image/png").is_err());
+    }
+
+    #[test]
+    fn data_uri_extension_maps_media_types_to_file_extensions() {
+        assert_eq!(data_uri_extension("data:image/png;base64,AA").as_deref(), Some("png"));
+        assert_eq!(data_uri_extension("data:image/jpeg;base64,AA").as_deref(), Some("jpg"));
+        assert_eq!(data_uri_extension("data:image/svg+xml;base64,AA").as_deref(), Some("svg"));
+        assert_eq!(data_uri_extension("data:video/mp4;base64,AA").as_deref(), Some("mp4"));
+        // A subtype that isn't a plain word must not become a filename segment.
+        assert_eq!(data_uri_extension("data:image/x-../../evil,AA").as_deref(), Some("png"));
+        assert_eq!(data_uri_extension("https://ex.com/a.png"), None);
+    }
+
+    #[test]
+    fn image_filename_names_an_inline_image_after_its_type() {
+        assert_eq!(image_filename("data:image/png;base64,AA"), "image.png");
+        // Unchanged for the network case.
+        assert_eq!(image_filename("https://ex.com/a.png?x=1"), "a.png");
     }
 }

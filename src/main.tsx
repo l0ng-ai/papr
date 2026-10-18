@@ -19,6 +19,10 @@ import "@fontsource-variable/newsreader/wght-italic.css";
 import "@fontsource/atkinson-hyperlegible/400.css";
 import "@fontsource/atkinson-hyperlegible/400-italic.css";
 import "@fontsource/atkinson-hyperlegible/700.css";
+// KaTeX's stylesheet + bundled fonts, for the feed formulas the reader
+// typesets client-side (see lib/math.ts). Imported before styles.css so the
+// app's own rules can override it.
+import "katex/dist/katex.min.css";
 import "./styles.css";
 
 // Tag the document root before first paint so the mac-only titlebar chrome
