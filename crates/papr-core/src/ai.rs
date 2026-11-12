@@ -72,6 +72,7 @@ pub enum AiEvent {
 
 #[derive(Clone, Copy, PartialEq)]
 enum Provider {
+    Codex,
     Anthropic,
     OpenAi,
     /// DeepSeek exposes an OpenAI-compatible API (same `/chat/completions`
@@ -106,21 +107,24 @@ impl AiConfig {
         // header-value validation or earns a 401 from the provider. Trim like
         // `base_url` already does so the stored value is normalised at the one
         // chokepoint, independent of any frontend trimming.
-        let api_key = api_key
-            .map(|k| k.trim().to_string())
-            .filter(|k| !k.is_empty())
-            .ok_or_else(|| AppError::code("noAiKey"))?;
         let provider = match provider.as_deref() {
+            Some("codex") => Provider::Codex,
             Some("openai") => Provider::OpenAi,
             Some("deepseek") => Provider::DeepSeek,
             _ => Provider::Anthropic,
         };
+        let api_key = api_key
+            .map(|k| k.trim().to_string())
+            .filter(|k| !k.is_empty())
+            .or_else(|| (provider == Provider::Codex).then(String::new))
+            .ok_or_else(|| AppError::code("noAiKey"))?;
         // Likewise trim the model name — it is JSON-serialised into the
         // request body, and a stray space/newline yields a "model not found".
         let model = model
             .map(|m| m.trim().to_string())
             .filter(|m| !m.is_empty())
             .unwrap_or_else(|| match provider {
+                Provider::Codex => String::new(),
                 Provider::Anthropic => "claude-sonnet-4-6".to_string(),
                 Provider::OpenAi => "gpt-4.1-mini".to_string(),
                 Provider::DeepSeek => "deepseek-chat".to_string(),
@@ -149,6 +153,7 @@ impl Provider {
     /// set a custom base URL.
     fn default_base_url(self) -> &'static str {
         match self {
+            Provider::Codex => "",
             Provider::Anthropic => "https://api.anthropic.com/v1",
             Provider::OpenAi => "https://api.openai.com/v1",
             // DeepSeek serves the OpenAI-compatible API at this root; our code
@@ -190,7 +195,9 @@ pub async fn stream_chat(
     sink: &mut DeltaSink<'_>,
     max_tokens: u32,
 ) -> AppResult<ChatOutcome> {
-    if cfg.provider.is_openai_compatible() {
+    if cfg.provider == Provider::Codex {
+        super::codex::stream_chat(cfg.model(), system, user, sink).await
+    } else if cfg.provider.is_openai_compatible() {
         stream_openai(client, cfg, system, user, sink, max_tokens).await
     } else {
         stream_anthropic(client, cfg, system, user, sink, max_tokens).await
@@ -209,11 +216,7 @@ pub async fn complete_chat(
 ) -> AppResult<String> {
     // A sink that discards deltas; `consume_sse` still accumulates the full text.
     let mut discard = |_: &str| true;
-    let outcome = if cfg.provider.is_openai_compatible() {
-        stream_openai(client, cfg, system, user, &mut discard, max_tokens).await
-    } else {
-        stream_anthropic(client, cfg, system, user, &mut discard, max_tokens).await
-    }?;
+    let outcome = stream_chat(client, cfg, system, user, &mut discard, max_tokens).await?;
     Ok(outcome.text)
 }
 
@@ -273,7 +276,11 @@ pub async fn test_connection(client: &Client, cfg: &AiConfig) -> AppResult<TestO
         return Err(AppError::code("aiTestEmpty"));
     }
     Ok(TestOutcome {
-        model: cfg.model.clone(),
+        model: if cfg.provider == Provider::Codex && cfg.model.is_empty() {
+            "Codex".to_string()
+        } else {
+            cfg.model.clone()
+        },
         base_url: cfg.base_url.clone(),
         latency_ms: started.elapsed().as_millis() as u64,
         reply: reply.trim().chars().take(160).collect(),
@@ -440,6 +447,7 @@ async fn consume_sse(
 /// would abort an otherwise-fine generation with a bogus "stream error".
 fn extract_error(v: &Value, provider: Provider) -> Option<String> {
     let err = match provider {
+        Provider::Codex => return None,
         Provider::Anthropic => (v["type"] == "error").then(|| &v["error"]),
         // DeepSeek is OpenAI-compatible; in practice it always reaches this
         // function tagged as `OpenAi` (see `stream_openai`), but handle it
@@ -457,6 +465,7 @@ fn extract_error(v: &Value, provider: Provider) -> Option<String> {
 
 fn extract_delta(v: &Value, provider: Provider) -> Option<String> {
     match provider {
+        Provider::Codex => None,
         Provider::Anthropic => {
             if v["type"] == "content_block_delta" {
                 v["delta"]["text"].as_str().map(String::from)

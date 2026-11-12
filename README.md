@@ -28,13 +28,25 @@ the CLI can never drift apart.
 - **Smart views** — All, Unread, Starred, and Read Later, with live counts.
 - **Tags & rules** — color-coded tags and rules that tag new articles automatically.
 - **Full-text** — fetch and clean the complete article when a feed ships only a summary.
-- **AI** — summaries, ask-the-article Q&A, and digests. Bring your own API key.
+- **AI** — summaries, ask-the-article Q&A, and digests. Bring your own API key or use your ChatGPT subscription through the official Codex CLI.
 - **Audio** — a built-in player that follows you from article to article.
 - **FreshRSS sync** — keep read state in step with a FreshRSS server.
 - **Local-first** — everything stays on your machine. No account, no cloud.
 - **Localized** — English, Japanese, and Simplified Chinese.
 
 ### Install
+
+To use a ChatGPT subscription for AI features, install the official Codex CLI
+(0.167.2 or newer), run `codex login` and sign in with ChatGPT, then select
+**Settings → Advanced → AI provider → Codex (ChatGPT subscription)**. Leave the
+model blank to use Codex's default, or enter a model available to your account.
+No API key or base URL is needed; subscription usage limits still apply.
+Papr sends article text to Codex in an ephemeral, read-only session with shell,
+web search, apps, browser, hooks, and multi-agent features disabled. It ignores
+the user's Codex configuration and rules, but reuses Codex-managed authentication.
+Responses appear when Codex finishes its message rather than token by token.
+LLM translation uses the same provider. If Codex isn't found, ensure its binary
+is on the app's PATH (macOS Homebrew locations are also detected).
 
 | Platform | How |
 | --- | --- |

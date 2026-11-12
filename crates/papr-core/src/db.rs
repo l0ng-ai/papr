@@ -2178,12 +2178,12 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> AppResult<()> {
 pub fn configure_ai_provider(
     conn: &Connection, provider: &str, model: Option<&str>, base_url: Option<&str>,
 ) -> AppResult<(String, String)> {
-    if !matches!(provider, "anthropic" | "openai" | "deepseek") {
+    if !matches!(provider, "anthropic" | "openai" | "deepseek" | "codex") {
         return Err(AppError::other("invalid AI provider"));
     }
     let tx = conn.unchecked_transaction()?;
     let previous = get_setting(&tx, "ai_provider")?.unwrap_or_default();
-    let previous = match previous.as_str() { "openai" => "openai", "deepseek" => "deepseek", _ => "anthropic" };
+    let previous = match previous.as_str() { "openai" => "openai", "deepseek" => "deepseek", "codex" => "codex", _ => "anthropic" };
     for key in ["ai_model", "ai_base_url"] {
         let value = get_setting(&tx, key)?.unwrap_or_default();
         set_setting(&tx, &format!("{key}_{previous}"), &value)?;
@@ -2568,6 +2568,17 @@ mod tests {
         configure_ai_provider(&conn, "deepseek", Some(""), Some("")).unwrap();
         assert_eq!(configure_ai_provider(&conn, "openai", None, None).unwrap().0, "gpt-custom");
         assert_eq!(configure_ai_provider(&conn, "deepseek", None, None).unwrap(), ("".into(), "".into()));
+    }
+
+    #[test]
+    fn codex_profile_stays_separate_when_switching_providers() {
+        let (conn, _) = test_db();
+        configure_ai_provider(&conn, "anthropic", Some("claude-custom"), Some("https://example.com/v1")).unwrap();
+        assert_eq!(configure_ai_provider(&conn, "codex", None, None).unwrap(), ("".into(), "".into()));
+        configure_ai_provider(&conn, "codex", Some("codex-custom"), Some("")).unwrap();
+        assert_eq!(configure_ai_provider(&conn, "openai", None, None).unwrap(), ("".into(), "".into()));
+        assert_eq!(configure_ai_provider(&conn, "codex", None, None).unwrap(), ("codex-custom".into(), "".into()));
+        assert_eq!(configure_ai_provider(&conn, "anthropic", None, None).unwrap(), ("claude-custom".into(), "https://example.com/v1".into()));
     }
 
     #[test]
