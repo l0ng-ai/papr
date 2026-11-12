@@ -444,6 +444,10 @@
       "dndNightDesc": "22:00 〜 08:00 の間は通知を表示しません"
     },
     "advanced": {
+      "aiProviderCodex": "Codex（ChatGPT サブスクリプション）",
+      "aiCodexDesc": "Codex CLI 0.167.2+ を入れ、codex login でログイン。API キー不要で利用枠を使います。記事は Codex に送信され、完了後に応答を表示します。",
+      "aiCodexCopyCommand": "ログインコマンドをコピー",
+      "aiModelPlaceholderCodex": "空欄で Codex の既定モデルを使用",
       "experimental": "実験的機能",
       "dedup": "スマート重複排除",
       "dedupDesc": "複数のフィードが同じリンクを配信した場合、最初に取得した1件のみを残します",
@@ -578,6 +582,9 @@
     "other": "{{detail}}",
     "unknown": "不明なエラーが発生しました",
     "noAiKey": "AI API キーが未設定です。「設定 → 詳細」で入力してください",
+    "codexNotFound": "Codex CLI が見つかりません。Codex 0.167.2 以降をインストールし、codex login で ChatGPT にログインしてください。",
+    "codexFailed": "Codex の呼び出しに失敗しました。codex login status、利用枠、モデル、CLI バージョン（0.167.2 以降）を確認してください。",
+    "codexTimeout": "Codex が 5 分以内に完了しませんでした。再試行してください。",
     "emptyTagName": "タグ名を空にはできません",
     "emptyFeedTitle": "フィード名を空にはできません",
     "emptyFolderName": "フォルダー名を空にはできません",

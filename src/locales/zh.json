@@ -444,6 +444,10 @@
       "dndNightDesc": "22:00 — 08:00 之间不显示通知"
     },
     "advanced": {
+      "aiProviderCodex": "Codex（ChatGPT 订阅）",
+      "aiCodexDesc": "安装 Codex CLI 0.167.2+，运行 codex login 登录。使用订阅额度，无需 API Key；文章发送至 Codex，完成后显示回复。",
+      "aiCodexCopyCommand": "复制登录命令",
+      "aiModelPlaceholderCodex": "留空使用 Codex 默认模型",
       "experimental": "实验功能",
       "dedup": "智能去重",
       "dedupDesc": "多个订阅源推送同一链接时，只保留首先抓取到的一篇",
@@ -578,6 +582,9 @@
     "other": "{{detail}}",
     "unknown": "发生未知错误",
     "noAiKey": "尚未设置 AI API Key，请在「设置 → 高级」中填写",
+    "codexNotFound": "未找到 Codex CLI。请安装 Codex 0.167.2 或更新版本，运行 codex login 并使用 ChatGPT 登录。",
+    "codexFailed": "Codex 调用失败。请检查 codex login status、订阅额度、模型可用性及 CLI 版本（需要 0.167.2+）。",
+    "codexTimeout": "Codex 超过 5 分钟未完成，请重试。",
     "emptyTagName": "标签名称不能为空",
     "emptyFeedTitle": "订阅源名称不能为空",
     "emptyFolderName": "文件夹名称不能为空",

@@ -444,6 +444,10 @@
       "dndNightDesc": "Don't show notifications between 22:00 and 08:00"
     },
     "advanced": {
+      "aiProviderCodex": "Codex (ChatGPT subscription)",
+      "aiCodexDesc": "Install Codex CLI 0.167.2+ and run codex login. Uses subscription limits, not an API key. Articles go to Codex; replies appear when complete.",
+      "aiCodexCopyCommand": "Copy login command",
+      "aiModelPlaceholderCodex": "Leave blank for Codex's default model",
       "experimental": "Experimental features",
       "dedup": "Smart deduplication",
       "dedupDesc": "When multiple feeds push the same link, keep only the first one fetched",
@@ -578,6 +582,9 @@
     "other": "{{detail}}",
     "unknown": "An unknown error occurred",
     "noAiKey": "No AI API key set — add one in Settings → Advanced",
+    "codexNotFound": "Codex CLI not found. Install Codex 0.167.2+ and run codex login with ChatGPT.",
+    "codexFailed": "Codex failed. Check codex login status, your subscription limits, model availability, and CLI version (0.167.2+).",
+    "codexTimeout": "Codex did not finish within 5 minutes. Try again.",
     "emptyTagName": "Tag name can't be empty",
     "emptyFeedTitle": "Feed name can't be empty",
     "emptyFolderName": "Folder name can't be empty",

@@ -1669,9 +1669,9 @@ type TranslateEngine = "llm" | "google" | "deepl" | "bing";
 function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
   const { t, i18n } = useTranslation();
   const qc = useQueryClient();
-  const [provider, setProvider] = useState<"anthropic" | "openai" | "deepseek">(
-    "anthropic",
-  );
+  const [provider, setProvider] = useState<
+    "anthropic" | "openai" | "deepseek" | "codex"
+  >("anthropic");
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
@@ -1693,7 +1693,7 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
       api.getSetting("translate_target_lang"),
     ])
       .then(([p, k, m, b, eng, tl]) => {
-        if (p === "openai" || p === "anthropic" || p === "deepseek")
+        if (p === "openai" || p === "anthropic" || p === "deepseek" || p === "codex")
           setProvider(p);
         if (k) {
           setApiKey(k);
@@ -1722,11 +1722,13 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
   };
 
   const placeholder =
-    provider === "openai"
-      ? t("settings.advanced.aiModelPlaceholderOpenai")
-      : provider === "deepseek"
-        ? t("settings.advanced.aiModelPlaceholderDeepseek")
-        : t("settings.advanced.aiModelPlaceholderAnthropic");
+    provider === "codex"
+      ? t("settings.advanced.aiModelPlaceholderCodex")
+      : provider === "openai"
+        ? t("settings.advanced.aiModelPlaceholderOpenai")
+        : provider === "deepseek"
+          ? t("settings.advanced.aiModelPlaceholderDeepseek")
+          : t("settings.advanced.aiModelPlaceholderAnthropic");
 
   const baseUrlPlaceholder =
     provider === "openai"
@@ -1748,6 +1750,7 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
             { value: "anthropic", label: "Anthropic" },
             { value: "openai", label: "OpenAI" },
             { value: "deepseek", label: "DeepSeek" },
+            { value: "codex", label: t("settings.advanced.aiProviderCodex") },
           ]}
           onChange={(v) => {
             setProvider(v);
@@ -1774,29 +1777,49 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
           }}
         />
       </Row>
-      <Row
-        label={t("settings.advanced.aiApiKey")}
-        desc={t("settings.advanced.aiApiKeyDesc")}
-      >
-        <input
-          className="s-text-input"
-          type="password"
-          {...NO_AUTOCORRECT}
-          value={apiKey}
-          placeholder="sk-…"
-          onChange={(e) => setApiKey(e.target.value)}
-          onBlur={() => {
-            // Trim before persisting — a pasted key routinely carries a
-            // trailing newline / space that would break the auth header.
-            const trimmed = apiKey.trim();
-            if (trimmed !== apiKey) setApiKey(trimmed);
-            if (trimmed !== savedKey.current) {
-              savedKey.current = trimmed;
-              save("ai_api_key", trimmed, t("settings.advanced.aiApiKeyLabel"));
-            }
-          }}
-        />
-      </Row>
+      {provider === "codex" && (
+        <Row
+          label={t("settings.advanced.aiProviderCodex")}
+          desc={t("settings.advanced.aiCodexDesc")}
+        >
+          <button
+            className="s-btn"
+            title={t("settings.advanced.aiCodexCopyCommand")}
+            onClick={() => {
+              navigator.clipboard.writeText("codex login")
+                .then(() => onToast(t("reader.textCopied")))
+                .catch((e) => reportError(e));
+            }}
+          >
+            {t("settings.advanced.aiCodexCopyCommand")}
+          </button>
+        </Row>
+      )}
+      {provider !== "codex" && (
+        <Row
+          label={t("settings.advanced.aiApiKey")}
+          desc={t("settings.advanced.aiApiKeyDesc")}
+        >
+          <input
+            className="s-text-input"
+            type="password"
+            {...NO_AUTOCORRECT}
+            value={apiKey}
+            placeholder="sk-…"
+            onChange={(e) => setApiKey(e.target.value)}
+            onBlur={() => {
+              // Trim before persisting — a pasted key routinely carries a
+              // trailing newline / space that would break the auth header.
+              const trimmed = apiKey.trim();
+              if (trimmed !== apiKey) setApiKey(trimmed);
+              if (trimmed !== savedKey.current) {
+                savedKey.current = trimmed;
+                save("ai_api_key", trimmed, t("settings.advanced.aiApiKeyLabel"));
+              }
+            }}
+          />
+        </Row>
+      )}
       <Row
         label={t("settings.advanced.aiModel")}
         desc={t("settings.advanced.aiModelDesc")}
@@ -1820,27 +1843,29 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
           }}
         />
       </Row>
-      <Row
-        label={t("settings.advanced.aiBaseUrl")}
-        desc={t("settings.advanced.aiBaseUrlDesc")}
-      >
-        <input
-          className="s-text-input"
-          type="text"
-          {...NO_AUTOCORRECT}
-          value={baseUrl}
-          placeholder={baseUrlPlaceholder}
-          onChange={(e) => setBaseUrl(e.target.value)}
-          onBlur={() => {
-            const trimmed = baseUrl.trim();
-            if (trimmed !== baseUrl) setBaseUrl(trimmed);
-            if (trimmed !== savedBaseUrl.current) {
-              savedBaseUrl.current = trimmed;
-              save("ai_base_url", trimmed, t("settings.advanced.aiBaseUrlLabel"));
-            }
-          }}
-        />
-      </Row>
+      {provider !== "codex" && (
+        <Row
+          label={t("settings.advanced.aiBaseUrl")}
+          desc={t("settings.advanced.aiBaseUrlDesc")}
+        >
+          <input
+            className="s-text-input"
+            type="text"
+            {...NO_AUTOCORRECT}
+            value={baseUrl}
+            placeholder={baseUrlPlaceholder}
+            onChange={(e) => setBaseUrl(e.target.value)}
+            onBlur={() => {
+              const trimmed = baseUrl.trim();
+              if (trimmed !== baseUrl) setBaseUrl(trimmed);
+              if (trimmed !== savedBaseUrl.current) {
+                savedBaseUrl.current = trimmed;
+                save("ai_base_url", trimmed, t("settings.advanced.aiBaseUrlLabel"));
+              }
+            }}
+          />
+        </Row>
+      )}
       <Row
         label={t("settings.advanced.translateEngine")}
         desc={t("settings.advanced.translateEngineDesc")}

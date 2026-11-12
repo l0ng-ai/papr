@@ -29,3 +29,4 @@ lol_html.workspace = true
 chrono.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
+tempfile = "3"
