@@ -44,6 +44,13 @@ export const fetchImage = (url: string, pageUrl?: string | null) =>
     imageBytes,
   );
 
+/** "Save image" via a native save dialog, entirely in Rust (fetch → dialog →
+ *  write). Returns whether a file was actually written — false when the user
+ *  cancels. Kept in Rust so a large image never round-trips the JSON IPC
+ *  channel as a number array. */
+export const saveImage = (url: string, pageUrl?: string | null) =>
+  invoke<boolean>("save_image", { url, pageUrl: pageUrl ?? null });
+
 // ── feeds ──
 export const listFeeds = () => invoke<Feed[]>("list_feeds");
 export const addFeed = (url: string, folderId: number | null) =>
@@ -197,6 +204,27 @@ export const getSetting = (key: string) =>
 export const setSetting = (key: string, value: string) =>
   invoke<void>("set_setting", { key, value });
 
+// ── AI ──
+/** What a successful `testAi` round trip saw (mirrors `ai::TestOutcome`). */
+export interface AiTestOutcome {
+  model: string;
+  baseUrl: string;
+  latencyMs: number;
+  reply: string;
+}
+
+/**
+ * Send one minimal request to the configured provider and report what came
+ * back. Takes the values currently in the settings form so the test works
+ * before saving; empty model/URL fields use provider defaults.
+ */
+export const testAi = (args: {
+  provider: string;
+  apiKey: string;
+  model: string;
+  baseUrl: string;
+}) => invoke<AiTestOutcome>("ai_test", args);
+
 // ── storage ──
 export interface StorageStats {
   dbBytes: number;
@@ -346,3 +374,6 @@ export const setPageViewBounds = (b: PageViewBounds) =>
 export const setPageViewVisible = (visible: boolean) =>
   invoke<void>("set_page_view_visible", { visible });
 export const closePageView = () => invoke<void>("close_page_view");
+
+export const configureAiProvider = (provider: string, model?: string, baseUrl?: string) =>
+  invoke<[string, string]>("configure_ai_provider", { provider, model, baseUrl });

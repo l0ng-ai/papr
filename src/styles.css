@@ -1210,6 +1210,19 @@ button { font-family: inherit; }
   color: var(--muted);
   font-size: 12.5px;
 }
+.ai-test {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  width: min(260px, 40vw);
+}
+.ai-test [role="status"] {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.ai-test-ok { color: var(--success); font-size: 12.5px; }
+.ai-test-err { color: var(--danger); font-size: 12.5px; }
 .ai-dot {
   width: 6px; height: 6px;
   background: var(--accent);
@@ -2104,6 +2117,12 @@ button { font-family: inherit; }
   border-radius: 6px;
   box-shadow: 0 8px 40px rgba(0, 0, 0, 0.5);
   user-select: none;
+  /* Zoom/pan transform math anchors on the image's top-left. */
+  transform-origin: 0 0;
+  /* Keep touch/pen drags ours instead of the page scrolling/zooming. */
+  touch-action: none;
+  will-change: transform;
+  cursor: grab;
 }
 .lightbox-btn {
   position: absolute;
@@ -2135,6 +2154,17 @@ button { font-family: inherit; }
   background: rgba(0, 0, 0, 0.4);
   padding: 4px 12px;
   border-radius: 999px;
+}
+.lightbox-hint {
+  position: absolute;
+  bottom: 54px;
+  left: 50%;
+  transform: translateX(-50%);
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
 }
 :root[data-reduce-motion="true"] .lightbox { animation: none; }
 /* Feed-embedded <video> (see sanitize): keep it within the column like images. */

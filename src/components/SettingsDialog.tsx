@@ -12,8 +12,9 @@ import { feedHost } from "../lib/feedMeta";
 import { modKey, modCombo } from "../lib/platform";
 import { reportError } from "../toast";
 import { checkForUpdates } from "../lib/updater";
-import { downloadFile } from "../lib/download";
+import { saveTextFile } from "../lib/save";
 import { NO_AUTOCORRECT } from "../lib/inputProps";
+import { errorText } from "../lib/errors";
 import type { Feed, Rule, RuleAction, RuleField, RulePreview } from "../types";
 import Icon, { type IconName } from "./Icon";
 import ConfirmDialog from "./ConfirmDialog";
@@ -830,8 +831,11 @@ function SubscriptionsSection({
   const exportOpml = async () => {
     try {
       const xml = await api.exportOpml();
-      downloadFile(xml, "subscriptions.opml", "text/xml");
-      onToast(t("settings.subscriptions.opmlExported"));
+      const saved = await saveTextFile(xml, "subscriptions.opml", "OPML", [
+        "opml",
+        "xml",
+      ]);
+      if (saved) onToast(t("settings.subscriptions.opmlExported"));
     } catch (e) {
       reportError(e);
     }
@@ -1664,14 +1668,14 @@ function DangerZone({ onToast }: { onToast: (m: string) => void }) {
  *  services. The reader can override this per translation, but only temporarily. */
 type TranslateEngine = "llm" | "google" | "deepl" | "bing";
 
+type AiProvider = "anthropic" | "openai" | "deepseek" | "codex";
+
 /** Real AI provider configuration — backing the AI summary feature, plus the
  *  default translation engine + language and the engines' credentials. */
 function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
   const { t, i18n } = useTranslation();
   const qc = useQueryClient();
-  const [provider, setProvider] = useState<
-    "anthropic" | "openai" | "deepseek" | "codex"
-  >("anthropic");
+  const [provider, setProvider] = useState<AiProvider>("anthropic");
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
@@ -1682,6 +1686,87 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
   const savedKey = useRef("");
   const savedModel = useRef("");
   const savedBaseUrl = useRef("");
+  // Connection test: one minimal request, plus the verdict to show inline.
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{
+    ok: boolean;
+    text: string;
+  } | null>(null);
+
+  const testRevision = useRef(0);
+
+  const runTest = () => {
+    const revision = ++testRevision.current;
+    setTesting(true);
+    setTestResult(null);
+    api
+      .testAi({
+        provider,
+        apiKey: apiKey.trim(),
+        model: model.trim(),
+        baseUrl: baseUrl.trim(),
+      })
+      .then((r) => {
+        if (revision !== testRevision.current) return;
+        setTestResult({
+          ok: true,
+          text: t("settings.advanced.aiTestOk", {
+            model: r.model,
+            ms: r.latencyMs,
+          }),
+        });
+      })
+      // The provider's own words are the useful part (rejected key, unknown
+      // model, unreachable Base URL), so show them instead of a generic
+      // "request failed".
+      .catch((e) => {
+        if (revision === testRevision.current)
+          setTestResult({ ok: false, text: errorText(e) });
+      })
+      .finally(() => setTesting(false));
+  };
+
+  // Any edit invalidates the previous verdict — a stale "connected" next to
+  // changed fields would be worse than no answer at all.
+  useEffect(() => {
+    ++testRevision.current;
+    setTestResult(null);
+    return () => { ++testRevision.current; };
+  }, [provider, apiKey, model, baseUrl]);
+
+  const [profileBusy, setProfileBusy] = useState(true);
+  const switching = useRef(true);
+  // Blur saves must finish before a switch reads the stored profile.
+  const profileQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const enqueueProfile = <T,>(operation: () => Promise<T>): Promise<T> => {
+    const next = profileQueue.current.then(operation);
+    profileQueue.current = next.catch(() => {});
+    return next;
+  };
+  const saveProfile = (nextModel: string, nextBaseUrl: string) => {
+    enqueueProfile(() => api.configureAiProvider(provider, nextModel, nextBaseUrl))
+      .then(() => { savedModel.current = nextModel; savedBaseUrl.current = nextBaseUrl; })
+      .catch(reportError);
+  };
+  const loadProviderProfile = async (p: AiProvider) => {
+    if (switching.current) return;
+    switching.current = true;
+    ++testRevision.current;
+    setTestResult(null);
+    setProfileBusy(true);
+    try {
+      const [m, b] = await enqueueProfile(async () => {
+        // Save the visible draft before switching, including a failed blur save.
+        await api.configureAiProvider(provider, model.trim(), baseUrl.trim());
+        return api.configureAiProvider(p);
+      });
+      setProvider(p);
+      setModel(m); savedModel.current = m;
+      setBaseUrl(b); savedBaseUrl.current = b;
+      onToast(t("settings.advanced.aiSaved", { label: t("settings.advanced.aiProviderLabel") }));
+    } catch (e) { reportError(e); }
+    finally { switching.current = false; setProfileBusy(false); }
+  };
 
   useEffect(() => {
     Promise.all([
@@ -1711,7 +1796,8 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
           setEngine(eng);
         if (tl) setTranslateLang(tl);
       })
-      .catch(() => {});
+      .catch(reportError)
+      .finally(() => { switching.current = false; setProfileBusy(false); });
   }, []);
 
   const save = (key: string, value: string, label: string) => {
@@ -1740,6 +1826,7 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
   return (
     <div className="settings-group">
       <h3 className="settings-group-title">{t("settings.advanced.aiSummary")}</h3>
+      <fieldset disabled={profileBusy} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
       <Row
         label={t("settings.advanced.aiProvider")}
         desc={t("settings.advanced.aiProviderDesc")}
@@ -1752,29 +1839,7 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
             { value: "deepseek", label: "DeepSeek" },
             { value: "codex", label: t("settings.advanced.aiProviderCodex") },
           ]}
-          onChange={(v) => {
-            setProvider(v);
-            // The model name and base URL are provider-specific — carrying
-            // them over would send e.g. an OpenAI model to Anthropic. Clear
-            // both so the backend falls back to the new provider's defaults.
-            setModel("");
-            savedModel.current = "";
-            setBaseUrl("");
-            savedBaseUrl.current = "";
-            Promise.all([
-              api.setSetting("ai_provider", v),
-              api.setSetting("ai_model", ""),
-              api.setSetting("ai_base_url", ""),
-            ])
-              .then(() =>
-                onToast(
-                  t("settings.advanced.aiSaved", {
-                    label: t("settings.advanced.aiProviderLabel"),
-                  }),
-                ),
-              )
-              .catch((e) => reportError(e));
-          }}
+          onChange={(v) => { void loadProviderProfile(v); }}
         />
       </Row>
       {provider === "codex" && (
@@ -1837,9 +1902,9 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
             const trimmed = model.trim();
             if (trimmed !== model) setModel(trimmed);
             if (trimmed !== savedModel.current) {
-              savedModel.current = trimmed;
-              save("ai_model", trimmed, t("settings.advanced.aiModelLabel"));
+              saveProfile(trimmed, baseUrl.trim());
             }
+
           }}
         />
       </Row>
@@ -1859,13 +1924,39 @@ function AiSettingsGroup({ onToast }: { onToast: (m: string) => void }) {
               const trimmed = baseUrl.trim();
               if (trimmed !== baseUrl) setBaseUrl(trimmed);
               if (trimmed !== savedBaseUrl.current) {
-                savedBaseUrl.current = trimmed;
-                save("ai_base_url", trimmed, t("settings.advanced.aiBaseUrlLabel"));
+                saveProfile(model.trim(), trimmed);
               }
+
             }}
           />
         </Row>
       )}
+      </fieldset>
+      <Row
+        label={t("settings.advanced.aiTest")}
+        desc={t(provider === "codex" ? "settings.advanced.aiCodexTestDesc" : "settings.advanced.aiTestDesc")}
+      >
+        <div className="ai-test">
+          <button
+            className="s-btn"
+            type="button"
+            disabled={profileBusy || testing || (provider !== "codex" && !apiKey.trim())}
+            onClick={runTest}
+          >
+            {testing
+              ? t("settings.advanced.aiTesting")
+              : t("settings.advanced.aiTest")}
+          </button>
+          {testResult && (
+            <span
+              className={testResult.ok ? "ai-test-ok" : "ai-test-err"}
+              role="status"
+            >
+              {testResult.text}
+            </span>
+          )}
+        </div>
+      </Row>
       <Row
         label={t("settings.advanced.translateEngine")}
         desc={t("settings.advanced.translateEngineDesc")}

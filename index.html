@@ -6,12 +6,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Papr</title>
 
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link
-      href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=Inter+Tight:wght@400;450;500;550;600;650;700&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,650;1,6..72,400&family=JetBrains+Mono:wght@400;500&display=swap"
-      rel="stylesheet"
-    />
+    <!-- Every typeface ships inside the app bundle (see src/main.tsx), so the
+         boot HTML deliberately carries no font-CDN <link>. A remote stylesheet
+         is render-blocking: on a network that cannot reach the CDN the browser
+         holds the first paint until that request times out, which parks the
+         boot splash on screen for the whole timeout. -->
 
     <!-- Apply the saved theme before the first paint so startup never
          flashes the wrong colours while the app bundle loads. -->

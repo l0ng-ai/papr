@@ -16,7 +16,9 @@ use crate::sanitize;
 use crate::state::AppState;
 use crate::translate;
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use tauri::{ipc::Channel, AppHandle, Emitter, Manager, State};
+use tauri_plugin_dialog::DialogExt;
 use url::Url;
 
 // ─────────────────────────── native chrome ───────────────────────────
@@ -536,8 +538,7 @@ fn referer_candidates(image_url: &str, page_url: Option<&str>) -> Vec<Option<Str
     out
 }
 
-/// Fetch a feed image's bytes — for the reader's "Save image" action and as
-/// the retry path for images the webview itself failed to load.
+/// Fetch a feed image's bytes.
 ///
 /// Done in Rust rather than via the webview so the request's `Referer` can be
 /// controlled: it walks [`referer_candidates`] (none → image origin → article
@@ -545,19 +546,17 @@ fn referer_candidates(image_url: &str, page_url: Option<&str>) -> Vec<Option<Str
 /// whitelist-style hotlink protection. `page_url` is the article's link, used
 /// as the final candidate. Transport errors abort the chain — a different
 /// Referer can't fix an unreachable host — only HTTP status errors advance it.
-#[tauri::command]
-pub async fn fetch_image(
-    state: State<'_, AppState>,
-    url: String,
-    page_url: Option<String>,
+async fn fetch_image_bytes(
+    http: &reqwest::Client,
+    url: &str,
+    page_url: Option<&str>,
 ) -> AppResult<Vec<u8>> {
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return Err(AppError::code("badImageUrl"));
     }
-    let http = state.http();
     let mut last_err = AppError::code("badImageUrl");
-    for referer in referer_candidates(&url, page_url.as_deref()) {
-        let mut req = http.get(&url).header("User-Agent", IMAGE_UA);
+    for referer in referer_candidates(url, page_url) {
+        let mut req = http.get(url).header("User-Agent", IMAGE_UA);
         if let Some(r) = &referer {
             req = req.header("Referer", r.as_str());
         }
@@ -576,6 +575,69 @@ pub async fn fetch_image(
         }
     }
     Err(last_err)
+}
+
+/// Fetch an image's bytes for the webview — the retry path for images the
+/// webview itself failed to load. See [`fetch_image_bytes`] for why the fetch
+/// lives in Rust.
+#[tauri::command]
+pub async fn fetch_image(
+    state: State<'_, AppState>,
+    url: String,
+    page_url: Option<String>,
+) -> AppResult<Vec<u8>> {
+    let http = state.http();
+    fetch_image_bytes(&http, &url, page_url.as_deref()).await
+}
+
+/// The reader's "Save image" action. Fetches the bytes through the same
+/// hotlink-protection walk as [`fetch_image`], then hands them to a native save
+/// dialog and writes the chosen file — all in Rust, so a large image never
+/// round-trips the JSON-shaped IPC channel as a number array.
+///
+/// Returns `false` when the user cancels the dialog; the frontend shows a
+/// success toast only when a file was actually written.
+#[tauri::command]
+pub async fn save_image(
+    app: AppHandle,
+    url: String,
+    page_url: Option<String>,
+) -> AppResult<bool> {
+    // Fetch first: a failed or unsupported URL errors out without ever showing
+    // a dangling save dialog.
+    let http = app.state::<AppState>().http();
+    let bytes = fetch_image_bytes(&http, &url, page_url.as_deref()).await?;
+    let path = app
+        .dialog()
+        .file()
+        .add_filter(
+            "Image",
+            &["png", "jpg", "jpeg", "gif", "webp", "svg", "avif", "bmp", "ico"],
+        )
+        .set_file_name(image_filename(&url))
+        .blocking_save_file();
+    let Some(path) = path else {
+        return Ok(false); // user cancelled
+    };
+    let path = path
+        .into_path()
+        .map_err(|_| AppError::other("save dialog returned a non-file path"))?;
+    write_bytes(path, bytes).await?;
+    Ok(true)
+}
+
+/// A sensible default save filename for an image URL: its last path segment
+/// (query and fragment stripped), falling back to "image".
+fn image_filename(url: &str) -> String {
+    Url::parse(url)
+        .ok()
+        .and_then(|u| {
+            u.path_segments()
+                .and_then(|mut s| s.next_back())
+                .map(|n| n.to_string())
+        })
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| "image".to_string())
 }
 
 // ─────────────────────────── OPML ───────────────────────────
@@ -632,6 +694,40 @@ pub async fn export_opml(state: State<'_, AppState>) -> AppResult<String> {
     opml::build(&feeds)
 }
 
+// ─────────────────────────── file read / write ───────────────────────────
+
+/// Write bytes to `path` off the async runtime's blocking pool, so a large
+/// write can't stall the runtime. `path` is a destination the user picked in a
+/// native save dialog.
+async fn write_bytes(path: PathBuf, bytes: Vec<u8>) -> AppResult<()> {
+    let display = path.display().to_string();
+    tauri::async_runtime::spawn_blocking(move || std::fs::write(&path, &bytes))
+        .await
+        .map_err(|e| AppError::other(format!("write {display}: {e}")))?
+        .map_err(|e| AppError::other(format!("write {display}: {e}")))
+}
+
+/// Keep destination selection and writing in the same trusted command: the
+/// webview can never supply an arbitrary filesystem path.
+#[tauri::command]
+pub async fn save_text_file(
+    app: AppHandle,
+    content: String,
+    default_name: String,
+    filter_name: String,
+    extensions: Vec<String>,
+) -> AppResult<bool> {
+    let extensions: Vec<&str> = extensions.iter().map(String::as_str).collect();
+    let Some(path) = app.dialog().file()
+        .add_filter(filter_name, &extensions)
+        .set_file_name(default_name)
+        .blocking_save_file() else { return Ok(false); };
+    let path = path.into_path()
+        .map_err(|_| AppError::other("save dialog returned a non-file path"))?;
+    write_bytes(path, content.into_bytes()).await?;
+    Ok(true)
+}
+
 // ─────────────────────────── settings ───────────────────────────
 
 #[tauri::command]
@@ -648,6 +744,14 @@ pub async fn set_setting(
 ) -> AppResult<()> {
     let conn = state.db.lock().await;
     db::set_setting(&conn, &key, &value)
+}
+
+#[tauri::command]
+pub async fn configure_ai_provider(
+    state: State<'_, AppState>, provider: String, model: Option<String>, base_url: Option<String>,
+) -> AppResult<(String, String)> {
+    let conn = state.db.lock().await;
+    db::configure_ai_provider(&conn, &provider, model.as_deref(), base_url.as_deref())
 }
 
 // ─────────────────────────── AI ───────────────────────────
@@ -731,6 +835,35 @@ fn translate_target_lang(conn: &rusqlite::Connection) -> String {
         .or_else(|| db::get_setting(conn, "language").ok().flatten())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "en".to_string())
+}
+
+/// Check the AI provider configuration with one minimal request, so the
+/// settings UI can say whether the key / Base URL / model actually work
+/// instead of leaving the user to guess.
+///
+/// The arguments are what the settings form currently holds: the button has to
+/// work before the fields are saved. Omitted arguments use stored settings;
+/// explicit empty model/URL values use the provider defaults.
+#[tauri::command]
+pub async fn ai_test(
+    state: State<'_, AppState>,
+    provider: Option<String>,
+    api_key: Option<String>,
+    model: Option<String>,
+    base_url: Option<String>,
+) -> AppResult<ai::TestOutcome> {
+    let cfg = {
+        let conn = state.read().await;
+        let stored = |key: &str| db::get_setting(&conn, key).ok().flatten();
+        AiConfig::new(
+            provider.or_else(|| stored("ai_provider")),
+            api_key.or_else(|| stored("ai_api_key")),
+            model.or_else(|| stored("ai_model")),
+            base_url.or_else(|| stored("ai_base_url")),
+        )?
+    };
+    let http = state.http();
+    ai::test_connection(&http, &cfg).await
 }
 
 /// Stream an AI summary of one article; the full summary is also persisted.

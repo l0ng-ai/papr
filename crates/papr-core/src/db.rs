@@ -300,6 +300,11 @@ static MIGRATIONS: LazyLock<Migrations> = LazyLock::new(|| {
         // 'web'. NULL (the default) keeps today's behaviour — reader view,
         // honouring the global auto-extract preference.
         M::up("ALTER TABLE feeds ADD COLUMN open_mode TEXT;"),
+        // v20/v21 were used by development builds sharing the desktop data
+        // directory. Keep their additive columns and version slots so those
+        // databases remain readable without resetting or discarding data.
+        M::up("ALTER TABLE feeds ADD COLUMN custom_favicon INTEGER NOT NULL DEFAULT 0;"),
+        M::up("ALTER TABLE feeds ADD COLUMN position INTEGER NOT NULL DEFAULT 0;"),
     ])
 });
 
@@ -2168,6 +2173,32 @@ pub fn set_setting(conn: &Connection, key: &str, value: &str) -> AppResult<()> {
     Ok(())
 }
 
+/// Atomically switch AI profiles, preserving legacy and explicitly empty values.
+/// Supplying a model and URL also updates the selected profile in one commit.
+pub fn configure_ai_provider(
+    conn: &Connection, provider: &str, model: Option<&str>, base_url: Option<&str>,
+) -> AppResult<(String, String)> {
+    if !matches!(provider, "anthropic" | "openai" | "deepseek" | "codex") {
+        return Err(AppError::other("invalid AI provider"));
+    }
+    let tx = conn.unchecked_transaction()?;
+    let previous = get_setting(&tx, "ai_provider")?.unwrap_or_default();
+    let previous = match previous.as_str() { "openai" => "openai", "deepseek" => "deepseek", "codex" => "codex", _ => "anthropic" };
+    for key in ["ai_model", "ai_base_url"] {
+        let value = get_setting(&tx, key)?.unwrap_or_default();
+        set_setting(&tx, &format!("{key}_{previous}"), &value)?;
+    }
+    let model = model.map(str::to_owned).unwrap_or(get_setting(&tx, &format!("ai_model_{provider}"))?.unwrap_or_default());
+    let base_url = base_url.map(str::to_owned).unwrap_or(get_setting(&tx, &format!("ai_base_url_{provider}"))?.unwrap_or_default());
+    for (key, value) in [("ai_model", model.as_str()), ("ai_base_url", base_url.as_str())] {
+        set_setting(&tx, key, value)?;
+        set_setting(&tx, &format!("{key}_{provider}"), value)?;
+    }
+    set_setting(&tx, "ai_provider", provider)?;
+    tx.commit()?;
+    Ok((model, base_url))
+}
+
 /// Read a setting and parse it as `T`, falling back to `default` when the key
 /// is missing, unreadable, or fails to parse.
 pub fn setting_parsed<T: std::str::FromStr>(conn: &Connection, key: &str, default: T) -> T {
@@ -2490,6 +2521,75 @@ pub fn requeue_sync(conn: &Connection, article_id: i64, field: &str, value: bool
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_migrations_preserve_existing_databases() {
+        for version in [0, 19, 20, 21, 22] {
+            let path = std::env::temp_dir().join(format!("papr-migrations-{}-{}-{}.db",
+                std::process::id(), version,
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+            let mut conn = Connection::open(&path).unwrap();
+            MIGRATIONS.to_version(&mut conn, version.min(21)).unwrap();
+            if version > 0 {
+                conn.execute("INSERT INTO feeds(id,feed_url,title) VALUES(1,'https://example.com/rss','Preserved')", []).unwrap();
+                conn.execute("INSERT INTO articles(feed_id,guid,title,is_starred) VALUES(1,'one','Article',1)", []).unwrap();
+            }
+            if version >= 20 { conn.execute("UPDATE feeds SET custom_favicon=1", []).unwrap(); }
+            if version >= 21 { conn.execute("UPDATE feeds SET position=42", []).unwrap(); }
+            if version == 22 { conn.pragma_update(None, "user_version", 22).unwrap(); }
+            drop(conn);
+            let result = open(&path);
+            if version == 22 {
+                assert!(result.is_err());
+                let conn = Connection::open(&path).unwrap();
+                assert_eq!(conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0)).unwrap(), 22);
+            } else {
+                let conn = result.unwrap();
+                assert_eq!(conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0)).unwrap(), 21);
+                if version > 0 {
+                    let values: (String,i64,i64) = conn.query_row("SELECT title,custom_favicon,position FROM feeds WHERE id=1", [], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?))).unwrap();
+                    assert_eq!(values, ("Preserved".into(), i64::from(version>=20), if version>=21 {42} else {0}));
+                    assert_eq!(conn.query_row("SELECT is_starred FROM articles WHERE guid='one'", [], |r| r.get::<_,i64>(0)).unwrap(), 1);
+                }
+            }
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn ai_profiles_preserve_legacy_values_and_explicit_clears() {
+        let (conn, _) = test_db();
+        set_setting(&conn, "ai_provider", "deepseek").unwrap();
+        set_setting(&conn, "ai_model", "custom-model").unwrap();
+        set_setting(&conn, "ai_base_url", "https://example.com/v1").unwrap();
+        assert_eq!(configure_ai_provider(&conn, "openai", None, None).unwrap(), ("".into(), "".into()));
+        configure_ai_provider(&conn, "openai", Some("gpt-custom"), Some("")).unwrap();
+        assert_eq!(configure_ai_provider(&conn, "deepseek", None, None).unwrap(), ("custom-model".into(), "https://example.com/v1".into()));
+        configure_ai_provider(&conn, "deepseek", Some(""), Some("")).unwrap();
+        assert_eq!(configure_ai_provider(&conn, "openai", None, None).unwrap().0, "gpt-custom");
+        assert_eq!(configure_ai_provider(&conn, "deepseek", None, None).unwrap(), ("".into(), "".into()));
+    }
+
+    #[test]
+    fn codex_profile_stays_separate_when_switching_providers() {
+        let (conn, _) = test_db();
+        configure_ai_provider(&conn, "anthropic", Some("claude-custom"), Some("https://example.com/v1")).unwrap();
+        assert_eq!(configure_ai_provider(&conn, "codex", None, None).unwrap(), ("".into(), "".into()));
+        configure_ai_provider(&conn, "codex", Some("codex-custom"), Some("")).unwrap();
+        assert_eq!(configure_ai_provider(&conn, "openai", None, None).unwrap(), ("".into(), "".into()));
+        assert_eq!(configure_ai_provider(&conn, "codex", None, None).unwrap(), ("codex-custom".into(), "".into()));
+        assert_eq!(configure_ai_provider(&conn, "anthropic", None, None).unwrap(), ("claude-custom".into(), "https://example.com/v1".into()));
+    }
+
+    #[test]
+    fn ai_profiles_roll_back_on_write_failure() {
+        let (conn, _) = test_db();
+        set_setting(&conn, "ai_model", "original").unwrap();
+        conn.execute_batch("CREATE TRIGGER fail_provider BEFORE INSERT ON settings WHEN NEW.key = 'ai_provider' BEGIN SELECT RAISE(ABORT, 'write failure'); END;").unwrap();
+        assert!(configure_ai_provider(&conn, "openai", Some("new"), Some("new-url")).is_err());
+        assert_eq!(get_setting(&conn, "ai_model").unwrap().as_deref(), Some("original"));
+        assert_eq!(get_setting(&conn, "ai_model_openai").unwrap(), None);
+    }
 
     /// An in-memory database with all migrations applied and one feed +
     /// article inserted, so highlight FKs resolve. Returns `(conn, article_id)`.
