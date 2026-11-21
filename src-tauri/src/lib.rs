@@ -80,6 +80,25 @@ pub fn run() {
     }
 
     builder
+        .on_window_event(|window, event| {
+            // Windows (issue #118): the X button used to quit outright — the
+            // last window closed and Tauri's default exit took the tray icon
+            // and the background refresh scheduler down with it. Intercept the
+            // close request and hide to the tray instead: the tray menu's
+            // "Open Papr" brings the window back and "Quit Papr" remains the
+            // real exit. Other platforms keep the default close-to-exit.
+            #[cfg(windows)]
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = (window, event);
+            }
+        })
         .setup(|app| {
             // ── Database ──────────────────────────────────────────────
             let opened = (|| -> Result<_, Box<dyn std::error::Error>> {
