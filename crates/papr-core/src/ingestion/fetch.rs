@@ -12,10 +12,11 @@ use std::time::Duration;
 
 pub const USER_AGENT: &str = "Papr/0.1 (+https://github.com/papr-reader)";
 
-/// Hard cap on a fetched body. Feeds and article pages are text — a few
-/// hundred KB at most — so 16 MiB is generous while still stopping a
-/// hostile or misconfigured server from exhausting memory.
-const MAX_BODY_BYTES: usize = 16 * 1024 * 1024;
+/// Hard cap on a fetched body. Feeds carrying full article content are the
+/// realistic upper bound: 200+ full-text entries reach tens of MiB (#123), so
+/// the cap sits well above that while still stopping a hostile or
+/// misconfigured server from exhausting memory.
+const MAX_BODY_BYTES: usize = 64 * 1024 * 1024;
 
 /// Read a response body, aborting if it exceeds `MAX_BODY_BYTES`. Streams in
 /// chunks so an unbounded (or lying-`Content-Length`) response can't first be
@@ -215,6 +216,75 @@ pub async fn get(client: &Client, url: &str) -> AppResult<(Vec<u8>, Option<Strin
 #[cfg(test)]
 mod tests {
     use super::{charset_from_content_type, charset_from_html, decode_html};
+    use crate::error::AppError;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    /// One-shot HTTP/1.1 server for the body-cap tests below: accepts a single
+    /// connection, drains the request head, writes the canned response, closes.
+    async fn one_shot_server(response: Vec<u8>) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 8192];
+            loop {
+                let n = sock.read(&mut buf).await.unwrap();
+                if n == 0 || buf[..n].windows(4).any(|w| w == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let _ = sock.write_all(&response).await;
+        });
+        format!("http://{addr}/feed.xml")
+    }
+
+    fn response_with(body: &[u8], content_length: &str) -> Vec<u8> {
+        let mut out = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/rss+xml\r\nContent-Length: {content_length}\r\nConnection: close\r\n\r\n"
+        )
+        .into_bytes();
+        out.extend_from_slice(body);
+        out
+    }
+
+    #[tokio::test]
+    async fn get_accepts_full_content_feeds_beyond_16mib() {
+        // 300 full-content entries — the shape #123 reports — reach ~18 MiB
+        // and must be fetched whole.
+        let mut body =
+            String::from("<rss><channel><title>big</title><description>d</description>");
+        for i in 0..300 {
+            body.push_str(&format!(
+                "<item><title>{i}</title><description>{}</description></item>",
+                "x".repeat(60 * 1024)
+            ));
+        }
+        body.push_str("</channel></rss>");
+
+        let url = one_shot_server(response_with(body.as_bytes(), &body.len().to_string())).await;
+        let client = super::build_client(30, "none");
+        let (bytes, ct, _) = super::get(&client, &url).await.unwrap();
+        assert_eq!(bytes.len(), body.len());
+        assert_eq!(ct.as_deref(), Some("application/rss+xml"));
+    }
+
+    #[tokio::test]
+    async fn get_still_rejects_bodies_declared_over_the_cap() {
+        // The memory-exhaustion guard survives the raise: a response whose
+        // declared length is above the cap is rejected from the header alone,
+        // without buffering the body.
+        let url = one_shot_server(response_with(
+            b"truncated",
+            &(super::MAX_BODY_BYTES as u64 + 1).to_string(),
+        ))
+        .await;
+        let client = super::build_client(30, "none");
+        let err = super::get(&client, &url).await.unwrap_err();
+        assert!(
+            matches!(err, AppError::Coded("responseTooLarge")),
+            "expected responseTooLarge, got: {err:?}"
+        );
+    }
 
     #[test]
     fn charset_parsed_from_content_type_header() {
